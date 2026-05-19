@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: screener-backend
+  main:
+    # CRITICAL: prevents spring-boot-starter-webflux from hijacking the server to Netty reactive.
+    # WebFlux is on the classpath only for WebClient — the application runs on Tomcat/MVC.
+    web-application-type: servlet
+
+screener:
+  binance:
+    spot-base-url: https://api.binance.com
+    futures-base-url: https://fapi.binance.com
+    # Binance exchangeInfo responses exceed 16 MB; the default 256 KB WebClient codec
+    # buffer throws DataBufferLimitException without this setting.
+    codec-buffer-size-mb: 18
+    # Requests are held until the next wall-clock minute once usage reaches these levels.
+    # Binance hard limits: spot 6 000, futures 2 400.
+    spot-weight-threshold: 5800
+    futures-weight-threshold: 2200
+
+  ticker:
+    # ISO-8601 duration. fixedDelayString — the next run starts this long AFTER the previous completes.
+    refresh-interval: PT4H
+
+  orderbook:
+    # Price levels further than this fraction from the mid-price are discarded to bound memory.
+    price-filter-threshold: 0.30
+    # Snapshot dispatch rate per market (milliseconds).
+    spot-snapshot-dispatch-rate-ms: 6000
+    futures-snapshot-dispatch-rate-ms: 6000
+    spot-snapshot-queue-size: 10
+    futures-snapshot-queue-size: 10
+
+  disruptor:
+    shard-count: 2
+    ring-buffer-size: 65536
+
+  websocket:
+    spot-stream-url: wss://stream.binance.com/ws
+    futures-stream-url: wss://fstream.binance.com/ws
+    max-streams-per-connection: 1024
+    subscribe-chunk-size: 400
+    reconnect-initial-delay-ms: 100
+    reconnect-max-delay-ms: 30000
