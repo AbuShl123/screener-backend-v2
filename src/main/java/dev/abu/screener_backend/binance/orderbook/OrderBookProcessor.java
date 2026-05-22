@@ -2,6 +2,7 @@ package dev.abu.screener_backend.binance.orderbook;
 
 import dev.abu.screener_backend.binance.disruptor.DepthEvent;
 import dev.abu.screener_backend.binance.disruptor.EventType;
+import jakarta.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -20,7 +21,7 @@ public class OrderBookProcessor {
     private final OrderBookStore store;
     private final SnapshotFetchQueue snapshotFetchQueue;
 
-    public void process(DepthEvent event) {
+    public @Nullable OrderBook process(DepthEvent event) {
         // SNAPSHOT events: orderbook must already exist (created when the first diff arrived).
         // DIFF events: create lazily on first arrival for this symbol + market.
         OrderBook ob = (event.type == EventType.SNAPSHOT)
@@ -28,7 +29,7 @@ public class OrderBookProcessor {
                 : store.getOrCreate(event.symbol, event.market);
 
         if (ob == null) {
-            return;
+            return null;
         }
 
         OrderBookResult result = (event.type == EventType.SNAPSHOT)
@@ -37,7 +38,7 @@ public class OrderBookProcessor {
 
         if (result == OrderBookResult.NEEDS_SNAPSHOT || result == OrderBookResult.NEEDS_RESYNC) {
             if (!snapshotFetchQueue.enqueue(ob)) {
-                return;
+                return ob;
             }
 
             ob.markSnapshotRequested();
@@ -46,5 +47,7 @@ public class OrderBookProcessor {
                 ob.onDiff(event.rawJson);
             }
         }
+
+        return ob;
     }
 }

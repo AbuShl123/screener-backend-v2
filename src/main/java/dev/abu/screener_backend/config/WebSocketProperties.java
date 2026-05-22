@@ -9,5 +9,6 @@ public record WebSocketProperties(
         int maxStreamsPerConnection,
         int subscribeChunkSize,
         long reconnectInitialDelayMs,
-        long reconnectMaxDelayMs
+        long reconnectMaxDelayMs,
+        int heartbeatIntervalSeconds
 ) {}

@@ -9,6 +9,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -23,6 +24,7 @@ public class BinanceStreamClient extends WebSocketClient {
 
     private volatile boolean shuttingDown = false;
     private final AtomicInteger reconnectAttempt = new AtomicInteger(0);
+    private volatile ScheduledFuture<?> heartbeatTask;
 
     public BinanceStreamClient(
             URI serverUri,
@@ -33,6 +35,7 @@ public class BinanceStreamClient extends WebSocketClient {
             WebSocketProperties props
     ) {
         super(serverUri);
+        setConnectionLostTimeout(0);
         this.market = market;
         this.symbols = List.copyOf(symbols);
         this.handler = handler;
@@ -43,6 +46,7 @@ public class BinanceStreamClient extends WebSocketClient {
     @Override
     public void onOpen(ServerHandshake handshake) {
         reconnectAttempt.set(0);
+        startHeartbeat();
 
         int chunkSize = props.subscribeChunkSize();
         int totalChunks = (symbols.size() + chunkSize - 1) / chunkSize;
@@ -79,24 +83,55 @@ public class BinanceStreamClient extends WebSocketClient {
 
     @Override
     public void onClose(int code, String reason, boolean remote) {
+        cancelHeartbeat();
         if (shuttingDown) return;
+
         long delay = Math.min(
                 props.reconnectInitialDelayMs() * (1L << Math.min(reconnectAttempt.getAndIncrement(), 8)),
                 props.reconnectMaxDelayMs()
         );
-        log.warn("[{}] Connection closed (code={}, reason={}). Reconnecting in {}ms",
-                market, code, reason, delay);
+
+        log.warn("[{}] Connection closed (code={}, reason='{}', remote={}). Reconnecting in {}ms",
+                market, code, reason, remote, delay);
+
         reconnectScheduler.schedule(this::reconnect, delay, TimeUnit.MILLISECONDS);
     }
 
     @Override
     public void onError(Exception ex) {
-        log.warn("[{}] WebSocket error: {}", market, ex.getMessage());
+        log.warn("[{}] WebSocket error: {} — {}", market, ex.getClass().getSimpleName(), ex.getMessage());
     }
 
     public void shutdown() {
         shuttingDown = true;
+        cancelHeartbeat();
         close();
+    }
+
+    private void startHeartbeat() {
+        cancelHeartbeat();
+        int intervalSeconds = props.heartbeatIntervalSeconds();
+        heartbeatTask = reconnectScheduler.scheduleAtFixedRate(
+                this::sendHeartbeat, intervalSeconds, intervalSeconds, TimeUnit.SECONDS
+        );
+    }
+
+    private void cancelHeartbeat() {
+        ScheduledFuture<?> task = heartbeatTask;
+        if (task != null) {
+            task.cancel(false);
+            heartbeatTask = null;
+        }
+    }
+
+    private void sendHeartbeat() {
+        if (isOpen()) {
+            try {
+                sendPing();
+            } catch (Exception e) {
+                log.debug("[{}] Heartbeat ping failed: {}", market, e.getMessage());
+            }
+        }
     }
 
     private String buildSubscribeFrame(List<String> chunk, int id) {

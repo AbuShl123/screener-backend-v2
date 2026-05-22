@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Rate-limited snapshot dispatcher.
- *
+ * <p>
  * Maintains two independent maps (spot, futures) keyed by symbol and drains them at a
  * configurable pace to stay within Binance API weight limits. Each dispatch cycle fires
  * all pending requests concurrently; an orderbook is removed from the map only when its
@@ -70,7 +70,7 @@ public class SnapshotFetchQueue {
     public void dispatchSpot() {
         for (OrderBook ob : spotQueue.values()) {
             restClient.getSpot("/api/v3/depth?symbol=" + ob.symbol + "&limit=1000", String.class)
-                    .delayElement(Duration.ofSeconds(3))
+                    .delayElement(Duration.ofSeconds(5))
                     .subscribe(
                             rawJson -> {
                                 spotQueue.remove(ob.symbol);
@@ -89,7 +89,7 @@ public class SnapshotFetchQueue {
     public void dispatchFutures() {
         for (OrderBook ob : futuresQueue.values()) {
             restClient.getFutures("/fapi/v1/depth?symbol=" + ob.symbol + "&limit=1000", String.class)
-                    .delayElement(Duration.ofSeconds(3))
+                    .delayElement(Duration.ofSeconds(5))
                     .subscribe(
                             rawJson -> {
                                 futuresQueue.remove(ob.symbol);

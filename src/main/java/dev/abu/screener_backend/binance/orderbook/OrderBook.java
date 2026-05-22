@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.binance.orderbook;
 
 import dev.abu.screener_backend.binance.websocket.Market;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
@@ -25,26 +26,36 @@ public class OrderBook {
     static final int MAX_BUFFER_SIZE = 500;
     private static final JsonFactory JSON_FACTORY = JsonFactory.builder().build();
 
+    @Getter
     final String symbol;
+    @Getter
     final Market market;
+    @Getter
     volatile OrderBookState state;
 
     private final double filterThreshold;
+    /**
+     * Live bids TreeMap. Must only be accessed by this shard's consumer thread.
+     */
+    @Getter
     private final TreeMap<Double, PriceLevelEntry> bids; // reverseOrder → firstKey() = best bid
+    /**
+     * Live asks TreeMap. Must only be accessed by this shard's consumer thread.
+     */
+    @Getter
     private final TreeMap<Double, PriceLevelEntry> asks; // natural order → firstKey() = best ask
     private final ArrayDeque<String> diffBuffer;         // raw diff JSON; populated only in SNAPSHOT_REQUESTED
 
     private long lastUpdateId;
-    private long lastPu; // futures only
 
     public OrderBook(String symbol, Market market, double filterThreshold) {
-        this.symbol          = symbol;
-        this.market          = market;
+        this.symbol = symbol;
+        this.market = market;
         this.filterThreshold = filterThreshold;
-        this.state           = OrderBookState.PENDING;
-        this.bids            = new TreeMap<>(Comparator.reverseOrder());
-        this.asks            = new TreeMap<>();
-        this.diffBuffer      = new ArrayDeque<>();
+        this.state = OrderBookState.PENDING;
+        this.bids = new TreeMap<>(Comparator.reverseOrder());
+        this.asks = new TreeMap<>();
+        this.diffBuffer = new ArrayDeque<>();
     }
 
     // --- State transitions called from outside the consumer thread ---
@@ -159,12 +170,12 @@ public class OrderBook {
                 String field = p.currentName();
                 p.nextToken();
                 switch (field) {
-                    case "U"  -> U  = p.getLongValue();
-                    case "u"  -> u  = p.getLongValue();
+                    case "U" -> U = p.getLongValue();
+                    case "u" -> u = p.getLongValue();
                     case "pu" -> pu = p.getLongValue();
-                    case "b"  -> parseLevelsInto(p, parsedBids);
-                    case "a"  -> parseLevelsInto(p, parsedAsks);
-                    default   -> p.skipChildren();
+                    case "b" -> parseLevelsInto(p, parsedBids);
+                    case "a" -> parseLevelsInto(p, parsedAsks);
+                    default -> p.skipChildren();
                 }
             }
         } catch (IOException e) {
@@ -237,7 +248,7 @@ public class OrderBook {
     private void applyLevelUpdates(TreeMap<Double, PriceLevelEntry> map, ArrayDeque<double[]> levels) {
         for (double[] level : levels) {
             double price = level[0];
-            double qty   = level[1];
+            double qty = level[1];
             if (qty == 0.0) {
                 map.remove(price);
             } else {
@@ -251,14 +262,22 @@ public class OrderBook {
         }
     }
 
-    /** Sweep all levels outside ±filterThreshold of the current mid-price. */
+    /** Sweep all levels outside ±filterThreshold of mid-price and update distance on survivors. */
     private void apply30PercentFilter() {
         if (bids.isEmpty() || asks.isEmpty()) return;
         double midPrice = (bids.firstKey() + asks.firstKey()) / 2.0;
-        double lower    = midPrice * (1.0 - filterThreshold);
-        double upper    = midPrice * (1.0 + filterThreshold);
-        bids.entrySet().removeIf(e -> e.getKey() < lower || e.getKey() > upper);
-        asks.entrySet().removeIf(e -> e.getKey() < lower || e.getKey() > upper);
+        double lower = midPrice * (1.0 - filterThreshold);
+        double upper = midPrice * (1.0 + filterThreshold);
+        bids.entrySet().removeIf(e -> {
+            if (e.getKey() < lower || e.getKey() > upper) return true;
+            e.getValue().distance = Math.abs(e.getKey() - midPrice) / midPrice * 100.0;
+            return false;
+        });
+        asks.entrySet().removeIf(e -> {
+            if (e.getKey() < lower || e.getKey() > upper) return true;
+            e.getValue().distance = Math.abs(e.getKey() - midPrice) / midPrice * 100.0;
+            return false;
+        });
     }
 
     private void discardInvalidDiffsFromBuffer(long snapshotId) throws IOException {
@@ -270,8 +289,7 @@ public class OrderBook {
             // Therefore, applying STRICT comparison, just like in futures docs:
             if (u < snapshotId) {
                 diffBuffer.pollFirst();
-            }
-            else break;
+            } else break;
         }
     }
 
@@ -285,9 +303,9 @@ public class OrderBook {
                 String field = p.currentName();
                 p.nextToken();
                 switch (field) {
-                    case "b"  -> parseLevelsInto(p, parsedBids);
-                    case "a"  -> parseLevelsInto(p, parsedAsks);
-                    default   -> p.skipChildren();
+                    case "b" -> parseLevelsInto(p, parsedBids);
+                    case "a" -> parseLevelsInto(p, parsedAsks);
+                    default -> p.skipChildren();
                 }
             }
         } catch (IOException e) {
@@ -309,9 +327,9 @@ public class OrderBook {
                 p.nextToken();
                 switch (field) {
                     case "lastUpdateId" -> snapshotId = p.getLongValue();
-                    case "bids"         -> parseLevelsInto(p, snapshotBids);
-                    case "asks"         -> parseLevelsInto(p, snapshotAsks);
-                    default             -> p.skipChildren();
+                    case "bids" -> parseLevelsInto(p, snapshotBids);
+                    case "asks" -> parseLevelsInto(p, snapshotAsks);
+                    default -> p.skipChildren();
                 }
             }
         } catch (IOException e) {
@@ -319,6 +337,24 @@ public class OrderBook {
             return -1;
         }
         return snapshotId;
+    }
+
+    /**
+     * Best-effort snapshot of bids for debug/observability use.
+     * Returns a copy sorted highest-price-first (best bid first).
+     * May be slightly stale if called concurrently with a consumer write.
+     */
+    public TreeMap<Double, PriceLevelEntry> snapshotBids() {
+        return new TreeMap<>(bids);
+    }
+
+    /**
+     * Best-effort snapshot of asks for debug/observability use.
+     * Returns a copy sorted lowest-price-first (best ask first).
+     * May be slightly stale if called concurrently with a consumer write.
+     */
+    public TreeMap<Double, PriceLevelEntry> snapshotAsks() {
+        return new TreeMap<>(asks);
     }
 
     private OrderBookResult resync() {

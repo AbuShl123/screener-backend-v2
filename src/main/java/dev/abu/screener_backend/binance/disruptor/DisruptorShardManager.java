@@ -4,8 +4,10 @@ import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
+import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.binance.orderbook.OrderBookProcessor;
 import dev.abu.screener_backend.config.DisruptorProperties;
+import dev.abu.screener_backend.feed.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +21,7 @@ public class DisruptorShardManager {
 
     private final DisruptorProperties props;
     private final OrderBookProcessor  orderBookProcessor;
+    private final OrderBookFeedStore  feedStore;
 
     private Disruptor<DepthEvent>[]  disruptors;
     private RingBuffer<DepthEvent>[] ringBuffers;
@@ -39,7 +42,8 @@ public class DisruptorShardManager {
                     ProducerType.MULTI,
                     new BlockingWaitStrategy()
             );
-            disruptor.handleEventsWith(new DepthEventHandler(i, orderBookProcessor));
+            OrderBookClassifier classifier = new OrderBookClassifier(feedStore);
+            disruptor.handleEventsWith(new DepthEventHandler(i, orderBookProcessor, classifier));
 
             ringBuffers[i] = disruptor.start();
             disruptors[i]  = disruptor;

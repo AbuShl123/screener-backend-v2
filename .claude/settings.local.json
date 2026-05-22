@@ -9,7 +9,8 @@
       "Bash(ConvertTo-Csv -NoTypeInformation)",
       "Bash(Out-String)",
       "Bash(Get-ChildItem -Path \"C:\\\\git\\\\screener-backend-new\" -Recurse -Name)",
-      "Bash(Select-Object -First 50)"
+      "Bash(Select-Object -First 50)",
+      "Bash(mvn compile *)"
     ]
   }
 }

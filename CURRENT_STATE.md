@@ -10,6 +10,8 @@ This file documents every class under `src/` so future sessions don't need to re
 src/
 ├── main/java/dev/abu/screener_backend/
 │   ├── ScreenerBackendApplication.java
+│   ├── analysis/
+│   │   └── OrderBookClassifier.java
 │   ├── binance/
 │   │   ├── api/
 │   │   │   ├── BinanceApiException.java
@@ -48,6 +50,13 @@ src/
 │   │   ├── SecurityConfig.java
 │   │   ├── WebClientConfig.java
 │   │   └── WebSocketProperties.java
+│   ├── feed/
+│   │   ├── ClassifiedLevel.java
+│   │   ├── FeedEventType.java
+│   │   ├── OrderBookBroadcaster.java
+│   │   ├── OrderBookFeedStore.java
+│   │   ├── OrderBookUpdate.java
+│   │   └── UserWebSocketSession.java
 │   └── ticker/
 │       ├── Ticker.java
 │       ├── TickerController.java
@@ -59,7 +68,7 @@ src/
     └── ScreenerBackendApplicationTests.java
 ```
 
-**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), and orderbook management with sync state machine and snapshot fetch queue (Phase 3) are complete. Order classification is **not yet implemented**.
+**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), orderbook management with sync state machine and snapshot fetch queue (Phase 3), and classification + feed pipeline stub (Phase 4/5) are complete. Real classification thresholds and the WebSocket server are **not yet implemented**.
 
 ---
 
@@ -185,7 +194,7 @@ Mutable value object for a single price level. Fields:
 ### `OrderBook`
 `src/main/java/dev/abu/screener_backend/binance/orderbook/OrderBook.java`
 
-Core class. Maintains a local orderbook for one `(symbol, market)` pair.
+Core class. Maintains a local orderbook for one `(symbol, market)` pair. Exposes four public getters for the classifier: `getSymbol()`, `getMarket()`, `getBids()`, `getAsks()`. The TreeMap references returned by `getBids()`/`getAsks()` are live — must only be read by the owning shard's consumer thread.
 
 **Fields**:
 - `bids`: `TreeMap<Double, PriceLevelEntry>` with `Comparator.reverseOrder()` — `firstKey()` = best bid
@@ -261,6 +270,73 @@ When result is `NEEDS_SNAPSHOT` or `NEEDS_RESYNC`:
 `publishSnapshotEvent(ob, rawJson)` — publishes to the Disruptor ring buffer from the Reactor/WebClient thread. Never writes to the `OrderBook` directly — all mutations are single-threaded via the shard consumer.
 
 `@Lazy DisruptorShardManager` — injected lazily to break the circular dependency: `DisruptorShardManager → OrderBookProcessor → SnapshotFetchQueue → DisruptorShardManager`.
+
+---
+
+## `analysis` — Order Classification
+
+### `OrderBookClassifier`
+`src/main/java/dev/abu/screener_backend/analysis/OrderBookClassifier.java`
+
+Not a Spring bean — constructed manually by `DisruptorShardManager`, one instance per shard. All internal state is accessed exclusively by the owning shard's consumer thread; no synchronization needed.
+
+**Entry point**: `process(OrderBook ob)` — called by `DepthEventHandler` after every ring buffer event.
+
+**Internal state per `(symbol, market)` key**: a `SymbolState` tracking `ActivityLevel` (LOW/HIGH) and the last-emitted `ClassifiedLevel[]` arrays for bids and asks. Change-detection uses `Arrays.equals()` on `ClassifiedLevel` record arrays (value equality via record's `equals()`).
+
+**`classify(TreeMap)` — stub**: assigns tier-4 to all levels. Real proximity/notional thresholds to be implemented in Phase 4. With the stub, every diff on a SYNCED orderbook triggers an UPDATE — expected during development.
+
+**Flow**:
+- If orderbook is not SYNCED and was previously HIGH → emits DROP, resets to LOW
+- If SYNCED: classifies top-5 bids/asks; determines ADD/UPDATE/DROP; writes to `OrderBookFeedStore`
+- `hasVisibleLevel()` — a level is visible if its tier ≤ 4
+
+---
+
+## `feed` — Feed Store and Broadcaster
+
+### `ClassifiedLevel`
+`src/main/java/dev/abu/screener_backend/feed/ClassifiedLevel.java`
+
+Record: `(price, quantity, tier, firstSeenMillis)`. All-primitive fields — record `equals()` provides correct value comparison, used by `Arrays.equals()` in the classifier's change-detection.
+
+### `FeedEventType`
+`src/main/java/dev/abu/screener_backend/feed/FeedEventType.java`
+
+Enum: `ADD`, `UPDATE`, `DROP`.
+
+### `OrderBookUpdate`
+`src/main/java/dev/abu/screener_backend/feed/OrderBookUpdate.java`
+
+Record: `(symbol, market, type, bids[], asks[])`. Used as both `snapshotMap` values and `pendingRef` values. Arrays are `ClassifiedLevel[TOP_LEVELS]` with null sentinels beyond actual count. Do not compare two `OrderBookUpdate` instances with `equals()` — record `equals()` on array fields is reference equality.
+
+### `OrderBookFeedStore`
+`src/main/java/dev/abu/screener_backend/feed/OrderBookFeedStore.java`
+
+`@Component`. Shared data structure between classifier (consumer threads) and broadcaster (sender thread).
+
+- `snapshotMap`: `ConcurrentHashMap<String, OrderBookUpdate>` — authoritative current active state; read on new-client connect
+- `pendingRef`: `AtomicReference<ConcurrentHashMap<String, OrderBookUpdate>>` — pending updates since last drain; swapped atomically by broadcaster
+
+**`submit(key, update)`** — coalesces via `ConcurrentHashMap.merge()`, then syncs `snapshotMap` directly from the incoming update's type (DROP → remove, ADD/UPDATE → put). The snapshotMap sync does not re-read `pendingRef`, so it is unaffected by the drain race. Coalescing: ADD + UPDATE in the same 100ms window delivers UPDATE to clients; the client is expected to treat UPDATE as ADD for an unknown symbol.
+
+**`drainPending()`** — atomic swap; returns the old map for broadcaster processing.
+
+**`getSnapshot()`** — unmodifiable view of `snapshotMap` for initial snapshot delivery.
+
+### `UserWebSocketSession`
+`src/main/java/dev/abu/screener_backend/feed/UserWebSocketSession.java`
+
+Stub — no real WebSocket session yet. `sendData()` is a no-op. `status` is `volatile` for Phase-5 readiness (WebSocket receive thread will flip it to `NEED_SNAPSHOT`). `seqNumber` is accessed only by the sender thread.
+
+### `OrderBookBroadcaster`
+`src/main/java/dev/abu/screener_backend/feed/OrderBookBroadcaster.java`
+
+`@Component`. Runs the 100ms drain loop on a `@Scheduled` thread. All broadcaster logic is single-threaded.
+
+- `drain()` — drains pending updates, sends SNAPSHOT to NEED_SNAPSHOT sessions and ADD/UPDATE/DROP messages to READY sessions
+- `addSession(session)` / `removeSession(session)` — Phase-5 hooks; safe from other threads via `CopyOnWriteArrayList`
+- JSON building uses `LinkedHashMap` + `tools.jackson.databind.ObjectMapper`
 
 ---
 
@@ -402,5 +478,6 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 | Orderbook sync state machine (PENDING → SYNCED) | **Complete (Phase 3)** |
 | Snapshot fetch queue with rate limiting | **Complete (Phase 3)** |
 | 30% price level filter | **Complete (Phase 3)** |
-| Order classification (Purple/Red/Yellow/Green/Gray tiers) | Not started |
-| User WebSocket server (push to subscribers) | Not started |
+| Order classification pipeline (classifier + feed store + broadcaster) | **Complete (Phase 4/5 stub)** |
+| Real classification thresholds (proximity %, notional USD) | Not started |
+| User WebSocket server (push to subscribers) | Not started — `UserWebSocketSession.sendData()` is a stub |

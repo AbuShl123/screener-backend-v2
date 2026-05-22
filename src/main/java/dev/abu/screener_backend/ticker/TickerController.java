@@ -17,7 +17,7 @@ import java.util.List;
  * been loaded and that spot/futures flags are applied correctly.
  */
 @RestController
-@RequestMapping("/api/screener")
+@RequestMapping("/api/v2")
 @RequiredArgsConstructor
 public class TickerController {
 
