@@ -4,7 +4,7 @@
 
 Phase 5 is the component that pushes classified order book events to connected browser or API clients. Everything upstream (Disruptor pipeline, order book sync, classifier, feed store, broadcaster drain loop) is already built. Phase 5 adds the server-side WebSocket endpoint and the per-session delivery machinery.
 
-This document records the architectural decisions and their reasoning. The companion implementation guide should be written before coding begins.
+This document records the architectural decisions and their reasoning. The companion implementation guide is `.claude/plans/websocket-server-phase5-impl.md`.
 
 ---
 
@@ -52,10 +52,11 @@ Java 21 virtual threads change the calculus. A virtual thread performs blocking 
 This means a simple blocking loop per session:
 
 ```
-while session is open:
-    json = sendQueue.take()         // parks (not blocks) if queue is empty
-    session.getBasicRemote()
-           .sendText(json)          // parks (not blocks) if TCP buffer is full
+while running:
+    batch = sendQueue.take()         // parks (not blocks) if queue is empty
+    for each msg in batch:
+        session.getBasicRemote()
+               .sendText(msg)        // parks (not blocks) if TCP buffer is full
 ```
 
 ...has the same OS-thread cost as the async callback approach, but is dramatically simpler code. No state machine, no callback coordination, no risk of violating the JSR 356 one-send-at-a-time constraint.
@@ -64,7 +65,7 @@ Virtual threads are cheap to create — the JVM manages them, not the OS. Having
 
 ### Thread creation
 
-Each virtual thread is started in `@OnOpen` via `Thread.ofVirtual().start(sendLoop)`. It exits when the session closes (the blocking calls throw, or `running` is set to false and the thread is interrupted). No thread pool or executor is needed — virtual threads are not pooled; they are created on demand and garbage-collected when done.
+Each virtual thread is started in `@OnOpen` via `Thread.ofVirtual().name(...).start(sendLoop)`. It exits when the session closes (the blocking calls throw, or `running` is set to false and the thread is interrupted). No thread pool or executor is needed — virtual threads are not pooled; they are created on demand and garbage-collected when done.
 
 ---
 
@@ -74,21 +75,21 @@ Each virtual thread is started in `@OnOpen` via `Thread.ofVirtual().start(sendLo
 
 The `@Scheduled` broadcaster drain loop runs every 100ms and must return quickly to keep the drain interval accurate. If the broadcaster called `sendText` directly, a stalled TCP connection would block the broadcaster thread for however long the OS takes to time out — blocking delivery to every other session until the stall resolves. The queue decouples the broadcaster from client I/O entirely.
 
-The broadcaster's only interaction with a session is `sendQueue.offer(json)`, which is a non-blocking in-memory operation. The virtual thread handles all I/O asynchronously relative to the broadcaster.
+The broadcaster's only interaction with a session is `sendQueue.offer(batch)`, which is a non-blocking in-memory operation. The virtual thread handles all I/O asynchronously relative to the broadcaster.
 
 ### Queue type and capacity
 
-`ArrayBlockingQueue<String>` — bounded, array-backed (no node allocation per element), thread-safe, supports blocking `take()` on the consumer side and non-blocking `offer()` on the producer side. Exactly the right fit.
+`ArrayBlockingQueue<List<String>>` — each slot holds one drain cycle's worth of pre-serialized, seq-injected messages. The unit is **drain cycles, not individual messages**.
 
-Capacity: 32–64 messages. Reasoning: the drain interval is 100ms. A typical burst might produce 20 updates per cycle. A capacity of 32 gives a minimum of ~1.5 seconds of headroom before a client is considered unresponsive; 64 gives ~3 seconds. A client with genuinely good connectivity will never accumulate more than a few entries. A client that fills the queue in under 1.5 seconds is not keeping up and should be disconnected.
+This distinction matters: in a volatile market a single drain cycle may produce 100+ ticker updates, all coalesced into one `List<String>`. An `ArrayBlockingQueue<String>` with capacity 32 would overflow immediately in that case. An `ArrayBlockingQueue<List<String>>` with capacity 32 gives 32 drain cycles — approximately 3.2 seconds of genuine backlog — regardless of how many tickers fired in any individual cycle.
+
+Capacity 32 is a predictable, market-activity-independent eviction threshold. A client with a good connection will never accumulate more than 1–2 queued batches. A client that falls 32 cycles behind is not keeping up.
 
 ### Slow client eviction
 
-When `sendQueue.offer(json)` returns `false` (queue full), the broadcaster calls `session.disconnect()` and `broadcaster.removeSession(session)`. This is the correct response — not dropping individual messages.
+When `sendQueue.offer(batch)` returns `false` (queue full), the broadcaster calls `session.disconnect()`. The broadcaster does **not** call `broadcaster.removeSession()` directly — that is the virtual thread's responsibility (see Session Lifecycle below).
 
 Dropping individual messages would leave the client with a partially inconsistent view of the order book that it has no way to recover from (it cannot know a message was dropped). Disconnection forces the client to reconnect and receive a full SNAPSHOT on reconnect, which restores a consistent state. Disconnection is strict but fair: a client with a good connection will never hit the limit.
-
-The alternative — dropping messages silently — would produce incorrect screener data on the client side with no error signal. This is worse than a disconnect.
 
 ---
 
@@ -99,49 +100,63 @@ The critical property is that the Disruptor consumer threads and the broadcaster
 | Thread | Work | Never touches |
 |--------|------|---------------|
 | Disruptor consumer | Parse diff, update TreeMap, run classifier, call `feedStore.submit()` | Queue, socket, broadcaster |
-| `@Scheduled` broadcaster | Drain pending map, build JSON bodies, call `session.enqueue()` | TCP socket, blocking I/O |
-| Session virtual thread | `queue.take()`, `session.sendText()` | OrderBook, classifier, feed store |
+| `@Scheduled` broadcaster | Drain pending map, build JSON bodies, call `session.enqueueBatch()` | TCP socket, blocking I/O |
+| Session virtual thread | `queue.take()`, `session.sendText()`, session close on exit | OrderBook, classifier, feed store |
 
-`session.enqueue()` (the broadcaster's side) is implemented as `sendQueue.offer(json)` — a non-blocking CAS on the queue's internal array. It will never block the broadcaster thread regardless of how many sessions exist or how slow any of them are.
+`session.enqueueBatch(batch)` is implemented as `sendQueue.offer(batch)` — a non-blocking CAS on the queue's internal array. It will never block the broadcaster thread regardless of how many sessions exist or how slow any of them are.
 
 ---
 
 ## Session Lifecycle
 
 ### @OnOpen
-1. Wrap the raw `jakarta.websocket.Session` in a new `UserWebSocketSession`.
-2. Start the virtual thread send loop for this session.
-3. Call `broadcaster.addSession(session)`.
-4. On the next broadcaster drain cycle (~100ms), the session's `NEED_SNAPSHOT` status will trigger a full snapshot delivery.
+1. Create a `UserWebSocketSession` wrapping the raw `jakarta.websocket.Session`.
+2. Store it in `session.getUserProperties()` for retrieval in subsequent callbacks.
+3. Call `userSession.startSendLoop()` — starts the virtual thread, which immediately parks on `queue.take()`.
+4. Call `broadcaster.addSession(userSession)`.
+5. On the next broadcaster drain cycle (~100ms), the session's `NEED_SNAPSHOT` status triggers a full snapshot delivery.
 
 ### @OnClose / @OnError
-1. Signal the send loop to exit (set `running = false`, interrupt the virtual thread).
-2. Call `broadcaster.removeSession(session)`.
-3. The `CopyOnWriteArrayList` in the broadcaster ensures this is safe from the WebSocket callback thread.
+1. Retrieve the `UserWebSocketSession` from `session.getUserProperties()`.
+2. Call `userSession.disconnect()` — sets `running = false` and interrupts the virtual thread (idempotent).
+3. Call `broadcaster.removeSession(userSession)` — removes from the `CopyOnWriteArrayList` (idempotent).
 
-### SNAPSHOT_REQUEST from client (future)
-When a connected client sends a `SNAPSHOT_REQUEST` message (e.g., after a processing gap), the `@OnMessage` handler sets `session.setStatus(NEED_SNAPSHOT)`. This write is safe because `status` is `volatile` (established in the `UserWebSocketSession` stub) and the broadcaster reads it once per drain cycle. On the next cycle the client receives a fresh SNAPSHOT and is reset to READY.
+Tomcat calls `@OnError` followed by `@OnClose` on errors, so both must be idempotent. All operations (`disconnect()`, `removeSession()`) satisfy this.
+
+### Eviction via broadcaster
+
+When `enqueueBatch()` returns false, the broadcaster calls `session.disconnect()`. The virtual thread, interrupted or finding `running = false`, exits its send loop and calls `cleanup()`, which closes the Jakarta session. Tomcat then fires `@OnClose`, which calls `broadcaster.removeSession()`. The broadcaster never calls `removeSession()` directly on the eviction path — that responsibility belongs entirely to `@OnClose`.
+
+### SNAPSHOT_REQUEST from client
+
+When a connected client sends a `SNAPSHOT_REQUEST` message, the `@OnMessage` handler sets `session.setStatus(NEED_SNAPSHOT)`. This write is safe because `status` is `volatile` and the broadcaster reads it once per drain cycle. On the next cycle the client receives a fresh SNAPSHOT and is reset to READY. This is the only client-to-server message currently handled; future message types will be dispatched via a JSON `{"type":"..."}` switch.
 
 ---
 
 ## Integration with Existing Components
 
 ### OrderBookBroadcaster
-The broadcaster already has `addSession()` and `removeSession()` hooks and the `CopyOnWriteArrayList` that makes concurrent add/remove safe. The existing `session.sendData(json)` call site becomes `session.enqueue(json)` (or the same method renamed — the broadcaster does not care whether the send is synchronous or queued). No other change to the broadcaster is needed.
+The broadcaster already has `addSession()` and `removeSession()` hooks and the `CopyOnWriteArrayList` that makes concurrent add/remove safe. The `session.sendData(json)` call site is replaced by `session.enqueueBatch(List<String>)`. The broadcaster builds update bodies once (shared across sessions), then per-session injects seq numbers and offers the resulting `List<String>` as a single batch. If `enqueueBatch` returns false, the broadcaster calls `session.disconnect()`.
+
+Dead sessions (`!session.isRunning()`) are skipped in the drain loop without calling `disconnect()` again — `@OnClose` is already in flight to remove them.
 
 ### UserWebSocketSession
-The stub needs to be replaced with a real implementation:
+The stub in `feed/` is deleted and replaced by a real implementation in `ws/`:
 - Holds a `jakarta.websocket.Session` reference
-- Holds an `ArrayBlockingQueue<String>`
-- `sendData(json)` becomes `enqueue(json)`: calls `offer()`, disconnects on false
+- Holds an `ArrayBlockingQueue<List<String>>` with capacity 32
+- `enqueueBatch(List<String>)`: non-blocking `offer()`; broadcaster calls `disconnect()` on false
 - `startSendLoop()`: starts the virtual thread
-- `disconnect()`: closes the Jakarta session and interrupts the virtual thread
+- `disconnect()`: sets `running = false` and interrupts the virtual thread (idempotent)
+- `cleanup()` (called from virtual thread's finally block): closes the Jakarta session, triggering `@OnClose`
 
 ### Spring Security
 `spring-boot-starter-websocket` integrates with Spring Security's filter chain. The `@ServerEndpoint` handshake goes through the same security context as HTTP requests. JWT authentication (planned for a later phase) will be applied at handshake time via a `HandshakeInterceptor` — the WebSocket session is authenticated once at connection, not per-message.
 
 ### ServerEndpointExporter
 Spring requires a `ServerEndpointExporter` bean to register `@ServerEndpoint` classes with the Tomcat container when running as an embedded server. This is a one-line `@Bean` in a `@Configuration` class.
+
+### SpringConfigurator
+`@ServerEndpoint` classes are instantiated by the WebSocket container (Tomcat), not by Spring. `SpringConfigurator` overrides `getEndpointInstance()` to delegate to the Spring application context, enabling `@Autowired` on the endpoint class. The endpoint is a `@Component` singleton — all connections share the one instance, which is safe because all per-session state lives in `UserWebSocketSession` (stored in `session.getUserProperties()`).
 
 ---
 

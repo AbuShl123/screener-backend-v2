@@ -59,6 +59,11 @@
 			<artifactId>disruptor</artifactId>
 			<version>4.0.0</version>
 		</dependency>
+		<!-- Jakarta WebSocket server — activates JSR 356 on the already-running Tomcat -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-websocket</artifactId>
+		</dependency>
 		<!-- java-websocket — low-level WebSocket client for Binance depth streams -->
 		<dependency>
 			<groupId>org.java-websocket</groupId>

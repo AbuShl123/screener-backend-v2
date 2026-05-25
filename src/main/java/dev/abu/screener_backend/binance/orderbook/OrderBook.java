@@ -28,22 +28,23 @@ public class OrderBook {
 
     @Getter
     final String symbol;
+
     @Getter
     final Market market;
+
     @Getter
     volatile OrderBookState state;
 
     private final double filterThreshold;
-    /**
-     * Live bids TreeMap. Must only be accessed by this shard's consumer thread.
-     */
+
+    /** Live bids TreeMap. Must only be accessed by this shard's consumer thread. */
     @Getter
     private final TreeMap<Double, PriceLevelEntry> bids; // reverseOrder → firstKey() = best bid
-    /**
-     * Live asks TreeMap. Must only be accessed by this shard's consumer thread.
-     */
+
+    /** Live asks TreeMap. Must only be accessed by this shard's consumer thread. */
     @Getter
     private final TreeMap<Double, PriceLevelEntry> asks; // natural order → firstKey() = best ask
+
     private final ArrayDeque<String> diffBuffer;         // raw diff JSON; populated only in SNAPSHOT_REQUESTED
 
     private long lastUpdateId;
@@ -60,7 +61,7 @@ public class OrderBook {
 
     // --- State transitions called from outside the consumer thread ---
 
-    /** Called by SnapshotFetchQueue scheduler thread. Volatile write: QUEUED → SNAPSHOT_REQUESTED. */
+    /** Called by SnapshotFetchQueue scheduler thread. */
     public void markSnapshotRequested() {
         log.debug("[{}/{}] OrderBook queued for snapshot", symbol, market);
         this.state = OrderBookState.SNAPSHOT_REQUESTED;
@@ -148,7 +149,7 @@ public class OrderBook {
             }
 
             state = OrderBookState.SYNCED;
-            log.info("[{}/{}] OrderBook SYNCED: — {} bid levels, {} ask levels", symbol, market, bids.size(), asks.size());
+            log.debug("[{}/{}] OrderBook SYNCED: — {} bid levels, {} ask levels", symbol, market, bids.size(), asks.size());
             return OrderBookResult.OK;
 
         } catch (IOException e) {
@@ -161,8 +162,8 @@ public class OrderBook {
 
     private OrderBookResult applyLiveDiff(String rawJson) {
         long U = 0, u = 0, pu = 0;
-        ArrayDeque<double[]> parsedBids = new ArrayDeque<>();
-        ArrayDeque<double[]> parsedAsks = new ArrayDeque<>();
+        boolean sequenceValidated = false;
+        boolean sequenceOk = true;
 
         try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
             p.nextToken();
@@ -170,11 +171,27 @@ public class OrderBook {
                 String field = p.currentName();
                 p.nextToken();
                 switch (field) {
-                    case "U" -> U = p.getLongValue();
-                    case "u" -> u = p.getLongValue();
+                    case "U"  -> U  = p.getLongValue();
+                    case "u"  -> u  = p.getLongValue();
                     case "pu" -> pu = p.getLongValue();
-                    case "b" -> parseLevelsInto(p, parsedBids);
-                    case "a" -> parseLevelsInto(p, parsedAsks);
+                    case "b", "a" -> {
+                        // Binance guarantees U/u/pu always precede b/a in the diff JSON object.
+                        if (!sequenceValidated) {
+                            sequenceValidated = true;
+                            if (market == Market.SPOT && U != lastUpdateId + 1) {
+                                log.warn("[{}/{}] Sequence gap: expected U={}, got U={}", symbol, market, lastUpdateId + 1, U);
+                                sequenceOk = false;
+                            } else if (market == Market.FUTURES && pu != lastUpdateId) {
+                                log.warn("[{}/{}] pu gap: expected pu={}, got pu={}", symbol, market, lastUpdateId, pu);
+                                sequenceOk = false;
+                            }
+                        }
+                        if (sequenceOk) {
+                            applyLevelsDirectly(p, "b".equals(field) ? bids : asks);
+                        } else {
+                            p.skipChildren();
+                        }
+                    }
                     default -> p.skipChildren();
                 }
             }
@@ -183,22 +200,72 @@ public class OrderBook {
             return resync();
         }
 
-        if (market == Market.SPOT && U != lastUpdateId + 1) {
-            log.warn("[{}/{}] Sequence gap: expected U={}, got U={}", symbol, market, lastUpdateId + 1, U);
-            return resync();
-        }
+        if (!sequenceOk) return resync();
 
-        if (market == Market.FUTURES && pu != lastUpdateId) {
-            log.warn("[{}/{}] pu gap: expected pu={}, got pu={}", symbol, market, lastUpdateId, pu);
-            return resync();
-        }
-
-        applyLevelUpdates(bids, parsedBids);
-        applyLevelUpdates(asks, parsedAsks);
         apply30PercentFilter();
         lastUpdateId = u;
-
         return OrderBookResult.OK;
+    }
+
+    private OrderBookResult applyLevelUpdatesFirstEvent(String rawJson) {
+        try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
+            p.nextToken();
+            while (p.nextToken() != JsonToken.END_OBJECT) {
+                String field = p.currentName();
+                p.nextToken();
+                switch (field) {
+                    case "b" -> applyLevelsDirectly(p, bids);
+                    case "a" -> applyLevelsDirectly(p, asks);
+                    default -> p.skipChildren();
+                }
+            }
+        } catch (IOException e) {
+            log.warn("[{}/{}] Failed to parse first buffered diff: {}", symbol, market, e.getMessage());
+            return OrderBookResult.DROPPED;
+        }
+        return OrderBookResult.OK;
+    }
+
+    private long parseSnapshotEvent(String rawJson, ArrayDeque<double[]> snapshotBids, ArrayDeque<double[]> snapshotAsks) {
+        long snapshotId = -1;
+        try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
+            p.nextToken();
+            while (p.nextToken() != JsonToken.END_OBJECT) {
+                String field = p.currentName();
+                p.nextToken();
+                switch (field) {
+                    case "lastUpdateId" -> snapshotId = p.getLongValue();
+                    case "bids" -> parseLevelsInto(p, snapshotBids);
+                    case "asks" -> parseLevelsInto(p, snapshotAsks);
+                    default -> p.skipChildren();
+                }
+            }
+        } catch (IOException e) {
+            log.warn("[{}/{}] Failed to parse snapshot event: {}", symbol, market, e.getMessage());
+            return -1;
+        }
+        return snapshotId;
+    }
+
+    private void applyLevelsDirectly(JsonParser p, TreeMap<Double, PriceLevelEntry> map) throws IOException {
+        while (p.nextToken() != JsonToken.END_ARRAY) {
+            p.nextToken();
+            double price = Double.parseDouble(p.getString());
+            p.nextToken();
+            double qty   = Double.parseDouble(p.getString());
+            p.nextToken(); // END_ARRAY of [price, qty]
+
+            if (qty == 0.0) {
+                map.remove(price);
+            } else {
+                PriceLevelEntry entry = map.get(price);
+                if (entry == null) {
+                    map.put(price, new PriceLevelEntry(qty, System.currentTimeMillis()));
+                } else {
+                    entry.quantity = qty;
+                }
+            }
+        }
     }
 
     /** Parse only the lowercase {@code u} (final update id) field from a diff JSON. */
@@ -232,6 +299,7 @@ public class OrderBook {
     /**
      * Parse bid or ask levels from a JSON array currently positioned at START_ARRAY.
      * Each level is a two-element string array: [price, qty].
+     * Used only by parseSnapshotEvent (cold path).
      */
     private void parseLevelsInto(JsonParser p, ArrayDeque<double[]> levels) throws IOException {
         while (p.nextToken() != JsonToken.END_ARRAY) {
@@ -242,23 +310,6 @@ public class OrderBook {
             double qty = Double.parseDouble(p.getString());
             p.nextToken(); // END_ARRAY
             levels.add(new double[]{price, qty});
-        }
-    }
-
-    private void applyLevelUpdates(TreeMap<Double, PriceLevelEntry> map, ArrayDeque<double[]> levels) {
-        for (double[] level : levels) {
-            double price = level[0];
-            double qty = level[1];
-            if (qty == 0.0) {
-                map.remove(price);
-            } else {
-                PriceLevelEntry entry = map.get(price);
-                if (entry == null) {
-                    map.put(price, new PriceLevelEntry(qty, System.currentTimeMillis()));
-                } else {
-                    entry.quantity = qty; // mutate in-place — zero allocation on update
-                }
-            }
         }
     }
 
@@ -293,66 +344,10 @@ public class OrderBook {
         }
     }
 
-    private OrderBookResult applyLevelUpdatesFirstEvent(String rawJson) {
-        ArrayDeque<double[]> parsedBids = new ArrayDeque<>();
-        ArrayDeque<double[]> parsedAsks = new ArrayDeque<>();
-
-        try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
-            p.nextToken();
-            while (p.nextToken() != JsonToken.END_OBJECT) {
-                String field = p.currentName();
-                p.nextToken();
-                switch (field) {
-                    case "b" -> parseLevelsInto(p, parsedBids);
-                    case "a" -> parseLevelsInto(p, parsedAsks);
-                    default -> p.skipChildren();
-                }
-            }
-        } catch (IOException e) {
-            log.warn("[{}/{}] Failed to parse first buffered diff: {}", symbol, market, e.getMessage());
-            return OrderBookResult.DROPPED;
-        }
-
-        applyLevelUpdates(bids, parsedBids);
-        applyLevelUpdates(asks, parsedAsks);
-        return OrderBookResult.OK;
-    }
-
-    private long parseSnapshotEvent(String rawJson, ArrayDeque<double[]> snapshotBids, ArrayDeque<double[]> snapshotAsks) {
-        long snapshotId = -1;
-        try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
-            p.nextToken();
-            while (p.nextToken() != JsonToken.END_OBJECT) {
-                String field = p.currentName();
-                p.nextToken();
-                switch (field) {
-                    case "lastUpdateId" -> snapshotId = p.getLongValue();
-                    case "bids" -> parseLevelsInto(p, snapshotBids);
-                    case "asks" -> parseLevelsInto(p, snapshotAsks);
-                    default -> p.skipChildren();
-                }
-            }
-        } catch (IOException e) {
-            log.warn("[{}/{}] Failed to parse snapshot event: {}", symbol, market, e.getMessage());
-            return -1;
-        }
-        return snapshotId;
-    }
-
-    /**
-     * Best-effort snapshot of bids for debug/observability use.
-     * Returns a copy sorted highest-price-first (best bid first).
-     * May be slightly stale if called concurrently with a consumer write.
-     */
     public TreeMap<Double, PriceLevelEntry> snapshotBids() {
         return new TreeMap<>(bids);
     }
 
-    /**
-     * Best-effort snapshot of asks for debug/observability use.
-     * Returns a copy sorted lowest-price-first (best ask first).
-     * May be slightly stale if called concurrently with a consumer write.
-     */
     public TreeMap<Double, PriceLevelEntry> snapshotAsks() {
         return new TreeMap<>(asks);
     }

@@ -55,20 +55,24 @@ src/
 │   │   ├── FeedEventType.java
 │   │   ├── OrderBookBroadcaster.java
 │   │   ├── OrderBookFeedStore.java
-│   │   ├── OrderBookUpdate.java
-│   │   └── UserWebSocketSession.java
-│   └── ticker/
-│       ├── Ticker.java
-│       ├── TickerController.java
-│       ├── TickerRefreshScheduler.java
-│       ├── TickerRegistry.java
-│       ├── TickerService.java
-│       └── TickersRefreshedEvent.java
+│   │   └── OrderBookUpdate.java
+│   ├── ticker/
+│   │   ├── Ticker.java
+│   │   ├── TickerController.java
+│   │   ├── TickerRefreshScheduler.java
+│   │   ├── TickerRegistry.java
+│   │   ├── TickerService.java
+│   │   └── TickersRefreshedEvent.java
+│   └── ws/
+│       ├── WebSocketConfig.java
+│       ├── CustomSpringConfigurator.java
+│       ├── ScreenerWebSocketEndpoint.java
+│       └── UserWebSocketSession.java
 └── test/java/dev/abu/screener_backend/
     └── ScreenerBackendApplicationTests.java
 ```
 
-**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), orderbook management with sync state machine and snapshot fetch queue (Phase 3), and classification + feed pipeline stub (Phase 4/5) are complete. Real classification thresholds and the WebSocket server are **not yet implemented**.
+**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), orderbook management with sync state machine and snapshot fetch queue (Phase 3), classification + feed pipeline stub (Phase 4/5), and outbound WebSocket server (Phase 5) are complete. Real classification thresholds are **not yet implemented**.
 
 ---
 
@@ -324,19 +328,63 @@ Record: `(symbol, market, type, bids[], asks[])`. Used as both `snapshotMap` val
 
 **`getSnapshot()`** — unmodifiable view of `snapshotMap` for initial snapshot delivery.
 
-### `UserWebSocketSession`
-`src/main/java/dev/abu/screener_backend/feed/UserWebSocketSession.java`
-
-Stub — no real WebSocket session yet. `sendData()` is a no-op. `status` is `volatile` for Phase-5 readiness (WebSocket receive thread will flip it to `NEED_SNAPSHOT`). `seqNumber` is accessed only by the sender thread.
-
 ### `OrderBookBroadcaster`
 `src/main/java/dev/abu/screener_backend/feed/OrderBookBroadcaster.java`
 
-`@Component`. Runs the 100ms drain loop on a `@Scheduled` thread. All broadcaster logic is single-threaded.
+`@Component`. Runs the 100ms drain loop on a single `@Scheduled` thread. All broadcaster logic is single-threaded — no synchronization inside this class.
 
-- `drain()` — drains pending updates, sends SNAPSHOT to NEED_SNAPSHOT sessions and ADD/UPDATE/DROP messages to READY sessions
-- `addSession(session)` / `removeSession(session)` — Phase-5 hooks; safe from other threads via `CopyOnWriteArrayList`
-- JSON building uses `LinkedHashMap` + `tools.jackson.databind.ObjectMapper`
+- `drain()` — drains `feedStore.drainPending()`, iterates sessions, delivers a SNAPSHOT batch to `NEED_SNAPSHOT` sessions and per-session UPDATE batches to `READY` sessions via `session.enqueueBatch()`. If `enqueueBatch()` returns `false` (queue full or session shutting down), calls `session.disconnect()` to evict the slow client.
+- `addSession(session)` / `removeSession(session)` — called from the WebSocket endpoint on connect/disconnect; thread-safe via `CopyOnWriteArrayList`.
+- `@PreDestroy shutdown()` — signals all sessions to disconnect on Spring context shutdown.
+- JSON building uses a reusable `StringBuilder sb` (4096-byte initial capacity) — reset and reused within each drain cycle. `injectSeq()` prepends `{"seq":N,` to a pre-built body string.
+
+The broadcaster never touches the TCP socket. Its only per-session interaction is `enqueueBatch()` — a non-blocking in-memory offer.
+
+---
+
+## `ws` — Outbound WebSocket Server (Phase 5)
+
+For a full description of the design, concurrency model, message protocol, and session lifecycle, see `.claude/docs/websocket-server.md`.
+
+### `WebSocketConfig`
+`src/main/java/dev/abu/screener_backend/ws/WebSocketConfig.java`
+
+`@Configuration`. Declares a single `ServerEndpointExporter` bean. This tells Spring to scan for `@ServerEndpoint`-annotated classes and register them with the embedded Tomcat WebSocket container. Without it, `ScreenerWebSocketEndpoint` is compiled and discovered by Spring but never activated by Tomcat.
+
+### `CustomSpringConfigurator`
+`src/main/java/dev/abu/screener_backend/ws/CustomSpringConfigurator.java`
+
+`@Component`. Bridges Spring DI into Tomcat's WebSocket lifecycle. Tomcat instantiates `@ServerEndpoint` classes itself, bypassing Spring — which would leave `@Autowired` fields null. This class stores the `ApplicationContext` in a `static volatile` field via `ApplicationContextAware.setApplicationContext()`. When a connection arrives, Tomcat calls `getEndpointInstance(ScreenerWebSocketEndpoint.class)`, which returns `context.getBean(ScreenerWebSocketEndpoint.class)` — the Spring singleton with all dependencies already injected.
+
+Replaces `SpringConfigurator` from `spring-websocket`, which fails in Spring Boot's embedded Tomcat because it looks up the `ApplicationContext` via `ContextLoaderListener` (which does not exist in embedded mode).
+
+### `ScreenerWebSocketEndpoint`
+`src/main/java/dev/abu/screener_backend/ws/ScreenerWebSocketEndpoint.java`
+
+Singleton `@Component` + `@ServerEndpoint("/ws")`. All client connections share one instance — safe because it holds no per-connection mutable state. Per-session state is stored in `session.getUserProperties()` under the key `"session"`.
+
+| Callback | Responsibility |
+|---|---|
+| `@OnOpen` | Create `UserWebSocketSession`, store in `getUserProperties`, start send loop, register with broadcaster |
+| `@OnClose` | Retrieve session, call `disconnect()`, call `broadcaster.removeSession()` — sole owner of `removeSession()` |
+| `@OnError` | Same as `@OnClose`; Tomcat fires both on error, both are idempotent |
+| `@OnMessage` | Currently handles only `SNAPSHOT_REQUEST` (raw string); sets session status to `NEED_SNAPSHOT` |
+
+### `UserWebSocketSession`
+`src/main/java/dev/abu/screener_backend/ws/UserWebSocketSession.java`
+
+Per-session object created in `@OnOpen` and stored in `session.getUserProperties()`. Holds:
+
+- `jakartaSession` — the underlying Tomcat `jakarta.websocket.Session`
+- `sendQueue` — `ArrayBlockingQueue<List<String>>` with capacity 32; each slot is one drain cycle's worth of pre-serialized messages
+- `status` (`volatile`) — `NEED_SNAPSHOT` or `READY`; readable by broadcaster, writable by `@OnMessage` Tomcat thread
+- `running` (`volatile`) — send loop exit signal; written by broadcaster (via `disconnect()`), read by virtual thread
+- `seqNumber` — per-session monotonic counter; accessed exclusively by the broadcaster thread (not `volatile`); reset by `resetSeq()` before snapshot delivery, incremented by `getAndIncrementSeq()`
+- `virtualThread` (`volatile`) — reference to the send loop thread for interruption
+
+Key methods: `startSendLoop()`, `enqueueBatch(List<String>)`, `disconnect()`, `resetSeq()`, `getAndIncrementSeq()`.
+
+The send loop runs on a Java 21 virtual thread: `sendQueue.take()` parks (not OS-blocks) when empty; `sendText()` parks when the TCP buffer is full. A stalled client parks only its own virtual thread — the broadcaster and all other sessions are unaffected.
 
 ---
 
@@ -479,5 +527,5 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 | Snapshot fetch queue with rate limiting | **Complete (Phase 3)** |
 | 30% price level filter | **Complete (Phase 3)** |
 | Order classification pipeline (classifier + feed store + broadcaster) | **Complete (Phase 4/5 stub)** |
+| Outbound WebSocket server (`ws/` package, virtual-thread delivery) | **Complete (Phase 5)** |
 | Real classification thresholds (proximity %, notional USD) | Not started |
-| User WebSocket server (push to subscribers) | Not started — `UserWebSocketSession.sendData()` is a stub |

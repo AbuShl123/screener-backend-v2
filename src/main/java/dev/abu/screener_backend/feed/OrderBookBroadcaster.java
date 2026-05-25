@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.feed;
 
+import dev.abu.screener_backend.ws.UserWebSocketSession;
+import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -41,21 +43,39 @@ public class OrderBookBroadcaster {
         List<String> updateBodies = null; // built once, on the first READY session
 
         for (UserWebSocketSession session : sessions) {
+            if (!session.isRunning()) continue; // shutting down — @OnClose will remove it
+
             if (session.getStatus() == UserWebSocketSession.Status.NEED_SNAPSHOT) {
                 if (snapshotBody == null) {
                     snapshotBody = buildSnapshotBody(feedStore.getSnapshot());
                 }
-                session.sendData(injectSeq(snapshotBody, session.getAndIncrementSeq()));
-                session.setStatus(UserWebSocketSession.Status.READY);
-                // Do NOT also send pending updates — they're already reflected in the snapshot
+                session.resetSeq(); // broadcaster thread resets seq — keeps seqNumber single-threaded
+                String seqMsg = injectSeq(snapshotBody, session.getAndIncrementSeq());
+                if (!session.enqueueBatch(List.of(seqMsg))) {
+                    session.disconnect();
+                } else {
+                    session.setStatus(UserWebSocketSession.Status.READY);
+                    // Do NOT also send pending updates — they're already reflected in the snapshot
+                }
             } else if (!pending.isEmpty()) {
                 if (updateBodies == null) {
                     updateBodies = buildAllUpdateBodies(pending);
                 }
+                List<String> batch = new ArrayList<>(updateBodies.size());
                 for (String body : updateBodies) {
-                    session.sendData(injectSeq(body, session.getAndIncrementSeq()));
+                    batch.add(injectSeq(body, session.getAndIncrementSeq()));
+                }
+                if (!session.enqueueBatch(batch)) {
+                    session.disconnect();
                 }
             }
+        }
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        for (UserWebSocketSession session : sessions) {
+            session.disconnect();
         }
     }
 

@@ -1,0 +1,105 @@
+package dev.abu.screener_backend.ws;
+
+import jakarta.websocket.CloseReason;
+import jakarta.websocket.Session;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+
+@Slf4j
+public class UserWebSocketSession {
+
+    public enum Status { NEED_SNAPSHOT, READY }
+
+    private static final int QUEUE_CAPACITY = 32;
+
+    private final Session jakartaSession;
+    private final ArrayBlockingQueue<List<String>> sendQueue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+
+    @Setter @Getter
+    private volatile Status status = Status.NEED_SNAPSHOT;
+
+    @Getter
+    private volatile boolean running = true;
+
+    private volatile Thread virtualThread;
+
+    // Accessed only by the broadcaster's @Scheduled thread — no atomics needed.
+    // resetSeq() and getAndIncrementSeq() are both called exclusively from the broadcaster.
+    // setStatus() does NOT touch this field — it can be called from the @OnMessage Tomcat thread.
+    private int seqNumber = 0;
+
+    public UserWebSocketSession(Session jakartaSession) {
+        this.jakartaSession = jakartaSession;
+    }
+
+    // ---- Called by broadcaster (@Scheduled thread) ----
+
+    /** Called only by the broadcaster's @Scheduled thread, right before snapshot delivery. */
+    public void resetSeq() { seqNumber = 0; }
+
+    /** Increments before returning, matching existing broadcaster convention. */
+    public int getAndIncrementSeq() { return ++seqNumber; }
+
+    /**
+     * Offers a pre-serialized, seq-injected batch to the send queue.
+     * Non-blocking — returns false if the queue is full or the session is shutting down.
+     * The broadcaster must call disconnect() when this returns false (queue-full eviction).
+     */
+    public boolean enqueueBatch(List<String> batch) {
+        if (!running) return false;
+        return sendQueue.offer(batch);
+    }
+
+    // ---- Lifecycle ----
+
+    /** Called once from @OnOpen. Starts the virtual thread send loop. */
+    public void startSendLoop() {
+        virtualThread = Thread.ofVirtual()
+                .name("ws-send-" + jakartaSession.getId())
+                .start(this::sendLoop);
+    }
+
+    /**
+     * Signals the send loop to stop. Idempotent — safe to call multiple times.
+     * The virtual thread will call cleanup() which closes the Jakarta session,
+     * causing Tomcat to invoke @OnClose, which calls broadcaster.removeSession().
+     */
+    public void disconnect() {
+        running = false;
+        Thread vt = virtualThread;
+        if (vt != null) vt.interrupt();
+    }
+
+    // ---- Send loop (virtual thread) ----
+
+    private void sendLoop() {
+        try {
+            while (running) {
+                List<String> batch = sendQueue.take();
+                for (String msg : batch) {
+                    jakartaSession.getBasicRemote().sendText(msg);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException e) {
+            log.debug("Send error on session {}: {}", jakartaSession.getId(), e.getMessage());
+        } finally {
+            cleanup();
+        }
+    }
+
+    private void cleanup() {
+        running = false;
+        try {
+            if (jakartaSession.isOpen()) {
+                jakartaSession.close(new CloseReason(CloseReason.CloseCodes.GOING_AWAY, ""));
+            }
+        } catch (IOException ignored) {}
+    }
+}

@@ -93,9 +93,9 @@ public class TickerService {
         log.debug("Ticker map built: {} total ({} with spot)", result.size(),
                 result.values().stream().filter(Ticker::hasSpot).count());
 
-//        return result.entrySet().stream().limit(100).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        return result.entrySet().stream().limit(3).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 //        return result.entrySet().stream().filter((k) -> k.getKey().equalsIgnoreCase("BTCUSDT"))
 //                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        return result;
+//        return result;
     }
 }
