@@ -4,5 +4,6 @@ public record ClassifiedLevel(
         double price,
         double quantity,
         int tier,
-        long firstSeenMillis
+        long firstSeenMillis,
+        double distance
 ) {}

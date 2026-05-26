@@ -1,5 +1,6 @@
 package dev.abu.screener_backend.binance.orderbook;
 
+import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
 import dev.abu.screener_backend.binance.websocket.Market;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -179,10 +180,10 @@ public class OrderBook {
                         if (!sequenceValidated) {
                             sequenceValidated = true;
                             if (market == Market.SPOT && U != lastUpdateId + 1) {
-                                log.warn("[{}/{}] Sequence gap: expected U={}, got U={}", symbol, market, lastUpdateId + 1, U);
+                                log.debug("[{}/{}] Sequence gap: expected U={}, got U={}", symbol, market, lastUpdateId + 1, U);
                                 sequenceOk = false;
                             } else if (market == Market.FUTURES && pu != lastUpdateId) {
-                                log.warn("[{}/{}] pu gap: expected pu={}, got pu={}", symbol, market, lastUpdateId, pu);
+                                log.debug("[{}/{}] pu gap: expected pu={}, got pu={}", symbol, market, lastUpdateId, pu);
                                 sequenceOk = false;
                             }
                         }
@@ -250,9 +251,18 @@ public class OrderBook {
     private void applyLevelsDirectly(JsonParser p, TreeMap<Double, PriceLevelEntry> map) throws IOException {
         while (p.nextToken() != JsonToken.END_ARRAY) {
             p.nextToken();
-            double price = Double.parseDouble(p.getString());
+            char[] buf = p.getStringCharacters();
+            int offset = p.getStringOffset();
+            int len    = p.getStringLength();
+//            double price = Double.parseDouble(p.getString());
+            double price = JavaDoubleParser.parseDouble(buf, offset, len);
+
             p.nextToken();
-            double qty   = Double.parseDouble(p.getString());
+            buf = p.getStringCharacters();
+            offset = p.getStringOffset();
+            len    = p.getStringLength();
+//            double qty   = Double.parseDouble(p.getString());
+            double qty   = JavaDoubleParser.parseDouble(buf, offset, len);
             p.nextToken(); // END_ARRAY of [price, qty]
 
             if (qty == 0.0) {
@@ -319,16 +329,28 @@ public class OrderBook {
         double midPrice = (bids.firstKey() + asks.firstKey()) / 2.0;
         double lower = midPrice * (1.0 - filterThreshold);
         double upper = midPrice * (1.0 + filterThreshold);
-        bids.entrySet().removeIf(e -> {
-            if (e.getKey() < lower || e.getKey() > upper) return true;
-            e.getValue().distance = Math.abs(e.getKey() - midPrice) / midPrice * 100.0;
-            return false;
-        });
-        asks.entrySet().removeIf(e -> {
-            if (e.getKey() < lower || e.getKey() > upper) return true;
-            e.getValue().distance = Math.abs(e.getKey() - midPrice) / midPrice * 100.0;
-            return false;
-        });
+
+        var bidIt = bids.entrySet().iterator();
+        while (bidIt.hasNext()) {
+            var e = bidIt.next();
+            double key = e.getKey();
+            if (key < lower || key > upper) {
+                bidIt.remove();
+            } else {
+                e.getValue().distance = Math.abs(key - midPrice) / midPrice * 100.0;
+            }
+        }
+
+        var askIt = asks.entrySet().iterator();
+        while (askIt.hasNext()) {
+            var e = askIt.next();
+            double key = e.getKey();
+            if (key < lower || key > upper) {
+                askIt.remove();
+            } else {
+                e.getValue().distance = Math.abs(key - midPrice) / midPrice * 100.0;
+            }
+        }
     }
 
     private void discardInvalidDiffsFromBuffer(long snapshotId) throws IOException {

@@ -191,8 +191,10 @@ All messages are JSON strings. Every message has a `seq` field injected as the f
 
 Each level object in `bids`/`asks`:
 ```json
-{"price": 65432.1, "quantity": 0.85, "tier": 2, "firstSeenMillis": 1716680000000}
+{"price": 65432.1, "quantity": 0.85, "tier": 2, "firstSeenMillis": 1716680000000, "distance": 1.23}
 ```
+
+`distance` is the absolute distance from mid-price expressed as a percentage, rounded to 2 decimal places (e.g. `1.23` means 1.23%).
 
 ### Client → Server
 

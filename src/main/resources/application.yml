@@ -24,7 +24,7 @@ screener:
 
   orderbook:
     # Price levels further than this fraction from the mid-price are discarded to bound memory.
-    price-filter-threshold: 0.30
+    price-filter-threshold: 0.055
     # Snapshot dispatch rate per market (milliseconds).
     spot-snapshot-dispatch-rate-ms: 6000
     futures-snapshot-dispatch-rate-ms: 6000
@@ -38,8 +38,8 @@ screener:
   websocket:
     spot-stream-url: wss://stream.binance.com/ws
     futures-stream-url: wss://fstream.binance.com/ws
-    # Kept well below Binance's 1024 hard limit
-    max-streams-per-connection: 300
+    connection-count-spot: 1
+    connection-count-futures: 3
     subscribe-chunk-size: 400
     reconnect-initial-delay-ms: 100
     reconnect-max-delay-ms: 30000

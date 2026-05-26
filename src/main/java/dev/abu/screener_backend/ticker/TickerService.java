@@ -41,6 +41,10 @@ public class TickerService {
     private static final String QUOTE_ASSET    = "USDT";
     private static final String CONTRACT_TYPE  = "PERPETUAL";
 
+    private static final Set<String> EXCLUDED_SYMBOLS = Set.of(
+            "USDCUSDT", "FDUSDUSDT", "DAIUSDT", "PYUSDUSDT", "USD1USDT"
+    );
+
     private final BinanceRestClient      restClient;
     private final TickerRegistry         registry;
     private final ApplicationEventPublisher eventPublisher;
@@ -77,6 +81,7 @@ public class TickerService {
                 .filter(s -> CONTRACT_TYPE.equals(s.getContractType()))
                 .filter(s -> QUOTE_ASSET.equals(s.getQuoteAsset()))
                 .map(BinanceSymbolDto::getSymbol)
+                .filter(sym -> !EXCLUDED_SYMBOLS.contains(sym))
                 .collect(Collectors.toSet());
 
         Set<String> spotSymbols = spot.getSymbols().stream()
@@ -93,9 +98,9 @@ public class TickerService {
         log.debug("Ticker map built: {} total ({} with spot)", result.size(),
                 result.values().stream().filter(Ticker::hasSpot).count());
 
-        return result.entrySet().stream().limit(3).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+//        return result.entrySet().stream().limit(3).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 //        return result.entrySet().stream().filter((k) -> k.getKey().equalsIgnoreCase("BTCUSDT"))
 //                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-//        return result;
+        return result;
     }
 }

@@ -33,16 +33,15 @@ public class BinanceConnectionPool {
 
     public void start(Collection<Ticker> tickers) {
         List<String> symbols = tickers.stream().map(Ticker::symbol).toList();
-        int maxPerConnection = props.maxStreamsPerConnection();
-        int connectionCount = (symbols.size() + maxPerConnection - 1) / maxPerConnection;
+        int connectionCount = market == Market.SPOT ? props.connectionCountSpot() : props.connectionCountFutures();
 
         log.info("[{}] Starting {} connection(s) for {} tickers", market, connectionCount, symbols.size());
 
         String baseUrl = market == Market.SPOT ? props.spotStreamUrl() : props.futuresStreamUrl();
 
         for (int i = 0; i < connectionCount; i++) {
-            int from = i * maxPerConnection;
-            int to = Math.min(from + maxPerConnection, symbols.size());
+            int from = i * symbols.size() / connectionCount;
+            int to = (i + 1) * symbols.size() / connectionCount;
             List<String> batch = symbols.subList(from, to);
 
             try {

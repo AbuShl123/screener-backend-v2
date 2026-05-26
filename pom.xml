@@ -97,6 +97,14 @@
 			<scope>compile</scope>
 		</dependency>
 
+		<!-- For parsing char[] to double without intermediate string allocations -->
+		<dependency>
+			<groupId>ch.randelshofer</groupId>
+			<artifactId>fastdoubleparser</artifactId>
+			<version>2.0.1</version>
+			<scope>compile</scope>
+		</dependency>
+
 		<!-- DB: commented out until database is configured
         <dependency>
            <groupId>org.springframework.boot</groupId>

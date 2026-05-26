@@ -6,7 +6,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record WebSocketProperties(
         String spotStreamUrl,
         String futuresStreamUrl,
-        int maxStreamsPerConnection,
+        int connectionCountSpot,
+        int connectionCountFutures,
         int subscribeChunkSize,
         long reconnectInitialDelayMs,
         long reconnectMaxDelayMs,
