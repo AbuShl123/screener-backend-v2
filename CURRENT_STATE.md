@@ -12,6 +12,18 @@ src/
 │   ├── ScreenerBackendApplication.java
 │   ├── analysis/
 │   │   └── OrderBookClassifier.java
+│   ├── auth/
+│   │   ├── AuthController.java
+│   │   ├── AuthService.java
+│   │   ├── AuthenticatedUser.java
+│   │   ├── JwtAuthenticationFilter.java
+│   │   ├── JwtService.java
+│   │   └── dto/
+│   │       ├── AuthResponse.java
+│   │       ├── LoginRequest.java
+│   │       ├── RefreshRequest.java
+│   │       ├── RegisterRequest.java
+│   │       └── UserProfileResponse.java
 │   ├── binance/
 │   │   ├── api/
 │   │   │   ├── BinanceApiException.java
@@ -46,6 +58,7 @@ src/
 │   ├── config/
 │   │   ├── BinanceApiProperties.java
 │   │   ├── DisruptorProperties.java
+│   │   ├── JwtProperties.java
 │   │   ├── OrderbookProperties.java
 │   │   ├── SecurityConfig.java
 │   │   ├── WebClientConfig.java
@@ -63,16 +76,27 @@ src/
 │   │   ├── TickerRegistry.java
 │   │   ├── TickerService.java
 │   │   └── TickersRefreshedEvent.java
+│   ├── user/
+│   │   ├── RefreshToken.java
+│   │   ├── RefreshTokenRepository.java
+│   │   ├── User.java
+│   │   ├── UserRepository.java
+│   │   └── UserRole.java
 │   └── ws/
 │       ├── WebSocketConfig.java
 │       ├── CustomSpringConfigurator.java
 │       ├── ScreenerWebSocketEndpoint.java
 │       └── UserWebSocketSession.java
+├── main/resources/
+│   ├── application.yml
+│   └── db/migration/
+│       ├── V1__create_users.sql
+│       └── V2__create_refresh_tokens.sql
 └── test/java/dev/abu/screener_backend/
     └── ScreenerBackendApplicationTests.java
 ```
 
-**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), orderbook management with sync state machine and snapshot fetch queue (Phase 3), classification + feed pipeline stub (Phase 4/5), and outbound WebSocket server (Phase 5) are complete. Real classification thresholds are **not yet implemented**.
+**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), orderbook management with sync state machine and snapshot fetch queue (Phase 3), classification + feed pipeline stub (Phase 4/5), outbound WebSocket server (Phase 5), and JWT-based auth with PostgreSQL user storage (Phase 6) are complete. Real classification thresholds are **not yet implemented**.
 
 ---
 
@@ -82,6 +106,86 @@ src/
 `src/main/java/dev/abu/screener_backend/ScreenerBackendApplication.java`
 
 Spring Boot entry point. Runs as a servlet/Tomcat application (not Netty) even though `spring-boot-starter-webflux` is on the classpath — the `spring.main.web-application-type=servlet` property forces this. `@EnableScheduling` activates the ticker refresh scheduler and snapshot dispatch schedulers.
+
+---
+
+## `auth` — Authentication & Token Management (Phase 6)
+
+### `JwtService`
+`src/main/java/dev/abu/screener_backend/auth/JwtService.java`
+
+`@Service`. Handles all JWT operations using Nimbus JOSE JWT with HS256 signing. Key responsibilities:
+- `generateAccessToken(User)` — builds a signed JWT with `sub` (UUID), `email`, `role`, `iat`, `exp`; access tokens expire in **3 hours**
+- `generateRawRefreshToken()` — produces a 32-byte `SecureRandom` value, Base64-URL encoded
+- `hashToken(String)` — SHA-256 hex digest; used to store refresh tokens safely in the DB
+- `validateAndExtract(String)` — parses and verifies a JWT, checks expiry, returns `AuthenticatedUser` or `null` on any failure
+
+The signing key is an `OctetSequenceKey` built from the base64-decoded `screener.jwt.secret` property.
+
+### `JwtAuthenticationFilter`
+`src/main/java/dev/abu/screener_backend/auth/JwtAuthenticationFilter.java`
+
+`OncePerRequestFilter`. Reads the `Authorization: Bearer <token>` header, validates with `JwtService.validateAndExtract()`, and sets a `UsernamePasswordAuthenticationToken` on `SecurityContextHolder`. **No database call per request** — all needed data is in the JWT claims. Instantiated directly in `SecurityConfig` (not a `@Bean`) to prevent double-registration as a servlet filter.
+
+### `AuthService`
+`src/main/java/dev/abu/screener_backend/auth/AuthService.java`
+
+`@Service @Transactional`. Implements register, login, refresh, logout, and user lookup. Stores one refresh token per user (old token invalidated on each new login). Throws `ResponseStatusException` with appropriate HTTP status for all error cases.
+
+- `register(RegisterRequest)` — validates fields, checks email uniqueness (409 on conflict), BCrypt-hashes the password, persists the user, issues a token pair
+- `login(LoginRequest)` — looks up user by email, verifies BCrypt hash (401 on mismatch), issues a token pair
+- `refresh(String rawToken)` — SHA-256 hashes the incoming token, looks it up in DB, checks expiry, issues a new token pair
+- `logout(UUID userId)` — deletes the user's refresh token row; no-op if none exists
+- Private `issueTokenPair(User)` — deletes any existing refresh token for the user, creates a new one, returns `AuthResponse`
+
+### `AuthController`
+`src/main/java/dev/abu/screener_backend/auth/AuthController.java`
+
+`@RestController` at `/api/auth`. Five endpoints:
+
+| Method | Path | Auth | Response |
+|--------|------|------|----------|
+| `POST` | `/api/auth/register` | Public | 201 + `AuthResponse` |
+| `POST` | `/api/auth/login` | Public | 200 + `AuthResponse` |
+| `POST` | `/api/auth/refresh` | Public | 200 + `AuthResponse` |
+| `POST` | `/api/auth/logout` | Bearer JWT | 204 |
+| `GET` | `/api/auth/me` | Bearer JWT | 200 + `UserProfileResponse` |
+
+`AuthResponse` carries `accessToken`, `refreshToken` (raw value), and `expiresIn` (seconds).
+
+### `AuthenticatedUser`
+`src/main/java/dev/abu/screener_backend/auth/AuthenticatedUser.java`
+
+Record: `(userId, email, role)`. Used as the Spring Security principal set by `JwtAuthenticationFilter` and retrieved from `Authentication.getPrincipal()` in controller methods.
+
+---
+
+## `user` — User Domain
+
+### `User`
+`src/main/java/dev/abu/screener_backend/user/User.java`
+
+JPA entity mapped to the `users` table. Fields: `id` (UUID, generated), `firstName`, `lastName`, `email` (unique), `passwordHash` (BCrypt), `role` (`UserRole` enum, STRING-mapped), `enabled`, `createdAt`. `@PrePersist` sets `createdAt`, defaults `role` to `USER`, and sets `enabled = true`.
+
+### `UserRole`
+`src/main/java/dev/abu/screener_backend/user/UserRole.java`
+
+Enum with one value: `USER`. Extend with `ADMIN`, `PREMIUM` etc. as needed.
+
+### `RefreshToken`
+`src/main/java/dev/abu/screener_backend/user/RefreshToken.java`
+
+JPA entity mapped to `refresh_tokens`. Fields: `id`, `user` (eager `@ManyToOne` → `users`), `tokenHash` (SHA-256 of the raw token), `expiresAt`, `createdAt`. Only the hash is stored — raw tokens never persist.
+
+### `UserRepository`
+`src/main/java/dev/abu/screener_backend/user/UserRepository.java`
+
+`JpaRepository<User, UUID>`. Derived queries: `findByEmail`, `existsByEmail`.
+
+### `RefreshTokenRepository`
+`src/main/java/dev/abu/screener_backend/user/RefreshTokenRepository.java`
+
+`JpaRepository<RefreshToken, UUID>`. `findByTokenHash` for lookup; `deleteByUserId(UUID)` via `@Modifying @Query` for efficient single-statement delete without a prior SELECT.
 
 ---
 
@@ -465,10 +569,15 @@ Note: `spot-snapshot-queue-size` and `futures-snapshot-queue-size` are read via 
 
 Java record bound from `screener.websocket.*`: stream URLs, max streams per connection, subscribe chunk size, reconnect delays.
 
+### `JwtProperties`
+`src/main/java/dev/abu/screener_backend/config/JwtProperties.java`
+
+Java record bound from `screener.jwt.*`: `secret` (base64-encoded signing key), `accessTokenExpiry` (Duration, default 3 h), `refreshTokenExpiry` (Duration, default 7 d). Registered via `@EnableConfigurationProperties` in `WebClientConfig`.
+
 ### `SecurityConfig`
 `src/main/java/dev/abu/screener_backend/config/SecurityConfig.java`
 
-Temporary placeholder — permits all requests, CSRF disabled. Will be replaced with JWT-based auth once the core pipeline is stable.
+Real JWT-based security filter chain. Stateless (`STATELESS` session policy, CSRF disabled). Public paths: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/ws`. All other paths require a valid Bearer JWT. `JwtAuthenticationFilter` is instantiated directly here (not as a `@Bean`) to avoid double-registration as a Tomcat servlet filter. Also declares the `BCryptPasswordEncoder` bean.
 
 ---
 
@@ -528,4 +637,6 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 | 30% price level filter | **Complete (Phase 3)** |
 | Order classification pipeline (classifier + feed store + broadcaster) | **Complete (Phase 4/5 stub)** |
 | Outbound WebSocket server (`ws/` package, virtual-thread delivery) | **Complete (Phase 5)** |
+| JWT auth (register/login/refresh/logout/me) + PostgreSQL user storage | **Complete (Phase 6)** |
+| WebSocket auth (query-param JWT validated in `@OnOpen`) | **Complete (Phase 6)** |
 | Real classification thresholds (proximity %, notional USD) | Not started |

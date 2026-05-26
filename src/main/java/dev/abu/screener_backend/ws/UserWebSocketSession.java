@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 
 @Slf4j
@@ -18,6 +19,8 @@ public class UserWebSocketSession {
     private static final int QUEUE_CAPACITY = 32;
 
     private final Session jakartaSession;
+    @Getter
+    private final UUID userId;
     private final ArrayBlockingQueue<List<String>> sendQueue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
 
     @Setter @Getter
@@ -33,8 +36,9 @@ public class UserWebSocketSession {
     // setStatus() does NOT touch this field — it can be called from the @OnMessage Tomcat thread.
     private int seqNumber = 0;
 
-    public UserWebSocketSession(Session jakartaSession) {
+    public UserWebSocketSession(Session jakartaSession, UUID userId) {
         this.jakartaSession = jakartaSession;
+        this.userId = userId;
     }
 
     // ---- Called by broadcaster (@Scheduled thread) ----

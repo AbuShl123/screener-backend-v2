@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.ws;
 
+import dev.abu.screener_backend.auth.AuthenticatedUser;
+import dev.abu.screener_backend.auth.JwtService;
 import dev.abu.screener_backend.feed.OrderBookBroadcaster;
 import jakarta.websocket.*;
 import jakarta.websocket.server.ServerEndpoint;
@@ -7,22 +9,38 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.util.List;
+
 @Slf4j
 @Component
 @ServerEndpoint(value = "/ws", configurator = CustomSpringConfigurator.class)
 public class ScreenerWebSocketEndpoint {
 
-    // Injected once into the singleton bean. All @OnXxx handlers share this reference safely.
     @Autowired
     private OrderBookBroadcaster broadcaster;
 
+    @Autowired
+    private JwtService jwtService;
+
     @OnOpen
     public void onOpen(Session session) {
-        UserWebSocketSession userSession = new UserWebSocketSession(session);
+        List<String> tokens = session.getRequestParameterMap().get("token");
+        if (tokens == null || tokens.isEmpty()) {
+            closeUnauthorized(session, "Missing token");
+            return;
+        }
+        AuthenticatedUser user = jwtService.validateAndExtract(tokens.get(0));
+        if (user == null) {
+            closeUnauthorized(session, "Invalid or expired token");
+            return;
+        }
+
+        UserWebSocketSession userSession = new UserWebSocketSession(session, user.userId());
         session.getUserProperties().put("session", userSession);
         userSession.startSendLoop();
         broadcaster.addSession(userSession);
-        log.debug("WebSocket opened: {}", session.getId());
+        log.debug("WebSocket opened: {} user={}", session.getId(), user.userId());
     }
 
     @OnClose
@@ -54,11 +72,18 @@ public class ScreenerWebSocketEndpoint {
             log.debug("SNAPSHOT_REQUEST from session {}", session.getId());
             return;
         }
-        // Future: parse JSON {"type":"..."} and dispatch on the type field
         log.debug("Unknown message from session {}: {}", session.getId(), trimmed);
     }
 
     private UserWebSocketSession getSession(Session session) {
         return (UserWebSocketSession) session.getUserProperties().get("session");
+    }
+
+    private void closeUnauthorized(Session session, String reason) {
+        try {
+            session.close(new CloseReason(CloseReason.CloseCodes.VIOLATED_POLICY, reason));
+        } catch (IOException e) {
+            log.debug("Error closing unauthorized session {}: {}", session.getId(), e.getMessage());
+        }
     }
 }

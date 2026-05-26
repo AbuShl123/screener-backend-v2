@@ -1,3 +1,4 @@
+#file: noinspection YAMLSchemaValidation
 spring:
   application:
     name: screener-backend
@@ -5,6 +6,23 @@ spring:
     # CRITICAL: prevents spring-boot-starter-webflux from hijacking the server to Netty reactive.
     # WebFlux is on the classpath only for WebClient — the application runs on Tomcat/MVC.
     web-application-type: servlet
+
+  datasource:
+    url: "${DB_URL:jdbc:postgresql://localhost:5432/screener_new}"
+    username: "${DB_USER:postgres}"
+    password: "${DB_PASSWORD:password}"
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 3000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
 
 screener:
   binance:
@@ -45,3 +63,8 @@ screener:
     reconnect-max-delay-ms: 30000
     # How often to send a WebSocket PING to Binance to prevent server-side idle close (1006).
     heartbeat-interval-seconds: 120
+
+  jwt:
+    secret: "${JWT_SECRET:dGhpcyBpcyBhIGRldi1vbmx5IHNlY3JldCBrZXkgdGhhdCBtdXN0IGJlIHJlcGxhY2Vk}"
+    access-token-expiry: PT3H
+    refresh-token-expiry: P7D

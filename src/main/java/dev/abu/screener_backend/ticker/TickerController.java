@@ -17,7 +17,7 @@ import java.util.List;
  * been loaded and that spot/futures flags are applied correctly.
  */
 @RestController
-@RequestMapping("/api/v2")
+@RequestMapping("/api/tickers")
 @RequiredArgsConstructor
 public class TickerController {
 
@@ -29,7 +29,7 @@ public class TickerController {
      *
      * @return a summary of the ticker registry including per-market counts and the full list
      */
-    @GetMapping("/tickers")
+    @GetMapping
     public TickerSummaryResponse getTickers() {
         Collection<Ticker> tickers = registry.getAll().values();
         int spotCount    = (int) tickers.stream().filter(Ticker::hasSpot).count();

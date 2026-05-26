@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.TreeMap;
 
 @RestController
-@RequestMapping("/api/v2")
+@RequestMapping("/api/orderbook")
 @RequiredArgsConstructor
 public class OrderBookController {
 
@@ -30,7 +30,7 @@ public class OrderBookController {
      * @param market SPOT or FUTURES
      * @return 200 with orderbook snapshot, or 404 if no book exists for the pair
      */
-    @GetMapping("/orderbook")
+    @GetMapping
     public ResponseEntity<OrderBookResponse> getOrderBook(
             @RequestParam String symbol,
             @RequestParam Market market) {

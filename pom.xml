@@ -30,16 +30,10 @@
 		<java.version>21</java.version>
 	</properties>
 	<dependencies>
-		<!-- DB: commented out until database is configured
-        <dependency>
-           <groupId>org.springframework.boot</groupId>
-           <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-        <dependency>
-           <groupId>org.springframework.boot</groupId>
-           <artifactId>spring-boot-starter-jdbc</artifactId>
-        </dependency>
-        -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
@@ -76,13 +70,28 @@
 			<artifactId>spring-boot-configuration-processor</artifactId>
 			<optional>true</optional>
 		</dependency>
-		<!-- DB: commented out until database is configured
-        <dependency>
-           <groupId>org.postgresql</groupId>
-           <artifactId>postgresql</artifactId>
-           <scope>runtime</scope>
-        </dependency>
-        -->
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<!-- Flyway — database schema migrations -->
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+
+		<!-- Nimbus JOSE JWT — JWT generation and validation (Jackson-agnostic) -->
+		<dependency>
+			<groupId>com.nimbusds</groupId>
+			<artifactId>nimbus-jose-jwt</artifactId>
+			<version>9.40</version>
+		</dependency>
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
