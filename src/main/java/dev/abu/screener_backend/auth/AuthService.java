@@ -4,15 +4,14 @@ import dev.abu.screener_backend.auth.dto.AuthResponse;
 import dev.abu.screener_backend.auth.dto.LoginRequest;
 import dev.abu.screener_backend.auth.dto.RegisterRequest;
 import dev.abu.screener_backend.config.JwtProperties;
+import dev.abu.screener_backend.error.ApiException;
 import dev.abu.screener_backend.user.RefreshToken;
 import dev.abu.screener_backend.user.RefreshTokenRepository;
 import dev.abu.screener_backend.user.User;
 import dev.abu.screener_backend.user.UserRepository;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -45,10 +44,10 @@ public class AuthService {
                 || req.lastName() == null || req.lastName().isBlank()
                 || req.email() == null || req.email().isBlank()
                 || req.password() == null || req.password().isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "All fields are required");
+            throw ApiException.badRequest("All fields are required");
         }
         if (userRepository.existsByEmail(req.email())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already registered");
+            throw ApiException.conflict("Email already registered");
         }
         User user = new User();
         user.setFirstName(req.firstName());
@@ -61,29 +60,29 @@ public class AuthService {
 
     public AuthResponse login(LoginRequest req) {
         if (req.email() == null || req.password() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email and password required");
+            throw ApiException.badRequest("Email and password required");
         }
         User user = userRepository.findByEmail(req.email().toLowerCase())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials"));
+                .orElseThrow(() -> ApiException.unauthorized("Invalid credentials"));
         if (!passwordEncoder.matches(req.password(), user.getPasswordHash())) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
+            throw ApiException.unauthorized("Invalid credentials");
         }
         if (!user.isEnabled()) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Account disabled");
+            throw ApiException.unauthorized("Account disabled");
         }
         return issueTokenPair(user);
     }
 
     public AuthResponse refresh(String rawRefreshToken) {
         if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "refreshToken required");
+            throw ApiException.badRequest("refreshToken required");
         }
         String hash = jwtService.hashToken(rawRefreshToken);
         RefreshToken stored = refreshTokenRepository.findByTokenHash(hash)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid refresh token"));
+                .orElseThrow(() -> ApiException.unauthorized("Invalid refresh token"));
         if (stored.getExpiresAt().isBefore(Instant.now())) {
             refreshTokenRepository.delete(stored);
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Refresh token expired");
+            throw ApiException.unauthorized("Refresh token expired");
         }
         return issueTokenPair(stored.getUser());
     }
@@ -95,7 +94,7 @@ public class AuthService {
     @Transactional(readOnly = true)
     public User getUser(UUID userId) {
         return userRepository.findById(userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+                .orElseThrow(() -> ApiException.notFound("User not found"));
     }
 
     private AuthResponse issueTokenPair(User user) {

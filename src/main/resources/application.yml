@@ -49,6 +49,11 @@ screener:
     spot-snapshot-queue-size: 10
     futures-snapshot-queue-size: 10
 
+  classification:
+    # Max (symbol, market) targets allowed in a single rule upsert/delete request — bounds
+    # one transaction's size.
+    max-targets-per-request: 200
+
   disruptor:
     shard-count: 2
     ring-buffer-size: 65536

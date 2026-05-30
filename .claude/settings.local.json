@@ -10,7 +10,11 @@
       "Bash(Out-String)",
       "Bash(Get-ChildItem -Path \"C:\\\\git\\\\screener-backend-new\" -Recurse -Name)",
       "Bash(Select-Object -First 50)",
-      "Bash(mvn compile *)"
+      "Bash(mvn compile *)",
+      "PowerShell(.\\\\mvnw.cmd -q -o compile 2>&1 | Select-Object -Last 40)",
+      "Bash(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI1Mzg1NWZiMi0wYjA0LTQ4YjktYmNmOC1kMGE3ODRiZGJlMjQiLCJyb2xlIjoiVVNFUiIsImV4cCI6MTc4MDA3MDUzMSwiaWF0IjoxNzgwMDU5NzMxLCJlbWFpbCI6InNob2FsaWV2YWJ1YmFrckBnbWFpbC5jb20ifQ.QMEG5Nno-GRsIepmwEKzGBjlS-WKQihp-nkvFKd8PIk' http://localhost:8080__TRACKED_VAR__)",
+      "Bash(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080__TRACKED_VAR__)",
+      "Bash(./mvnw -q -o compile)"
     ]
   }
 }

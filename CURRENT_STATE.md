@@ -11,7 +11,20 @@ src/
 ├── main/java/dev/abu/screener_backend/
 │   ├── ScreenerBackendApplication.java
 │   ├── analysis/
-│   │   └── OrderBookClassifier.java
+│   │   ├── OrderBookClassifier.java
+│   │   └── rule/
+│   │       ├── ClassificationRuleEntity.java
+│   │       ├── ClassificationRuleRepository.java
+│   │       ├── ClassificationRuleService.java
+│   │       ├── ClassificationRuleController.java
+│   │       └── dto/
+│   │           ├── TierDto.java
+│   │           ├── RuleDto.java
+│   │           ├── TargetDto.java
+│   │           ├── RuleAssignmentDto.java
+│   │           ├── BulkRuleRequest.java
+│   │           ├── BulkDeleteRequest.java
+│   │           └── RuleResponse.java
 │   ├── auth/
 │   │   ├── AuthController.java
 │   │   ├── AuthService.java
@@ -63,6 +76,10 @@ src/
 │   │   ├── SecurityConfig.java
 │   │   ├── WebClientConfig.java
 │   │   └── WebSocketProperties.java
+│   ├── error/
+│   │   ├── ApiException.java
+│   │   ├── ApiError.java
+│   │   └── GlobalExceptionHandler.java
 │   ├── feed/
 │   │   ├── ClassifiedLevel.java
 │   │   ├── FeedEventType.java
@@ -91,7 +108,8 @@ src/
 │   ├── application.yml
 │   └── db/migration/
 │       ├── V1__create_users.sql
-│       └── V2__create_refresh_tokens.sql
+│       ├── V2__create_refresh_tokens.sql
+│       └── V3__create_classification_rules.sql
 └── test/java/dev/abu/screener_backend/
     └── ScreenerBackendApplicationTests.java
 ```
@@ -130,7 +148,7 @@ The signing key is an `OctetSequenceKey` built from the base64-decoded `screener
 ### `AuthService`
 `src/main/java/dev/abu/screener_backend/auth/AuthService.java`
 
-`@Service @Transactional`. Implements register, login, refresh, logout, and user lookup. Stores one refresh token per user (old token invalidated on each new login). Throws `ResponseStatusException` with appropriate HTTP status for all error cases.
+`@Service @Transactional`. Implements register, login, refresh, logout, and user lookup. Stores one refresh token per user (old token invalidated on each new login). Throws `ApiException` (from the `error` package) with the appropriate HTTP status for all error cases; the global handler maps it to a standardized JSON body.
 
 - `register(RegisterRequest)` — validates fields, checks email uniqueness (409 on conflict), BCrypt-hashes the password, persists the user, issues a token pair
 - `login(LoginRequest)` — looks up user by email, verifies BCrypt hash (401 on mismatch), issues a token pair
@@ -401,6 +419,69 @@ Not a Spring bean — constructed manually by `DisruptorShardManager`, one insta
 
 ---
 
+## `analysis/rule` — Per-User Classification Rules (Phase A: persistence + REST)
+
+Persistence and REST CRUD for user-defined classification thresholds. **Off the hot path** — nothing here is read by any Disruptor-thread code yet; runtime integration (loading rules at WebSocket connect time) is Phase C. See `.claude/plans/per-user-classification-phase-a.md`.
+
+### `ClassificationRuleEntity`
+`src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleEntity.java`
+
+JPA entity mapped to `classification_rules`. **One row per tier** — a logical rule for one `(user, symbol, market)` is 1–4 rows. Fields: `id` (UUID), `user` (LAZY `@ManyToOne` → `users`), `symbol`, `market` (`Market` enum, STRING-mapped), `tierNo`, `minNotional`, `maxDistance`, `createdAt`, `updatedAt`. `@PrePersist`/`@PreUpdate` maintain timestamps. Unique constraint on `(user_id, symbol, market, tier_no)`.
+
+### `ClassificationRuleRepository`
+`src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleRepository.java`
+
+`JpaRepository<ClassificationRuleEntity, UUID>`. `findByUserId`, `findByUserIdAndSymbolAndMarket`, and `@Modifying deleteByUserIdAndSymbolAndMarket` (bulk DELETE that runs immediately, so it precedes the replacement inserts — avoids a `uq_rule_tier` violation from Hibernate insert/delete reordering).
+
+### `ClassificationRuleService`
+`src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleService.java`
+
+`@Service`. Tomcat-thread CRUD + validation; shares no state with the Disruptor pipeline. All validation runs before any DB write — the whole request is rejected atomically with `400` on first failure.
+
+- `upsertRules(userId, BulkRuleRequest)` — `@Transactional`; for each `(assignment, target)`: replace (delete-then-insert) the tier set. `userRepository.getReferenceById` sets the FK without an extra SELECT.
+- `deleteRules(userId, BulkDeleteRequest)` — `@Transactional`; bulk delete per target; idempotent.
+- `getRules(userId)` — groups tier rows by `(symbol, market)` into `RuleResponse` list.
+- `getRule(userId, symbol, market)` — single pair; `404` if none.
+
+Validation rules: tiers non-empty; each tier ∈ `[1,4]`; no duplicate tiers; **tiers contiguous starting at 1** (`{1,2,4}` rejected — tier 3 missing); `minNotional ≥ 0`; `maxDistance ∈ (0, priceFilterThreshold]` (upper bound read from live `OrderbookProperties`, currently 0.055 — a rule beyond the orderbook's price filter could never match); each target must be a currently-tracked ticker covering the requested market (via `TickerRegistry`); total targets per request ≤ `screener.classification.max-targets-per-request` (default 200). Symbols normalized to uppercase.
+
+### `ClassificationRuleController`
+`src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleController.java`
+
+`@RestController` at `/api/screener/rules`. Already covered by `/api/screener/**`.authenticated() — no `SecurityConfig` change. `userId` always from the JWT principal, never the body.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/screener/rules` | List the caller's rules, grouped by `(symbol, market)` |
+| `GET` | `/api/screener/rules/{symbol}/{market}` | The caller's rule for one pair (404 if none) |
+| `PUT` | `/api/screener/rules` | Bulk upsert — replace tier set for each target |
+| `DELETE` | `/api/screener/rules` | Bulk delete (reset to default) |
+
+DTOs (`analysis/rule/dto/`): `TierDto`, `RuleDto`, `TargetDto`, `RuleAssignmentDto`, `BulkRuleRequest`, `BulkDeleteRequest`, `RuleResponse` — records mirroring the auth DTO style.
+
+---
+
+## `error` — Global Exception Handling
+
+Standardizes the MVC-layer error response so every failed request that reaches the dispatcher returns the same JSON shape (`{message, status, path}`) with a human-readable message. Keeps the service layer free of `org.springframework.web.*` exception types. Does **not** touch authentication: unauthenticated requests are still rejected by Spring Security before the dispatcher (empty `403`). See `.claude/plans/global-exception-handling.md`.
+
+### `ApiException`
+`src/main/java/dev/abu/screener_backend/error/ApiException.java`
+
+`RuntimeException` carrying an `HttpStatus` plus a client-safe message. The single exception the application layer throws for any expected, client-facing failure. Static factories: `badRequest`, `notFound`, `conflict`, `unauthorized`. A dedicated type (not `IllegalArgumentException`) ensures only messages *we* choose reach the client.
+
+### `ApiError`
+`src/main/java/dev/abu/screener_backend/error/ApiError.java`
+
+Record `(String message, int status, String path)` — the uniform JSON body serialized for every MVC-layer error.
+
+### `GlobalExceptionHandler`
+`src/main/java/dev/abu/screener_backend/error/GlobalExceptionHandler.java`
+
+`@RestControllerAdvice` — the only place exceptions become HTTP responses. Mapping: `ApiException` → its status + message; `HttpMessageNotReadableException` → `400` "Malformed JSON request body"; `ErrorResponseException` (Spring 6's common 4xx base — unknown endpoint 404, wrong method 405, wrong `Content-Type` 415, missing/mistyped params, and any stray `ResponseStatusException`) → its status with a generic status-derived message; any other `Exception` → `500` "Internal server error", real cause logged via `log.error`, never echoed to the client.
+
+---
+
 ## `feed` — Feed Store and Broadcaster
 
 ### `ClassifiedLevel`
@@ -639,4 +720,6 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 | Outbound WebSocket server (`ws/` package, virtual-thread delivery) | **Complete (Phase 5)** |
 | JWT auth (register/login/refresh/logout/me) + PostgreSQL user storage | **Complete (Phase 6)** |
 | WebSocket auth (query-param JWT validated in `@OnOpen`) | **Complete (Phase 6)** |
+| Per-user classification rules — persistence + REST CRUD (`analysis/rule/`) | **Complete (Phase A)** |
+| Per-user classification — runtime hot-path integration (`ClassificationRule` refactor, contexts, feed merge) | Not started (Phases B–D) |
 | Real classification thresholds (proximity %, notional USD) | Not started |
