@@ -254,14 +254,12 @@ public class OrderBook {
             char[] buf = p.getStringCharacters();
             int offset = p.getStringOffset();
             int len    = p.getStringLength();
-//            double price = Double.parseDouble(p.getString());
             double price = JavaDoubleParser.parseDouble(buf, offset, len);
 
             p.nextToken();
             buf = p.getStringCharacters();
             offset = p.getStringOffset();
             len    = p.getStringLength();
-//            double qty   = Double.parseDouble(p.getString());
             double qty   = JavaDoubleParser.parseDouble(buf, offset, len);
             p.nextToken(); // END_ARRAY of [price, qty]
 

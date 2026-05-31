@@ -4,6 +4,7 @@ import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
+import dev.abu.screener_backend.analysis.DefaultClassificationRule;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.binance.orderbook.OrderBookProcessor;
 import dev.abu.screener_backend.config.DisruptorProperties;
@@ -19,9 +20,10 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class DisruptorShardManager {
 
-    private final DisruptorProperties props;
-    private final OrderBookProcessor  orderBookProcessor;
-    private final OrderBookFeedStore  feedStore;
+    private final DisruptorProperties      props;
+    private final OrderBookProcessor       orderBookProcessor;
+    private final OrderBookFeedStore       feedStore;
+    private final DefaultClassificationRule defaultRule;
 
     private Disruptor<DepthEvent>[]  disruptors;
     private RingBuffer<DepthEvent>[] ringBuffers;
@@ -42,7 +44,7 @@ public class DisruptorShardManager {
                     ProducerType.MULTI,
                     new BlockingWaitStrategy()
             );
-            OrderBookClassifier classifier = new OrderBookClassifier(feedStore);
+            OrderBookClassifier classifier = new OrderBookClassifier(feedStore, defaultRule);
             disruptor.handleEventsWith(new DepthEventHandler(i, orderBookProcessor, classifier));
 
             ringBuffers[i] = disruptor.start();
