@@ -169,8 +169,7 @@ public class OrderBookClassifier {
      * {@value #TOP_LEVELS} by (tier DESC, notional DESC, distance ASC) into {@code s}.
      * Returns {@code true} if the side is visible, i.e. its best selected slot has tier &ge; 1.
      */
-    private boolean selectTopK(TreeMap<Double, PriceLevelEntry> levels, Scratch s,
-                               ClassificationRule rule, boolean highLiquidity) {
+    private boolean selectTopK(TreeMap<Double, PriceLevelEntry> levels, Scratch s, ClassificationRule rule, boolean highLiquidity) {
         s.topCount = 0;
         double maxDist = rule.maxDistance(highLiquidity);
 

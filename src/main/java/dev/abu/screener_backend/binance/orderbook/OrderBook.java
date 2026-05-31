@@ -203,7 +203,7 @@ public class OrderBook {
 
         if (!sequenceOk) return resync();
 
-        apply30PercentFilter();
+        computeDistance();
         lastUpdateId = u;
         return OrderBookResult.OK;
     }
@@ -321,8 +321,15 @@ public class OrderBook {
         }
     }
 
-    /** Sweep all levels outside ±filterThreshold of mid-price and update distance on survivors. */
-    private void apply30PercentFilter() {
+    /**
+     * Sweep all levels outside ±filterThreshold of mid-price and update distance on survivors.
+     * <p>
+     * {@code distance} is stored as a <b>fraction</b> of mid-price ({@code 0.05} = 5%), never a
+     * percentage. This is the project-wide unit for proximity: the classifier and every
+     * {@link dev.abu.screener_backend.analysis.ClassificationRule} compare it directly against
+     * fractional thresholds, and the orderbook's own {@code filterThreshold} is a fraction too.
+     */
+    private void computeDistance() {
         if (bids.isEmpty() || asks.isEmpty()) return;
         double midPrice = (bids.firstKey() + asks.firstKey()) / 2.0;
         double lower = midPrice * (1.0 - filterThreshold);
@@ -335,7 +342,7 @@ public class OrderBook {
             if (key < lower || key > upper) {
                 bidIt.remove();
             } else {
-                e.getValue().distance = Math.abs(key - midPrice) / midPrice * 100.0;
+                e.getValue().distance = Math.abs(key - midPrice) / midPrice;
             }
         }
 
@@ -346,7 +353,7 @@ public class OrderBook {
             if (key < lower || key > upper) {
                 askIt.remove();
             } else {
-                e.getValue().distance = Math.abs(key - midPrice) / midPrice * 100.0;
+                e.getValue().distance = Math.abs(key - midPrice) / midPrice;
             }
         }
     }

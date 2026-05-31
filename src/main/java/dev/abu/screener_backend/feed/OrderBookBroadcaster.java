@@ -147,7 +147,7 @@ public class OrderBookBroadcaster {
             sb.append(",\"quantity\":").append(level.quantity());
             sb.append(",\"tier\":").append(level.tier());
             sb.append(",\"firstSeenMillis\":").append(level.firstSeenMillis());
-            sb.append(",\"distance\":").append(level.distance());
+            sb.append(",\"distance\":").append(level.distance()); // fraction (0.05 = 5%); client renders as %
             sb.append('}');
             first = false;
         }
