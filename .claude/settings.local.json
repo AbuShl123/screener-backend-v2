@@ -16,7 +16,12 @@
       "Bash(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080__TRACKED_VAR__)",
       "Bash(./mvnw -q -o compile)",
       "PowerShell(.\\\\mvnw.cmd -q \"-Dtest=DefaultClassificationRuleTest,ThresholdClassificationRuleTest\" test 2>&1 | Select-Object -Last 25)",
-      "Bash(./mvnw -q compile -o)"
+      "Bash(./mvnw -q compile -o)",
+      "Bash(./mvnw.cmd -q -o test-compile)",
+      "Bash(./mvnw.cmd -Dtest='UserClassificationRuleTest,UserFeedRegistryTest' -DfailIfNoTests=false test)",
+      "Bash(./mvnw -q -o test-compile)",
+      "Bash(./mvnw -q -o -Dtest='UserFeedRegistryTest,UserClassificationRuleTest,ThresholdClassificationRuleTest,DefaultClassificationRuleTest' test)",
+      "Bash(./mvnw -o -Dtest='UserFeedRegistryTest,UserClassificationRuleTest,ThresholdClassificationRuleTest,DefaultClassificationRuleTest' test)"
     ]
   }
 }

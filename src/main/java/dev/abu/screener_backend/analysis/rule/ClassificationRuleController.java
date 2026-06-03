@@ -1,7 +1,9 @@
 package dev.abu.screener_backend.analysis.rule;
 
+import dev.abu.screener_backend.analysis.DefaultClassificationRule;
 import dev.abu.screener_backend.analysis.rule.dto.BulkDeleteRequest;
 import dev.abu.screener_backend.analysis.rule.dto.BulkRuleRequest;
+import dev.abu.screener_backend.analysis.rule.dto.DefaultRuleResponse;
 import dev.abu.screener_backend.analysis.rule.dto.RuleResponse;
 import dev.abu.screener_backend.auth.AuthenticatedUser;
 import dev.abu.screener_backend.binance.websocket.Market;
@@ -26,9 +28,17 @@ import java.util.UUID;
 public class ClassificationRuleController {
 
     private final ClassificationRuleService ruleService;
+    private final DefaultClassificationRule defaultRule;
 
-    public ClassificationRuleController(ClassificationRuleService ruleService) {
+    public ClassificationRuleController(ClassificationRuleService ruleService,
+                                        DefaultClassificationRule defaultRule) {
         this.ruleService = ruleService;
+        this.defaultRule = defaultRule;
+    }
+
+    @GetMapping("/default")
+    public DefaultRuleResponse getDefaultRule() {
+        return defaultRule.toResponse();
     }
 
     @GetMapping

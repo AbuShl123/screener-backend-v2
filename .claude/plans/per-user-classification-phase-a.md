@@ -218,17 +218,22 @@ Per assignment / tier:
 1. `tiers` non-empty.
 2. Every `tier` ∈ `[1, 4]`.
 3. No duplicate `tier` within a single assignment's rule.
-4. `minNotional` ≥ 0.
-5. `maxDistance` ∈ `(0, 0.30]` — values above 0.30 are meaningless: the orderbook's 30%
-   filter (CLAUDE.md) has already discarded those levels, so a rule could never match them.
+4. Tiers must form a **contiguous set starting at 1** (no gaps) — `{1,2,4}` is rejected because
+   tier 3 is missing. Enforced as `maxTier == tiers.size()`.
+5. `minNotional` ≥ 0.
+6. `maxDistance` ∈ `(0, priceFilterThreshold]` — the upper bound is read from the live
+   `OrderbookProperties.priceFilterThreshold` (`screener.orderbook.price-filter-threshold`,
+   currently `0.1`), **not** a hardcoded constant. Values beyond the orderbook's price filter
+   are meaningless: those levels are already swept, so the rule could never match them.
 
 Per target:
-6. `symbol` + `market` must be a **currently-tracked ticker** — validate against
+7. `symbol` + `market` must be a **currently-tracked ticker** — validate against
    `TickerRegistry.find(symbol)` and confirm the ticker covers the requested market.
    Reject unknown symbols/markets so a user gets a clear error rather than a silently dead rule.
 
 Request-level guardrails:
-7. Cap total targets per request (e.g. ≤ 200) to bound a single transaction's size — configurable.
+8. Cap total targets per request (`screener.classification.max-targets-per-request`, default 200)
+   to bound a single transaction's size — configurable.
 
 > Monotonicity across tiers (higher tier ⇒ higher notional) is intentionally **not** enforced.
 > The highest-first evaluation loop tolerates non-monotonic configs, and power users may want

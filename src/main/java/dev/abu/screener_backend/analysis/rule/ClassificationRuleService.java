@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.analysis.rule;
 
+import dev.abu.screener_backend.analysis.ThresholdClassificationRule;
+import dev.abu.screener_backend.analysis.UserClassificationRule;
 import dev.abu.screener_backend.analysis.rule.dto.*;
 import dev.abu.screener_backend.binance.websocket.Market;
 import dev.abu.screener_backend.config.OrderbookProperties;
@@ -16,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -134,6 +137,46 @@ public class ClassificationRuleService {
             throw ApiException.notFound("No rule for " + normalized + ":" + market);
         }
         return new RuleResponse(normalized, market, toTierDtos(rows));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Hot-path seam: connect-time runtime rule translation
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * Translates a user's persisted tier rows into an immutable runtime
+     * {@link UserClassificationRule}, called at WebSocket connect time on the Tomcat thread
+     * (off the hot path). Returns {@link Optional#empty()} when the user has no rules — those
+     * users get no context and consume the global default feed directly.
+     *
+     * <p>Input was already range-validated at write time (Phase A), so this does not re-validate;
+     * it reuses the same {@code "SYMBOL:MARKET"} grouping as {@link #getRules(UUID)}. The stored
+     * {@code maxDistance} values are fractions and flow into {@link ThresholdClassificationRule}
+     * unchanged.
+     */
+    @Transactional(readOnly = true)
+    public Optional<UserClassificationRule> buildRuntimeRule(UUID userId) {
+        List<ClassificationRuleEntity> rows = ruleRepository.findByUserId(userId);
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+
+        Map<String, List<ClassificationRuleEntity>> grouped = new LinkedHashMap<>();
+        for (ClassificationRuleEntity row : rows) {
+            grouped.computeIfAbsent(row.getSymbol() + ":" + row.getMarket(), k -> new ArrayList<>())
+                    .add(row);
+        }
+
+        Map<String, ThresholdClassificationRule> byKey = new java.util.HashMap<>(grouped.size() * 2);
+        for (Map.Entry<String, List<ClassificationRuleEntity>> group : grouped.entrySet()) {
+            List<ThresholdClassificationRule.TierThreshold> bands = new ArrayList<>(group.getValue().size());
+            for (ClassificationRuleEntity row : group.getValue()) {
+                bands.add(new ThresholdClassificationRule.TierThreshold(
+                        row.getTierNo(), row.getMinNotional(), row.getMaxDistance()));
+            }
+            byKey.put(group.getKey(), ThresholdClassificationRule.of(bands));
+        }
+        return Optional.of(new UserClassificationRule(byKey));
     }
 
     // ---------------------------------------------------------------------------------------

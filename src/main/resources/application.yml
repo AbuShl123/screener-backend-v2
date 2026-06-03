@@ -42,7 +42,7 @@ screener:
 
   orderbook:
     # Price levels further than this fraction from the mid-price are discarded to bound memory.
-    price-filter-threshold: 0.055
+    price-filter-threshold: 0.1
     # Snapshot dispatch rate per market (milliseconds).
     spot-snapshot-dispatch-rate-ms: 6000
     futures-snapshot-dispatch-rate-ms: 6000

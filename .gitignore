@@ -1,4 +1,5 @@
-gc.log
+*.log.*
+*.log
 scratch_paper.txt
 HELP.md
 target/

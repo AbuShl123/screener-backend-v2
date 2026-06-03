@@ -68,7 +68,7 @@ free of any rule-specific branching.
 
 **`DefaultClassificationRule`** — `@Component` singleton. Contains the current tier thresholds exactly as they exist today in `OrderBookClassifier.computeTier()`, **including the high-liquidity exception**. The `HIGH_LIQUIDITY_TICKERS` set, its tighter threshold table, and the `isHighLiquidity(symbol)` check currently live in `OrderBookClassifier`; they are default-rule behavior and must travel into this class. `maxDistance(highLiquidity)` returns the widest `max_distance` of the relevant table — `0.025` for high-liquidity tickers, `0.05` otherwise — which matches the per-table tier-4 distance and preserves today's early-break behavior exactly.
 
-**`UserClassificationRule`** — plain POJO, not a Spring bean (introduced in **Phase C**). Holds a `Map<String, ClassificationRule>` of per-key overrides keyed by `"symbol:market"` (e.g. `"BTCUSDT:FUTURES"`). For keys not in the map, it delegates to `DefaultClassificationRule`. Also exposes a `Set<String> configuredKeys()` for O(1) hot-path lookup. Created when a user connects (and, in Phase D, rebuilt when they update their settings).
+**`UserClassificationRule`** — plain POJO, not a Spring bean (introduced in **Phase C**). Holds a `Map<String, ThresholdClassificationRule> byKey` of per-key overrides keyed by `"symbol:market"` (e.g. `"BTCUSDT:FUTURES"`), and exposes `ruleFor(key)` plus a cached `Set<String> configuredKeys()` for O(1) hot-path lookup. **As built, it deliberately does NOT implement `ClassificationRule` and does NOT delegate to `DefaultClassificationRule`**: the classifier only runs the user pass for configured keys; unconfigured keys are never touched by the user pass and instead reach the user via the broadcaster merge from the global feed. Created when a user connects (and, in Phase D, rebuilt when they update their settings).
 
 **`ThresholdClassificationRule`** — the per-key user override leaf (introduced in **Phase B** as a standalone, unit-testable rule; first *consumed* in Phase C). Built off the hot path from a user's persisted tier rows into immutable primitive arrays — `int[] tiers`, `double[] minNotionals`, `double[] maxDistances` — sorted highest-tier-first and evaluated by the same highest-first loop the default rule uses today. Returns `0` when an order matches no tier. Because the user supplies absolute thresholds, it **ignores** the `highLiquidity` parameter, and its `maxDistance(...)` returns the precomputed largest entry of its `maxDistances` array regardless of the boolean.
 
@@ -157,7 +157,13 @@ Writes to the shard arrays happen on the WebSocket session thread (connect/disco
 
 **`OrderBookFeedStore`** (existing) — unchanged. Continues to be the global default feed. All currently-connected users with no custom rules consume this store.
 
-**`UserOrderBookFeedStore`** — same structure as `OrderBookFeedStore` (pending map + snapshot map). One instance per connected user with custom rules. It is created inside `UserClassificationContext` when the user connects and discarded when they disconnect.
+**Personal feed store** — one per connected user with custom rules, created inside
+`UserClassificationContext` when the user connects and discarded when they disconnect.
+**As built (Phase C), this is a plain `new OrderBookFeedStore()` instance, not a separate
+`UserOrderBookFeedStore` class** — `OrderBookFeedStore` is dependency-free (just a pending map +
+snapshot map with multi-writer/single-drainer safety), so reusing it avoids duplicating the
+coalescing logic. The originally-proposed dedicated `UserOrderBookFeedStore` class was therefore
+never created.
 
 Users with **no custom rules at all** are never assigned a `UserClassificationContext`. They consume the global default feed directly — zero extra overhead on the hot path.
 
@@ -200,10 +206,11 @@ The filter check is O(1) per symbol per user (HashSet). The drain result from `d
 | `ClassificationRule` | Interface | B | Contract: `computeTier(notional, distance, highLiquidity) → int` + `maxDistance(highLiquidity) → double` |
 | `DefaultClassificationRule` | `@Component` singleton | B | Current tier thresholds + high-liquidity table + `isHighLiquidity`; fallback for unconfigured symbols |
 | `ThresholdClassificationRule` | POJO | B (built/tested), C (consumed) | Immutable per-`(symbol, market)` override: primitive tier arrays, highest-first eval, ignores `highLiquidity` |
-| `OrderBookClassifier` | Per-shard, non-bean | B (rule param), C (context loop) | Refactored: `classify()` takes a `ClassificationRule`; Phase C adds the user context loop |
+| `OrderBookClassifier` | Per-shard, non-bean | B (rule param), C (context loop) | Refactored: `selectTopK(...)`/`classifyOne(...)` take a `ClassificationRule`; Phase C adds the two-pass user context loop |
 | `UserClassificationRule` | POJO | C | Per-`(symbol, market)` override map + `configuredKeys` set; delegates to default for unset keys |
-| `UserClassificationContext` | POJO | C | Bundles user ID + rule + personal feed store + per-symbol HIGH/LOW states |
-| `UserOrderBookFeedStore` | POJO | C | Same structure as `OrderBookFeedStore`; one per connected custom-rule user |
+| `UserClassificationContext` | POJO | C | Bundles user ID + rule + personal feed store + per-symbol HIGH/LOW states (`ConcurrentHashMap`) |
+| `SymbolState` (+ nested `Scratch`) | package-private | C | Extracted from `OrderBookClassifier` so a context can declare `Map<String, SymbolState>` |
+| Personal feed store | reused `OrderBookFeedStore` | C | **Phase C reuses a plain `new OrderBookFeedStore()` per custom-rule user — no dedicated `UserOrderBookFeedStore` class was built** |
 | `UserFeedRegistry` | `@Component` | C | Lifecycle: create/discard contexts on connect/disconnect; updates shard arrays atomically |
 | `OrderBookBroadcaster` | `@Component` | C | Extended: merge global feed (filtered) + personal feed per custom-rules user |
 

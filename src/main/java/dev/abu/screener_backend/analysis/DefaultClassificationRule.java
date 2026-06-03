@@ -1,7 +1,10 @@
 package dev.abu.screener_backend.analysis;
 
+import dev.abu.screener_backend.analysis.rule.dto.DefaultRuleResponse;
+import dev.abu.screener_backend.analysis.rule.dto.TierDto;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -51,5 +54,22 @@ public class DefaultClassificationRule implements ClassificationRule {
         // Matches the widest (tier-4) max_distance of each table above, preserving the exact
         // early-break behavior the classifier has today (was: highLiquidity ? 0.025 : 0.05).
         return highLiquidity ? 0.025 : 0.05;
+    }
+
+    /** Returns both threshold tables and the high-liquidity symbol list for client display. */
+    public DefaultRuleResponse toResponse() {
+        List<TierDto> normal = List.of(
+                new TierDto(4, 10_000_000,  0.05),
+                new TierDto(3,  1_000_000,  0.02),
+                new TierDto(2,    500_000,  0.01),
+                new TierDto(1,    300_000,  0.005)
+        );
+        List<TierDto> highLiq = List.of(
+                new TierDto(4, 100_000_000, 0.025),
+                new TierDto(3,  30_000_000, 0.01),
+                new TierDto(2,  10_000_000, 0.005),
+                new TierDto(1,   3_000_000, 0.0025)
+        );
+        return new DefaultRuleResponse(normal, List.of("BTCUSDT", "ETHUSDT", "SOLUSDT"), highLiq);
     }
 }

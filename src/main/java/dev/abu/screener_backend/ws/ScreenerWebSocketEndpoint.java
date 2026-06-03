@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.ws;
 
+import dev.abu.screener_backend.analysis.UserClassificationContext;
+import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.auth.AuthenticatedUser;
 import dev.abu.screener_backend.auth.JwtService;
 import dev.abu.screener_backend.feed.OrderBookBroadcaster;
@@ -23,6 +25,9 @@ public class ScreenerWebSocketEndpoint {
     @Autowired
     private JwtService jwtService;
 
+    @Autowired
+    private UserFeedRegistry userFeedRegistry;
+
     @OnOpen
     public void onOpen(Session session) {
         List<String> tokens = session.getRequestParameterMap().get("token");
@@ -36,19 +41,23 @@ public class ScreenerWebSocketEndpoint {
             return;
         }
 
-        UserWebSocketSession userSession = new UserWebSocketSession(session, user.userId());
+        // Load (or reuse) the user's classification context off the hot path. Null when the user
+        // has no custom rules — that session consumes the global default feed directly.
+        UserClassificationContext context = userFeedRegistry.onUserConnect(user.userId());
+
+        UserWebSocketSession userSession = new UserWebSocketSession(session, user.userId(), context);
         session.getUserProperties().put("session", userSession);
         userSession.startSendLoop();
         broadcaster.addSession(userSession);
-        log.debug("WebSocket opened: {} user={}", session.getId(), user.userId());
+        log.debug("WebSocket opened: {} user={} custom={}",
+                session.getId(), user.userId(), context != null);
     }
 
     @OnClose
     public void onClose(Session session, CloseReason reason) {
         UserWebSocketSession userSession = getSession(session);
         if (userSession == null) return;
-        userSession.disconnect();
-        broadcaster.removeSession(userSession);
+        release(userSession);
         log.debug("WebSocket closed: {} reason={}", session.getId(), reason.getCloseCode());
     }
 
@@ -57,8 +66,20 @@ public class ScreenerWebSocketEndpoint {
         log.warn("WebSocket error on session {}: {}", session.getId(), error.getMessage());
         UserWebSocketSession userSession = getSession(session);
         if (userSession == null) return;
+        release(userSession);
+    }
+
+    /**
+     * Tears down a session. Tomcat may fire BOTH @OnClose and @OnError for one connection, so this
+     * runs the parts that must happen once. {@code disconnect()}/{@code removeSession()} are
+     * idempotent on their own; the registry refcount decrement is guarded by {@code markReleased()}.
+     */
+    private void release(UserWebSocketSession userSession) {
         userSession.disconnect();
         broadcaster.removeSession(userSession);
+        if (userSession.markReleased()) {
+            userFeedRegistry.onUserDisconnect(userSession.getUserId());
+        }
     }
 
     @OnMessage

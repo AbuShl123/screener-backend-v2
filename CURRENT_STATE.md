@@ -11,7 +11,14 @@ src/
 ├── main/java/dev/abu/screener_backend/
 │   ├── ScreenerBackendApplication.java
 │   ├── analysis/
+│   │   ├── ClassificationRule.java
+│   │   ├── DefaultClassificationRule.java
+│   │   ├── ThresholdClassificationRule.java
 │   │   ├── OrderBookClassifier.java
+│   │   ├── SymbolState.java
+│   │   ├── UserClassificationRule.java
+│   │   ├── UserClassificationContext.java
+│   │   ├── UserFeedRegistry.java
 │   │   └── rule/
 │   │       ├── ClassificationRuleEntity.java
 │   │       ├── ClassificationRuleRepository.java
@@ -111,10 +118,13 @@ src/
 │       ├── V2__create_refresh_tokens.sql
 │       └── V3__create_classification_rules.sql
 └── test/java/dev/abu/screener_backend/
-    └── ScreenerBackendApplicationTests.java
+    ├── ScreenerBackendApplicationTests.java
+    └── analysis/
+        ├── UserClassificationRuleTest.java
+        └── UserFeedRegistryTest.java
 ```
 
-**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), orderbook management with sync state machine and snapshot fetch queue (Phase 3), classification + feed pipeline stub (Phase 4/5), outbound WebSocket server (Phase 5), and JWT-based auth with PostgreSQL user storage (Phase 6) are complete. Real classification thresholds are **not yet implemented**.
+**Implementation status**: Ticker enumeration, registry, WebSocket connection layer (Phase 1), Disruptor pipeline (Phase 2), orderbook management with sync state machine and snapshot fetch queue (Phase 3), classification + feed pipeline (Phase 4/5), outbound WebSocket server (Phase 5), and JWT-based auth with PostgreSQL user storage (Phase 6) are complete. Per-user classification is complete through **Phase C**: persistence + REST CRUD (Phase A), the `ClassificationRule` abstraction (Phase B), and connect-time runtime wiring with the two-pass classifier and broadcaster merge (Phase C). Live propagation of rule edits to connected users (Phase D) is **not yet implemented** — rule edits take effect only after all of a user's sessions reconnect. Real default tier thresholds live in `DefaultClassificationRule`.
 
 ---
 
@@ -274,7 +284,9 @@ Ring buffer event carrier. Mutable fields: `type` (EventType), `symbol`, `market
 ### `DisruptorShardManager`
 `src/main/java/dev/abu/screener_backend/binance/disruptor/DisruptorShardManager.java`
 
-`@Component`. Creates and owns all Disruptor shards. On `@PostConstruct` starts `shardCount` disruptors (`BlockingWaitStrategy`, `ProducerType.MULTI`), each with one `DepthEventHandler`. `getRingBuffer(symbol)` hashes the symbol to a shard via `abs(symbol.hashCode()) % shardCount` — deterministic, stable assignment.
+`@Component`. Creates and owns all Disruptor shards. On `@PostConstruct` starts `shardCount` disruptors (`BlockingWaitStrategy`, `ProducerType.MULTI`), each with one `DepthEventHandler` wrapping one `OrderBookClassifier` (built with the shared `DefaultClassificationRule`). `getRingBuffer(symbol)` hashes the symbol to a shard via `abs(symbol.hashCode()) % shardCount` — deterministic, stable assignment.
+
+Keeps an `OrderBookClassifier[] classifiers` and exposes `setActiveUserContexts(UserClassificationContext[])` (Phase C) — fans the **same** array reference to every shard's classifier, because a user's configured symbols spread across all shards. Called from the Tomcat connect/disconnect thread via `UserFeedRegistry`.
 
 ### `DisruptorDepthMessageHandler`
 `src/main/java/dev/abu/screener_backend/binance/disruptor/DisruptorDepthMessageHandler.java`
@@ -329,7 +341,7 @@ Core class. Maintains a local orderbook for one `(symbol, market)` pair. Exposes
 - `state`: `volatile OrderBookState` — volatile because `SnapshotFetchQueue` scheduler thread writes `SNAPSHOT_REQUESTED`
 - `lastUpdateId`: last `u` value applied; used for sequence continuity validation
 - `lastPu`: last `pu` value (futures continuity); updated alongside `lastUpdateId`
-- `filterThreshold`: fraction from mid-price beyond which levels are swept (0.30)
+- `filterThreshold`: fraction from mid-price beyond which levels are swept (from `screener.orderbook.price-filter-threshold`, currently `0.1`)
 - `MAX_BUFFER_SIZE`: 500 — hard cap on `diffBuffer` size to prevent memory overflow
 
 **Key methods**:
@@ -401,27 +413,107 @@ When result is `NEEDS_SNAPSHOT` or `NEEDS_RESYNC`:
 
 ## `analysis` — Order Classification
 
+The classification rule (which tier a level falls into) is split from the state machine (HIGH/LOW
+tracking, change detection) and feed submission. The same state-machine/feed logic runs against any
+`ClassificationRule`: the always-on global default, plus a per-user override for configured
+`(symbol, market)` keys. See the three per-user-classification plan docs under `.claude/plans/`.
+
+### `ClassificationRule`
+`src/main/java/dev/abu/screener_backend/analysis/ClassificationRule.java`
+
+Pure, stateless interface (Phase B). `int computeTier(notional, distance, highLiquidity)` returns
+the tier 1–4 a level matches, or 0 (invisible). `double maxDistance(highLiquidity)` returns the
+widest distance any tier can match — drives the classifier's distance-ordered early-break. The
+`highLiquidity` flag is a default-rule concern threaded in by the rule-agnostic classifier; user
+rules ignore it.
+
+### `DefaultClassificationRule`
+`src/main/java/dev/abu/screener_backend/analysis/DefaultClassificationRule.java`
+
+`@Component` singleton (Phase B). The real default tier thresholds, the `HIGH_LIQUIDITY_TICKERS`
+set, and `isHighLiquidity(symbol)`. Two threshold tables: a tighter high-liquidity table
+(`maxDistance` 0.025) and the normal table (`maxDistance` 0.05). Shared across all shards (stateless).
+
+### `ThresholdClassificationRule`
+`src/main/java/dev/abu/screener_backend/analysis/ThresholdClassificationRule.java`
+
+Immutable per-`(symbol, market)` user override leaf (Phase B; consumed in Phase C). Built off the
+hot path from a list of `TierThreshold(tier, minNotional, maxDistance)` records into parallel
+primitive arrays sorted highest-tier-first; `computeTier` returns the first (highest) matching tier
+or 0. Absolute thresholds — ignores `highLiquidity`. `maxDistance(...)` returns the precomputed
+widest configured distance.
+
 ### `OrderBookClassifier`
 `src/main/java/dev/abu/screener_backend/analysis/OrderBookClassifier.java`
 
-Not a Spring bean — constructed manually by `DisruptorShardManager`, one instance per shard. All internal state is accessed exclusively by the owning shard's consumer thread; no synchronization needed.
+Not a Spring bean — constructed manually by `DisruptorShardManager`, one instance per shard. Per-shard
+state is accessed exclusively by the owning shard's consumer thread; the only cross-thread field is
+the `volatile UserClassificationContext[] activeUserContexts` (swapped atomically, read once per
+`process()`).
 
-**Entry point**: `process(OrderBook ob)` — called by `DepthEventHandler` after every ring buffer event.
+**Entry point**: `process(OrderBook ob)` — runs a **two-pass** classification (Phase C):
+1. **Default pass** — always — against the per-shard `defaultStates` (`HashMap`), `defaultRule`, and
+   the global `OrderBookFeedStore`.
+2. **Per-user passes** — for each active context whose `configuredKeys()` contain this key — against
+   that context's own `states` map, override leaf rule, and personal feed store.
 
-**Internal state per `(symbol, market)` key**: a `SymbolState` tracking `ActivityLevel` (LOW/HIGH) and the last-emitted `ClassifiedLevel[]` arrays for bids and asks. Change-detection uses `Arrays.equals()` on `ClassifiedLevel` record arrays (value equality via record's `equals()`).
+`highLiquidity` is computed once per book via `defaultRule.isHighLiquidity()` and threaded into both
+passes. When no custom users are connected, the user loop body never runs (one volatile read + empty
+check). The shared per-context work lives in `classifyOne(ob, key, state, rule, feedStore, hl)`,
+which contains the full state machine — so a configured book leaving SYNCED also DROPs out of the
+user's personal feed and resets that context's state.
 
-**`classify(TreeMap)` — stub**: assigns tier-4 to all levels. Real proximity/notional thresholds to be implemented in Phase 4. With the stub, every diff on a SYNCED orderbook triggers an UPDATE — expected during development.
+**Per-context state per `(symbol, market)`**: a `SymbolState` tracking `ActivityLevel` (LOW/HIGH),
+the last-emitted `ClassifiedLevel[]` working arrays, and two reusable top-K `Scratch` buffers.
+Selection picks the top-5 by `(tier DESC, notional DESC, distance ASC)`; a side is visible iff its
+best slot has tier ≥ 1. No `ClassifiedLevel` is allocated for LOW books (the dominant GC win).
 
-**Flow**:
-- If orderbook is not SYNCED and was previously HIGH → emits DROP, resets to LOW
-- If SYNCED: classifies top-5 bids/asks; determines ADD/UPDATE/DROP; writes to `OrderBookFeedStore`
-- `hasVisibleLevel()` — a level is visible if its tier ≤ 4
+### `SymbolState`
+`src/main/java/dev/abu/screener_backend/analysis/SymbolState.java`
+
+Package-private (Phase C — extracted from `OrderBookClassifier` with no behavior change so a context
+can declare `Map<String, SymbolState>`). Holds the `ActivityLevel`, the `workBids`/`workAsks`
+arrays, and the two `Scratch` buffers (nested class). Each instance is single-threaded (its key is
+pinned to one shard), even when the enclosing map is a `ConcurrentHashMap`.
+
+### `UserClassificationRule`
+`src/main/java/dev/abu/screener_backend/analysis/UserClassificationRule.java`
+
+POJO (Phase C). A per-user lookup table `Map<String, ThresholdClassificationRule> byKey` keyed by
+`"SYMBOL:MARKET"`, plus a cached `configuredKeys()` set for O(1) hot-path membership. Deliberately
+does **not** implement `ClassificationRule`: the classifier fetches the leaf via `ruleFor(key)` and
+passes it to selection; unconfigured keys are never touched by the user pass (they reach the user via
+the broadcaster merge).
+
+### `UserClassificationContext`
+`src/main/java/dev/abu/screener_backend/analysis/UserClassificationContext.java`
+
+POJO (Phase C). One per connected user **with at least one rule**, shared by all that user's
+sessions. Bundles `userId`, the `UserClassificationRule`, a personal `OrderBookFeedStore` (plain
+`new` instance — the store is dependency-free), and a `ConcurrentHashMap<String, SymbolState> states`
+(concurrent because multiple shard threads insert configured keys; each `SymbolState` value stays
+single-threaded). Users with no rules get no context (`session.context == null`) and consume the
+global feed directly.
+
+### `UserFeedRegistry`
+`src/main/java/dev/abu/screener_backend/analysis/UserFeedRegistry.java`
+
+`@Component` (Phase C). Source of truth for active contexts, **refcounted per `userId`**. All mutation
+runs inside one `synchronized` block (connect/disconnect are rare Tomcat-thread calls).
+`onUserConnect(userId)` builds a context via `ruleService.buildRuntimeRule` on first connect (returns
+`null` for a no-rules user) or reuses + bumps the refcount on subsequent connects;
+`onUserDisconnect(userId)` decrements and discards the context only when the last session closes.
+Each lifecycle change rebuilds an immutable `volatile active[]` array, fans it out to every shard via
+`shardManager.setActiveUserContexts(active)`, and exposes it to the broadcaster via
+`activeContexts()`. The array is never mutated in place, so readers need no lock.
 
 ---
 
-## `analysis/rule` — Per-User Classification Rules (Phase A: persistence + REST)
+## `analysis/rule` — Per-User Classification Rules (Phase A: persistence + REST; Phase C seam)
 
-Persistence and REST CRUD for user-defined classification thresholds. **Off the hot path** — nothing here is read by any Disruptor-thread code yet; runtime integration (loading rules at WebSocket connect time) is Phase C. See `.claude/plans/per-user-classification-phase-a.md`.
+Persistence and REST CRUD for user-defined classification thresholds, plus the Phase C
+connect-time translation seam (`buildRuntimeRule`). See `.claude/plans/per-user-classification-phase-a.md`
+and `.claude/plans/per-user-classification-phase-c.md`.
 
 ### `ClassificationRuleEntity`
 `src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleEntity.java`
@@ -442,8 +534,13 @@ JPA entity mapped to `classification_rules`. **One row per tier** — a logical 
 - `deleteRules(userId, BulkDeleteRequest)` — `@Transactional`; bulk delete per target; idempotent.
 - `getRules(userId)` — groups tier rows by `(symbol, market)` into `RuleResponse` list.
 - `getRule(userId, symbol, market)` — single pair; `404` if none.
+- `buildRuntimeRule(userId)` — **Phase C seam**, `@Transactional(readOnly = true)`. Translates the
+  user's persisted rows into an immutable runtime `UserClassificationRule` (`Optional.empty()` if the
+  user has no rules), reusing the same `"SYMBOL:MARKET"` grouping as `getRules`; each group becomes a
+  `ThresholdClassificationRule`. Called by `UserFeedRegistry` at WebSocket connect time. Input was
+  range-validated at write time, so this does not re-validate.
 
-Validation rules: tiers non-empty; each tier ∈ `[1,4]`; no duplicate tiers; **tiers contiguous starting at 1** (`{1,2,4}` rejected — tier 3 missing); `minNotional ≥ 0`; `maxDistance ∈ (0, priceFilterThreshold]` (upper bound read from live `OrderbookProperties`, currently 0.055 — a rule beyond the orderbook's price filter could never match); each target must be a currently-tracked ticker covering the requested market (via `TickerRegistry`); total targets per request ≤ `screener.classification.max-targets-per-request` (default 200). Symbols normalized to uppercase.
+Validation rules: tiers non-empty; each tier ∈ `[1,4]`; no duplicate tiers; **tiers contiguous starting at 1** (`{1,2,4}` rejected — tier 3 missing); `minNotional ≥ 0`; `maxDistance ∈ (0, priceFilterThreshold]` (upper bound read from live `OrderbookProperties`, currently `0.1` — a rule beyond the orderbook's price filter could never match); each target must be a currently-tracked ticker covering the requested market (via `TickerRegistry`); total targets per request ≤ `screener.classification.max-targets-per-request` (default 200). Symbols normalized to uppercase.
 
 ### `ClassificationRuleController`
 `src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleController.java`
@@ -487,7 +584,7 @@ Record `(String message, int status, String path)` — the uniform JSON body ser
 ### `ClassifiedLevel`
 `src/main/java/dev/abu/screener_backend/feed/ClassifiedLevel.java`
 
-Record: `(price, quantity, tier, firstSeenMillis)`. All-primitive fields — record `equals()` provides correct value comparison, used by `Arrays.equals()` in the classifier's change-detection.
+Record: `(price, quantity, tier, firstSeenMillis, distance)`. All-primitive fields. `distance` is the fractional distance from mid-price (`0.05` = 5%), carried verbatim from `PriceLevelEntry.distance` and delivered to clients. The classifier's `applyNewOrders` detects changes by comparing these fields slot-by-slot (not `Arrays.equals`), allocating a new `ClassifiedLevel` only when a slot's value actually changed.
 
 ### `FeedEventType`
 `src/main/java/dev/abu/screener_backend/feed/FeedEventType.java`
@@ -516,12 +613,16 @@ Record: `(symbol, market, type, bids[], asks[])`. Used as both `snapshotMap` val
 ### `OrderBookBroadcaster`
 `src/main/java/dev/abu/screener_backend/feed/OrderBookBroadcaster.java`
 
-`@Component`. Runs the 100ms drain loop on a single `@Scheduled` thread. All broadcaster logic is single-threaded — no synchronization inside this class.
+`@Component`. Runs the 100ms drain loop on a single `@Scheduled` thread. All broadcaster logic is single-threaded — no synchronization inside this class. Injects `UserFeedRegistry` to read active contexts each tick (Phase C).
 
-- `drain()` — drains `feedStore.drainPending()`, iterates sessions, delivers a SNAPSHOT batch to `NEED_SNAPSHOT` sessions and per-session UPDATE batches to `READY` sessions via `session.enqueueBatch()`. If `enqueueBatch()` returns `false` (queue full or session shutting down), calls `session.disconnect()` to evict the slow client.
+- `drain()` — drains the global `feedStore.drainPending()` once, then drains **each active context's personal feed once per tick** (a context may back multiple sessions). Global update bodies are built lazily as a **keyed** `Map<"SYMBOL:MARKET", body>` so they can be filtered per custom session. Per session:
+  - `NEED_SNAPSHOT` → default session gets the global snapshot; a custom session gets a **merged snapshot** (global filtered to exclude its `configuredKeys`, unioned with its personal snapshot).
+  - `READY` default session → the global bodies (today's path).
+  - `READY` custom session → its personal bodies **plus** global bodies for keys it has **not** configured — exactly one authoritative update per `(symbol, market)` per tick.
+  - `enqueueBatch()` returning `false` evicts the slow client via `session.disconnect()`.
 - `addSession(session)` / `removeSession(session)` — called from the WebSocket endpoint on connect/disconnect; thread-safe via `CopyOnWriteArrayList`.
 - `@PreDestroy shutdown()` — signals all sessions to disconnect on Spring context shutdown.
-- JSON building uses a reusable `StringBuilder sb` (4096-byte initial capacity) — reset and reused within each drain cycle. `injectSeq()` prepends `{"seq":N,` to a pre-built body string.
+- JSON building uses a reusable `StringBuilder sb` (4096-byte initial capacity); all body strings are captured via `toString()` before `injectSeq()` reuses the buffer. `injectSeq()` prepends `{"seq":N,` to a pre-built body string; `seq` stays strictly per-session across its merged batch.
 
 The broadcaster never touches the TCP socket. Its only per-session interaction is `enqueueBatch()` — a non-blocking in-memory offer.
 
@@ -546,14 +647,16 @@ Replaces `SpringConfigurator` from `spring-websocket`, which fails in Spring Boo
 ### `ScreenerWebSocketEndpoint`
 `src/main/java/dev/abu/screener_backend/ws/ScreenerWebSocketEndpoint.java`
 
-Singleton `@Component` + `@ServerEndpoint("/ws")`. All client connections share one instance — safe because it holds no per-connection mutable state. Per-session state is stored in `session.getUserProperties()` under the key `"session"`.
+Singleton `@Component` + `@ServerEndpoint("/ws")`. All client connections share one instance — safe because it holds no per-connection mutable state. Per-session state is stored in `session.getUserProperties()` under the key `"session"`. Autowires `UserFeedRegistry` for connect-time rule loading (Phase C).
 
 | Callback | Responsibility |
 |---|---|
-| `@OnOpen` | Create `UserWebSocketSession`, store in `getUserProperties`, start send loop, register with broadcaster |
-| `@OnClose` | Retrieve session, call `disconnect()`, call `broadcaster.removeSession()` — sole owner of `removeSession()` |
-| `@OnError` | Same as `@OnClose`; Tomcat fires both on error, both are idempotent |
+| `@OnOpen` | Validate JWT, then `userFeedRegistry.onUserConnect(userId)` (may return `null`); create `UserWebSocketSession(session, userId, context)`, store in `getUserProperties`, start send loop, register with broadcaster |
+| `@OnClose` | Retrieve session → `release(session)`: `disconnect()` + `broadcaster.removeSession()` + (guarded) `userFeedRegistry.onUserDisconnect(userId)` |
+| `@OnError` | Same `release(session)` path; Tomcat fires both on error |
 | `@OnMessage` | Currently handles only `SNAPSHOT_REQUEST` (raw string); sets session status to `NEED_SNAPSHOT` |
+
+**Refcount-safe teardown**: Tomcat may fire both `@OnClose` and `@OnError` for one connection. `disconnect()`/`removeSession()` are idempotent, but a registry refcount decrement is **not** — so `onUserDisconnect` is guarded by the session's one-shot `markReleased()` (AtomicBoolean CAS), ensuring exactly one decrement per session.
 
 ### `UserWebSocketSession`
 `src/main/java/dev/abu/screener_backend/ws/UserWebSocketSession.java`
@@ -566,8 +669,10 @@ Per-session object created in `@OnOpen` and stored in `session.getUserProperties
 - `running` (`volatile`) — send loop exit signal; written by broadcaster (via `disconnect()`), read by virtual thread
 - `seqNumber` — per-session monotonic counter; accessed exclusively by the broadcaster thread (not `volatile`); reset by `resetSeq()` before snapshot delivery, incremented by `getAndIncrementSeq()`
 - `virtualThread` (`volatile`) — reference to the send loop thread for interruption
+- `context` (final, nullable) — this user's `UserClassificationContext`, or `null` for a default-only user; read by the broadcaster to drive the per-session merge (Phase C)
+- `released` (`AtomicBoolean`) — one-shot guard; `markReleased()` returns `true` only on the first call so the registry refcount is decremented exactly once across the `@OnClose`/`@OnError` double-fire
 
-Key methods: `startSendLoop()`, `enqueueBatch(List<String>)`, `disconnect()`, `resetSeq()`, `getAndIncrementSeq()`.
+Key methods: `startSendLoop()`, `enqueueBatch(List<String>)`, `disconnect()`, `resetSeq()`, `getAndIncrementSeq()`, `getContext()`, `markReleased()`.
 
 The send loop runs on a Java 21 virtual thread: `sendQueue.take()` parks (not OS-blocks) when empty; `sendText()` parks when the TCP buffer is full. A stalled client parks only its own virtual thread — the broadcaster and all other sessions are unaffected.
 
@@ -634,7 +739,7 @@ Java record bound from `screener.orderbook.*`:
 
 | Property                        | Purpose |
 |---------------------------------|---------|
-| `priceFilterThreshold`          | Fraction from mid-price beyond which levels are swept (0.30) |
+| `priceFilterThreshold`          | Fraction from mid-price beyond which levels are swept (`price-filter-threshold`, currently `0.1`) |
 | `spotSnapshotDispatchRateMs`    | Scheduler interval for spot snapshot dispatch (ms) |
 | `futuresSnapshotDispatchRateMs` | Scheduler interval for futures snapshot dispatch (ms) |
 
@@ -703,6 +808,20 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 
 `@SpringBootTest` smoke test. Single `contextLoads()` method — verifies the Spring context initializes without errors.
 
+### `UserClassificationRuleTest`
+`src/test/java/dev/abu/screener_backend/analysis/UserClassificationRuleTest.java`
+
+Plain JUnit unit test (Phase C). Verifies `UserClassificationRule.configuredKeys()` mirrors the
+`byKey` map and `ruleFor(key)` returns the leaf for configured keys / `null` otherwise.
+
+### `UserFeedRegistryTest`
+`src/test/java/dev/abu/screener_backend/analysis/UserFeedRegistryTest.java`
+
+Plain JUnit unit test (Phase C) of the refcount lifecycle, using hand-rolled test doubles (no
+Mockito): connect builds + pushes a context; a no-rules user gets no context; a second connect
+reuses the context without a DB reload or re-push; the context survives until the **last** session
+disconnects; disconnecting an unknown user is a no-op.
+
 ---
 
 ## What Is Not Yet Implemented
@@ -716,10 +835,18 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 | Orderbook sync state machine (PENDING → SYNCED) | **Complete (Phase 3)** |
 | Snapshot fetch queue with rate limiting | **Complete (Phase 3)** |
 | 30% price level filter | **Complete (Phase 3)** |
-| Order classification pipeline (classifier + feed store + broadcaster) | **Complete (Phase 4/5 stub)** |
+| Order classification pipeline (classifier + feed store + broadcaster) | **Complete (Phase 4/5)** |
 | Outbound WebSocket server (`ws/` package, virtual-thread delivery) | **Complete (Phase 5)** |
 | JWT auth (register/login/refresh/logout/me) + PostgreSQL user storage | **Complete (Phase 6)** |
 | WebSocket auth (query-param JWT validated in `@OnOpen`) | **Complete (Phase 6)** |
 | Per-user classification rules — persistence + REST CRUD (`analysis/rule/`) | **Complete (Phase A)** |
-| Per-user classification — runtime hot-path integration (`ClassificationRule` refactor, contexts, feed merge) | Not started (Phases B–D) |
-| Real classification thresholds (proximity %, notional USD) | Not started |
+| Per-user classification — `ClassificationRule` abstraction (default + threshold rules) | **Complete (Phase B)** |
+| Per-user classification — runtime wiring (contexts, registry, two-pass classifier, broadcaster merge, connect-time loading) | **Complete (Phase C)** |
+| Real classification thresholds (proximity %, notional USD) | **Complete** — default tiers in `DefaultClassificationRule`; per-user overrides via `ThresholdClassificationRule` |
+| Per-user classification — live propagation of rule edits to connected users (rebuild + atomic swap + fresh SNAPSHOT) | Not started (Phase D) |
+
+### Phase C accepted limitations
+
+- **Cold-start snapshot gap**: a just-registered context's personal store is empty until the next diff classifies each configured symbol (sub-second for SYNCED books). The first merged snapshot may omit those symbols; they appear via UPDATE within a tick or two.
+- **`TOP_LEVELS = 5` still caps custom users**: a user with wide/lenient thresholds still receives only the top 5 per side by `(tier, notional, distance)`.
+- **Edits need a full reconnect of all the user's sessions**: a second connect reuses the already-loaded context, so a rule edit takes effect only after every session for that user disconnects and a fresh connect reloads from the DB. Live propagation is Phase D.

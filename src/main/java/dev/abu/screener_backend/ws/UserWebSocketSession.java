@@ -1,5 +1,6 @@
 package dev.abu.screener_backend.ws;
 
+import dev.abu.screener_backend.analysis.UserClassificationContext;
 import jakarta.websocket.CloseReason;
 import jakarta.websocket.Session;
 import lombok.Getter;
@@ -10,6 +11,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 public class UserWebSocketSession {
@@ -21,6 +23,20 @@ public class UserWebSocketSession {
     private final Session jakartaSession;
     @Getter
     private final UUID userId;
+
+    /**
+     * This session's per-user classification context, or {@code null} for a default-only user
+     * (no custom rules). The broadcaster reads it to merge the personal feed with the filtered
+     * global feed. Shared across all of this user's sessions (refcounted in {@code UserFeedRegistry}).
+     */
+    @Getter
+    private final UserClassificationContext context;
+
+    // One-shot guard so the registry refcount is decremented exactly once per session, even though
+    // Tomcat may fire BOTH @OnClose and @OnError. (disconnect()/removeSession() are idempotent on
+    // their own, but a refcount decrement is not.)
+    private final AtomicBoolean released = new AtomicBoolean(false);
+
     private final ArrayBlockingQueue<List<String>> sendQueue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
 
     @Setter @Getter
@@ -36,9 +52,18 @@ public class UserWebSocketSession {
     // setStatus() does NOT touch this field — it can be called from the @OnMessage Tomcat thread.
     private int seqNumber = 0;
 
-    public UserWebSocketSession(Session jakartaSession, UUID userId) {
+    public UserWebSocketSession(Session jakartaSession, UUID userId, UserClassificationContext context) {
         this.jakartaSession = jakartaSession;
         this.userId = userId;
+        this.context = context;
+    }
+
+    /**
+     * Atomically marks this session's registry refcount as released. Returns {@code true} the
+     * first time only, so the caller decrements the user's refcount exactly once.
+     */
+    public boolean markReleased() {
+        return released.compareAndSet(false, true);
     }
 
     // ---- Called by broadcaster (@Scheduled thread) ----
