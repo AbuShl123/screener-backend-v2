@@ -3,7 +3,7 @@ CREATE TABLE classification_rules (
     user_id      UUID             NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     symbol       VARCHAR(32)      NOT NULL,
     market       VARCHAR(16)      NOT NULL,          -- 'SPOT' | 'FUTURES'
-    tier_no      SMALLINT         NOT NULL,          -- 1..4 (enforced in app layer)
+    tier_no      INTEGER          NOT NULL,          -- 1..4 (enforced in app layer)
     min_notional DOUBLE PRECISION NOT NULL,          -- USD, >= 0
     max_distance DOUBLE PRECISION NOT NULL,          -- fraction, (0, price-filter-threshold]
     created_at   TIMESTAMPTZ      NOT NULL DEFAULT NOW(),

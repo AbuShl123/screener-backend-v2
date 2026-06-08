@@ -30,7 +30,7 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/register", "/api/auth/login", "/api/auth/refresh").permitAll()
-                        .requestMatchers("/ws").permitAll()
+                .requestMatchers("/ws").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class);
@@ -40,8 +40,13 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        // "null" covers file:// origins; add your real frontend origin here when deployed
-        config.setAllowedOriginPatterns(List.of("null", "http://localhost:*", "http://127.0.0.1:*"));
+        config.setAllowedOriginPatterns(List.of(
+                "null",                          // file:// (opening index.html directly from disk)
+                "http://localhost:*",            // local dev
+                "http://127.0.0.1:*",           // local dev
+                "https://tc-screener.com",       // production
+                "https://www.tc-screener.com"   // production www
+        ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);

@@ -42,7 +42,7 @@ public class TickerService {
     private static final String CONTRACT_TYPE  = "PERPETUAL";
 
     private static final Set<String> EXCLUDED_SYMBOLS = Set.of(
-            "USDCUSDT", "FDUSDUSDT", "DAIUSDT", "PYUSDUSDT", "USD1USDT"
+            "USDCUSDT", "FDUSDUSDT", "DAIUSDT", "PYUSDUSDT", "USD1USDT", "XAUTUSDT"
     );
 
     private final BinanceRestClient      restClient;

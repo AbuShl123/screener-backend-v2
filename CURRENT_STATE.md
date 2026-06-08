@@ -545,16 +545,17 @@ Validation rules: tiers non-empty; each tier ∈ `[1,4]`; no duplicate tiers; **
 ### `ClassificationRuleController`
 `src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleController.java`
 
-`@RestController` at `/api/screener/rules`. Already covered by `/api/screener/**`.authenticated() — no `SecurityConfig` change. `userId` always from the JWT principal, never the body.
+`@RestController` at `/api/rules`. `userId` always from the JWT principal, never the body.
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/api/screener/rules` | List the caller's rules, grouped by `(symbol, market)` |
-| `GET` | `/api/screener/rules/{symbol}/{market}` | The caller's rule for one pair (404 if none) |
-| `PUT` | `/api/screener/rules` | Bulk upsert — replace tier set for each target |
-| `DELETE` | `/api/screener/rules` | Bulk delete (reset to default) |
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `GET` | `/api/rules/default` | Public | Return the global default classification rule (`DefaultRuleResponse`) |
+| `GET` | `/api/rules` | Bearer JWT | List the caller's rules, grouped by `(symbol, market)` |
+| `GET` | `/api/rules/{symbol}/{market}` | Bearer JWT | The caller's rule for one pair (404 if none) |
+| `PUT` | `/api/rules` | Bearer JWT | Bulk upsert — replace tier set for each target |
+| `DELETE` | `/api/rules` | Bearer JWT | Bulk delete (reset to default) |
 
-DTOs (`analysis/rule/dto/`): `TierDto`, `RuleDto`, `TargetDto`, `RuleAssignmentDto`, `BulkRuleRequest`, `BulkDeleteRequest`, `RuleResponse` — records mirroring the auth DTO style.
+DTOs (`analysis/rule/dto/`): `TierDto`, `RuleDto`, `TargetDto`, `RuleAssignmentDto`, `BulkRuleRequest`, `BulkDeleteRequest`, `RuleResponse`, `DefaultRuleResponse` — records mirroring the auth DTO style.
 
 ---
 
