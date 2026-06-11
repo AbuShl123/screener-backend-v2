@@ -10,6 +10,8 @@ package dev.abu.screener_backend.analysis;
  */
 public interface ClassificationRule {
 
+    // TODO: remove highLiquidity from the methods below
+
     /**
      * @return the tier 1–4 if the level matches a tier's notional AND distance thresholds,
      *         or 0 (invisible) if it matches none. Higher-numbered tiers are checked first,

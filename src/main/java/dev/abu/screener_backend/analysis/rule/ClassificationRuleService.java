@@ -1,7 +1,7 @@
 package dev.abu.screener_backend.analysis.rule;
 
 import dev.abu.screener_backend.analysis.ThresholdClassificationRule;
-import dev.abu.screener_backend.analysis.UserClassificationRule;
+import dev.abu.screener_backend.analysis.UserClassificationRules;
 import dev.abu.screener_backend.analysis.rule.dto.*;
 import dev.abu.screener_backend.binance.websocket.Market;
 import dev.abu.screener_backend.config.OrderbookProperties;
@@ -145,7 +145,7 @@ public class ClassificationRuleService {
 
     /**
      * Translates a user's persisted tier rows into an immutable runtime
-     * {@link UserClassificationRule}, called at WebSocket connect time on the Tomcat thread
+     * {@link UserClassificationRules}, called at WebSocket connect time on the Tomcat thread
      * (off the hot path). Returns {@link Optional#empty()} when the user has no rules — those
      * users get no context and consume the global default feed directly.
      *
@@ -155,7 +155,7 @@ public class ClassificationRuleService {
      * unchanged.
      */
     @Transactional(readOnly = true)
-    public Optional<UserClassificationRule> buildRuntimeRule(UUID userId) {
+    public Optional<UserClassificationRules> buildRuntimeRule(UUID userId) {
         List<ClassificationRuleEntity> rows = ruleRepository.findByUserId(userId);
         if (rows.isEmpty()) {
             return Optional.empty();
@@ -176,7 +176,7 @@ public class ClassificationRuleService {
             }
             byKey.put(group.getKey(), ThresholdClassificationRule.of(bands));
         }
-        return Optional.of(new UserClassificationRule(byKey));
+        return Optional.of(new UserClassificationRules(byKey));
     }
 
     // ---------------------------------------------------------------------------------------

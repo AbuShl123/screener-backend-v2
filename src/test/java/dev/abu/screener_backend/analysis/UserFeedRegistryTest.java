@@ -41,7 +41,7 @@ class UserFeedRegistryTest {
 
     /** Returns a canned rule per user; counts how often a DB translation was requested. */
     static class FakeRuleService extends ClassificationRuleService {
-        final Map<UUID, UserClassificationRule> rules = new HashMap<>();
+        final Map<UUID, UserClassificationRules> rules = new HashMap<>();
         int buildCount = 0;
 
         FakeRuleService() {
@@ -49,16 +49,16 @@ class UserFeedRegistryTest {
         }
 
         @Override
-        public Optional<UserClassificationRule> buildRuntimeRule(UUID userId) {
+        public Optional<UserClassificationRules> buildRuntimeRule(UUID userId) {
             buildCount++;
             return Optional.ofNullable(rules.get(userId));
         }
     }
 
-    private static UserClassificationRule ruleWith(String key) {
+    private static UserClassificationRules ruleWith(String key) {
         ThresholdClassificationRule leaf = ThresholdClassificationRule.of(List.of(
                 new ThresholdClassificationRule.TierThreshold(1, 100_000, 0.01)));
-        return new UserClassificationRule(Map.of(key, leaf));
+        return new UserClassificationRules(Map.of(key, leaf));
     }
 
     @Test

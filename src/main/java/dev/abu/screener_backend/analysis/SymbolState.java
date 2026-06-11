@@ -20,7 +20,7 @@ import static dev.abu.screener_backend.analysis.OrderBookClassifier.TOP_LEVELS;
  * {@code ConcurrentHashMap} when a context is shared across shards; that concurrency lives on the
  * map structure, not on individual {@code SymbolState} values.)
  */
-class SymbolState {
+public class SymbolState {
 
     enum ActivityLevel { LOW, HIGH }
 

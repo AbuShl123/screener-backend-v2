@@ -16,12 +16,12 @@ import java.util.Set;
  * <p>Immutable after construction; safe to publish across threads via the {@code volatile}
  * active-context array.
  */
-public final class UserClassificationRule {
+public final class UserClassificationRules {
 
     private final Map<String, ThresholdClassificationRule> byKey; // key = "SYMBOL:MARKET"
     private final Set<String> configuredKeys;                     // = byKey.keySet(), cached
 
-    public UserClassificationRule(Map<String, ThresholdClassificationRule> byKey) {
+    public UserClassificationRules(Map<String, ThresholdClassificationRule> byKey) {
         this.byKey = byKey;
         this.configuredKeys = byKey.keySet();
     }

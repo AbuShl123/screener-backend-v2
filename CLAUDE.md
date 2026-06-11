@@ -93,13 +93,22 @@ Binance Futures WebSocket Connections (java-websocket)
               │
   ┌───────────▼───────────────────┐
   │      Orderbook Store          │
-  │  TreeMap<Double,             │
+  │  TreeMap<Double,              │
   │    PriceLevelEntry>           │
   │  per (symbol, market) pair    │
-  └───────────────────────────────┘
+  └───────────┬───────────────────┘
               │
-  (Future) User WebSocket Server
-  Push classified events to subscribers
+  ┌───────────▼───────────────────┐
+  │   Feed Broadcaster            │
+  │   100ms drain loop            │
+  │   Per-user merge + delivery   │
+  └───────────┬───────────────────┘
+              │
+  ┌───────────▼───────────────────┐
+  │   Client WebSocket Server     │
+  │   /ws endpoint (Jakarta WS)   │
+  │   Virtual-thread send loops   │
+  └───────────────────────────────┘
 ```
 
 ---
@@ -141,8 +150,8 @@ Binance enforces a maximum of **1024 streams per WebSocket connection**. Stream 
 
 ### Separate Pools
 Maintain independent connection pools for spot and futures:
-- Spot connections: `wss://stream.binance.com:9443/stream`
-- Futures connections: `wss://fstream.binance.com/stream`
+- Spot connections: `wss://stream.binance.com/ws`
+- Futures connections: `wss://fstream.binance.com/ws`
 
 ### Failure Isolation
 Each connection manages its own lifecycle independently. A dropped connection must not affect other connections. On disconnect:
@@ -157,22 +166,21 @@ Each connection manages its own lifecycle independently. A dropped connection mu
 
 ### Data Structure
 Each `(symbol, market)` pair maintains an independent local orderbook:
-- **Bids**: `TreeMap<Double, PriceLevelEntry>` — natural descending iteration via `descendingKeySet()` or `firstKey()` for best bid
-- **Asks**: `TreeMap<Double, PriceLevelEntry>` — natural ascending order, `firstKey()` for best ask
+- **Bids**: `TreeMap<Double, PriceLevelEntry>` with `Comparator.reverseOrder()` — `firstKey()` = best bid
+- **Asks**: `TreeMap<Double, PriceLevelEntry>` natural ascending order — `firstKey()` = best ask
 
 `TreeMap` gives O(log n) insert/update/delete and O(1) best bid/ask access. Its sorted structure also simplifies the 30% filter sweep.
 
-`PriceLevelEntry` is a mutable value object holding two fields:
+`PriceLevelEntry` is a mutable value object holding three fields:
 ```java
 class PriceLevelEntry {
-    double quantity;
-    long firstSeenMillis;
+    double quantity;         // mutable; updated in-place — zero allocation on hot path
+    final long firstSeenMillis;
+    double distance;         // fractional distance from mid-price; updated after each diff
 }
 ```
 
-Quantity updates on existing levels mutate `entry.quantity` in place — zero object allocation on the hot path. `firstSeenMillis` is set once on insertion and never changed.
-
-**Known overhead**: `TreeMap<Double, PriceLevelEntry>` boxes the `Double` key (~48–80 bytes per node). Accepted for now. Future optimization: replace with a primitive-friendly sorted structure (e.g., custom sorted double array or Eclipse Collections primitive map).
+**Known overhead**: `TreeMap<Double, PriceLevelEntry>` boxes the `Double` key (~48–80 bytes per node). Accepted for now. Future optimization: replace with a primitive-friendly sorted structure.
 
 ### Price Level Lifetime Tracking
 Users can see how long a specific price level has existed in the orderbook. Binance diff streams do not provide this — it is calculated locally.
@@ -181,17 +189,17 @@ Users can see how long a specific price level has existed in the orderbook. Bina
 - **Insert**: price key not present in the map → create `new PriceLevelEntry(qty, System.currentTimeMillis())`
 - **Update**: price key already present → set `entry.quantity = newQty`, leave `firstSeenMillis` untouched
 - **Remove** (qty == 0 or 30% sweep): `TreeMap.remove(price)` — timestamp discarded automatically
-- **Re-add**: if a previously removed level reappears, treat it as a fresh insert with a new timestamp — the level genuinely left the book and returned
+- **Re-add**: if a previously removed level reappears, treat it as a fresh insert with a new timestamp
 
 **Lifetime calculation** (for UI delivery):
 ```
 lifetimeMillis = System.currentTimeMillis() - entry.firstSeenMillis
 ```
 
-**Re-sync behaviour**: when an orderbook is reset and rebuilt from a new snapshot, all existing entries are discarded and timestamps reset. Lifetime reflects only the current continuous presence of a level, not historical appearances.
+**Re-sync behaviour**: when an orderbook is reset and rebuilt from a new snapshot, all existing entries are discarded and timestamps reset.
 
 ### Price Level Filtering (30% Threshold)
-To bound memory usage, price levels further than 30% from the current market price are not retained.
+To bound memory usage, price levels further than 30% from the current market price are not retained. Configured via `screener.orderbook.price-filter-threshold` (default `0.1` = 10%).
 
 **Mid-price formula**:
 ```
@@ -200,9 +208,9 @@ midPrice = (bestBid + bestAsk) / 2.0
 
 **On each diff update batch**:
 1. Apply all zero-quantity removals first
-2. Apply all non-zero updates, filtering any new level where `abs(level - midPrice) / midPrice > 0.30`
+2. Apply all non-zero updates, filtering any new level where `abs(level - midPrice) / midPrice > threshold`
 3. Recalculate midPrice using updated best bid/ask
-4. Sweep existing levels: remove any that now fall outside the 30% window
+4. Sweep existing levels: remove any that now fall outside the threshold window
 
 **Rule**: Recalculate midPrice **after** applying the update batch, not before. The incoming update may contain the new best bid/ask.
 
@@ -216,7 +224,7 @@ Per Binance protocol: any update with `quantity = 0.0` means that price level no
 ### Standard Binance Algorithm
 For each `(symbol, market)` pair, follow Binance's documented local order book process:
 
-1. Subscribe to `@depth@100ms` stream — begin buffering updates immediately
+1. Subscribe to `@depth` stream — begin buffering updates immediately
 2. Dispatch REST snapshot request:
    - Spot: `GET /api/v3/depth?symbol=X&limit=1000`
    - Futures: `GET /fapi/v1/depth?symbol=X&limit=1000`
@@ -228,7 +236,7 @@ For each `(symbol, market)` pair, follow Binance's documented local order book p
 
 **Futures only**: Additionally validate `pu` continuity between consecutive updates. If a gap is detected, the orderbook is corrupted — discard it and re-sync.
 
-**Critical timing note**: Buffering must begin the moment the snapshot **request is dispatched**, not when the response arrives. The REST call can take 100–500ms during which hundreds of diffs may arrive. All of those diffs must be available for step 4–6 above.
+**Critical timing note**: Buffering must begin the moment the snapshot **request is dispatched**, not when the response arrives. The REST call can take 100–500ms during which hundreds of diffs may arrive. All of those diffs must be available for steps 4–6 above.
 
 ### Startup Snapshot Throttling
 Binance enforces API weight limits (spot: 6000/min, futures: 2400/min). Each snapshot request costs 50 weight (spot) or 20 weight (futures). Fetching all snapshots simultaneously would trigger a ban.
@@ -237,11 +245,10 @@ Binance enforces API weight limits (spot: 6000/min, futures: 2400/min). Each sna
 1. Maintain a rate-limited snapshot fetch queue
 2. Dispatch snapshot requests up to the weight budget per minute
 3. Buffer diff updates only for tickers whose snapshot request has been dispatched
-4. **Drop** diff updates for tickers whose snapshot has not yet been requested (no baseline to sync against — buffering without a snapshot is wasteful)
+4. **Drop** diff updates for tickers whose snapshot has not yet been requested (no baseline to sync against)
 5. After ~1 minute (weight limit resets), continue fetching snapshots for the next batch
-6. Repeat until all tickers are synchronized
 
-**Accepted tradeoff**: Full orderbook coverage takes several minutes at startup. This is a known limitation. Future work may explore higher-weight API access or snapshot caching strategies.
+**Accepted tradeoff**: Full orderbook coverage takes several minutes at startup. This is a known limitation.
 
 ### Orderbook Sync State Machine
 Each `(symbol, market)` orderbook tracks an explicit state:
@@ -263,24 +270,45 @@ Any sync failure (sequence gap, parse error, or empty buffer after snapshot) res
 ### Importance Tiers
 Each price level in a `SYNCED` orderbook is classified on two axes: **proximity to spread** and **notional value (USD)**.
 
-| Tier | Label | Characteristics |
-|------|-------|-----------------|
-| 1 | Purple | Closest to spread, highest notional |
-| 2 | Red | Near spread, high notional |
-| 3 | Yellow | Moderate proximity or moderate notional |
-| 4 | Green | Further from spread, lower notional |
-| 5 | Gray | Below interest threshold |
+| Tier | Significance |
+|------|-------------|
+| 1 | Highest significance — very close to the spread, very high notional |
+| 2 | High significance — near spread, high notional |
+| 3 | Moderate significance |
+| 4 | Lower but still notable — further from spread or lower notional |
+| *(0)* | Invisible — does not meet any tier's thresholds; not sent to the client |
 
-Classification thresholds are **user-configurable** — each user defines their own proximity and notional cutoffs. The system must support per-user rule sets efficiently.
+Classification thresholds are **user-configurable** — each user defines their own proximity and notional cutoffs per `(symbol, market)` pair. The system supports per-user rule sets applied as an overlay on top of global defaults.
 
 ### Computation
 - `notional = price × quantity` (primitive double arithmetic)
-- `proximity = abs(levelPrice - midPrice) / midPrice`
-- `lifetimeMillis = System.currentTimeMillis() - entry.firstSeenMillis` (available for UI delivery)
+- `proximity = abs(levelPrice - midPrice) / midPrice` (stored as `distance` on `PriceLevelEntry`)
+- `lifetimeMillis = System.currentTimeMillis() - entry.firstSeenMillis`
 - Classification runs inside the Disruptor consumer thread after each orderbook update
 
+### Two-Pass Classification
+The classifier runs two passes per orderbook update:
+1. **Default pass** — always runs; applies global default tier thresholds; result goes into the global feed store
+2. **Per-user pass** — runs for each connected user who has configured rules for this `(symbol, market)`; applies their override thresholds; result goes into that user's personal feed store
+
+Each pass selects the top-5 levels per side ranked by `(tier DESC, notional DESC, distance ASC)`. When no custom users are connected, the per-user loop body never executes (one volatile read + empty check).
+
 ### Why Full Orderbook Is Retained
-Levels far from the spread may be irrelevant under default settings but critical for users with wide custom thresholds (e.g., a user who wants alerts on any $1M+ order within 15% of spread). The full orderbook, bounded only by the 30% filter, must be available for per-user rule evaluation.
+Levels far from the spread may be irrelevant under default settings but critical for users with wide custom thresholds (e.g., a user who wants alerts on any $1M+ order within 15% of spread). The full orderbook, bounded only by the price filter, must be available for per-user rule evaluation.
+
+---
+
+## Feed Delivery
+
+The broadcaster runs a 100ms drain loop on a dedicated scheduled thread. Each tick it drains the global pending updates and each active user's personal pending updates, then fans them out to connected WebSocket sessions.
+
+**Per-session delivery logic**:
+- Default users (no custom rules): receive global feed directly
+- Custom users (with rules): receive their personal feed for configured symbols, merged with the global feed for unconfigured symbols — exactly one authoritative update per `(symbol, market)` per tick
+
+**Snapshot delivery**: on new connection or explicit `SNAPSHOT_REQUEST`, the client receives the current full active state. Custom users receive a merged snapshot (global minus their configured keys, unioned with their personal snapshot).
+
+**Slow clients**: if a session's send queue fills (capacity 32), the session is disconnected rather than blocking the broadcaster.
 
 ---
 
@@ -301,13 +329,12 @@ Levels far from the spread may be irrelevant under default settings but critical
 
 ### Configuration
 All tunable values must be externalized to `application.yml`:
-- Disruptor shard count
-- Ring buffer size per shard
-- WebSocket streams per connection limit
-- Price filter threshold (30%)
+- Disruptor shard count and ring buffer size
+- WebSocket connection counts, streams per connection, heartbeat interval
+- Price filter threshold
 - Ticker refresh interval
-- Snapshot fetch rate limit budget
-- Orderbook depth limit for REST snapshots
+- Snapshot fetch rate limit budget and queue sizes
+- JWT secret and token expiry
 
 ### Error Handling
 - WebSocket disconnects: reconnect with exponential backoff, re-sync affected tickers
@@ -318,22 +345,38 @@ All tunable values must be externalized to `application.yml`:
 
 ---
 
-## Future Work (Planned)
+## What Is Implemented
 
-### Near-Term
-- **User WebSocket Server**: Push classified price level events to subscribed clients. Requires session management, per-user rule application, and efficient fan-out. This is a separate design effort — do not couple it to the orderbook core prematurely.
-- **Klines Streams**: Subscribe to candlestick data for additional analysis signals. Less demanding than depth streams; can share the existing connection infrastructure.
-- **User Management**: Registered users, subscription plans, stored preferences and classification rules.
+The following are fully implemented and production-ready:
 
-### Medium-Term
-- **Security**: Authentication and authorization (JWT or similar). Designed after the core data pipeline is stable and tested.
-- **Business Layer**: Subscription tiers, usage limits, alerting rules.
+- **Binance WebSocket integration** — java-websocket connection pools for spot and futures, `@depth` streams, exponential-backoff reconnect, PING/PONG heartbeat
+- **LMAX Disruptor pipeline** — 2 sharded ring buffers, deterministic symbol-to-shard routing, lock-free depth event processing
+- **Orderbook management** — TreeMap-based local books, full Binance sync algorithm (PENDING → SNAPSHOT_REQUESTED → SYNCED), 30% price filter, price level lifetime tracking, rate-limited snapshot fetch queue
+- **Order classification** — default tier thresholds (with high-liquidity symbol variants), per-user threshold overrides, two-pass classifier, top-5 level selection
+- **Feed pipeline** — 100ms broadcaster, global and per-user feed stores, update coalescing, snapshot delivery, slow-client eviction
+- **Client WebSocket server** — `/ws` endpoint, JWT auth via query param, Java 21 virtual-thread send loops, per-session state machine
+- **JWT authentication** — HS256 access tokens (3h), refresh tokens (7d) stored as SHA-256 hashes, BCrypt password hashing
+- **User management** — PostgreSQL-backed user and refresh token storage, Flyway migrations
+- **Per-user classification rules** — REST CRUD (`/api/rules`), per-`(symbol, market)` tier definitions, connect-time rule loading, refcounted context lifecycle
+- **Security** — Spring Security filter chain, stateless JWT, CORS configured for known origins
+- **REST API** — auth, rules CRUD, ticker list, orderbook debug endpoints
+
+---
+
+## Future Work
+
+### Planned
+- **Klines streams**: Subscribe to candlestick data for additional analysis signals. Less demanding than depth streams; can share the existing connection infrastructure.
+- **Live rule propagation**: Rule edits currently take effect only after all of a user's sessions reconnect. Live propagation (rebuild context + atomic swap + push fresh snapshot) is not yet implemented.
+- **Payment gateway**: Integrate a payment provider (e.g. Stripe) to handle subscription billing and lifecycle events.
+- **User subscription model**: Define subscription plans with associated limits (e.g. max tracked tickers, max custom rules). Persist the active plan on the `User` entity and enforce limits at the service layer.
+- **User roles and privileges**: Expand `UserRole` beyond the current single `USER` value. Planned roles: `USER` (free tier), `PREMIUM` (paid subscriber), `ADMIN` (platform management). Enforce role-based access on REST endpoints and WebSocket connections.
 
 ### Long-Term / Scalability
-- **Distributed Deployment**: If a single JVM cannot sustain all tickers, partition ticker sets across multiple instances with a coordination layer.
-- **Primitive Orderbook Store**: Replace `TreeMap<Double, PriceLevelEntry>` with a memory-efficient primitive-friendly sorted structure to reduce boxed object overhead across 1000+ orderbooks.
-- **Snapshot Optimization**: Higher rate limit access, snapshot caching, or pre-warming strategies to reduce startup synchronization time.
-- **Additional Exchanges**: The architecture is Binance-first. Core interfaces (orderbook, classifier, stream manager) must not hard-code Binance assumptions — leave extension points clean.
+- **Distributed deployment**: If a single JVM cannot sustain all tickers, partition ticker sets across multiple instances with a coordination layer.
+- **Primitive orderbook store**: Replace `TreeMap<Double, PriceLevelEntry>` with a memory-efficient primitive-friendly sorted structure to reduce boxed object overhead across 1000+ orderbooks.
+- **Snapshot optimization**: Higher rate limit access, snapshot caching, or pre-warming strategies to reduce startup synchronization time.
+- **Additional exchanges**: The architecture is Binance-first. Core interfaces (orderbook, classifier, stream manager) must not hard-code Binance assumptions — leave extension points clean.
 
 ### Known Technical Debt (Accepted for Now)
 - `TreeMap<Double, PriceLevelEntry>` boxing overhead on keys — acceptable until memory profiling shows a problem

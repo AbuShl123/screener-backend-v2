@@ -13,13 +13,18 @@ public class DepthEventHandler implements EventHandler<DepthEvent> {
 
     @Getter
     private final int shardIndex;
-    private final OrderBookProcessor processor;
-    private final OrderBookClassifier classifier;
+    private final OrderBookProcessor obSyncMachine;
+    private final OrderBookClassifier classificationModule;
 
     @Override
     public void onEvent(DepthEvent event, long sequence, boolean endOfBatch) {
-        OrderBook ob = processor.process(event);
-        if (ob != null) classifier.process(ob);
+        // manage local orderbook of this event
+        OrderBook ob = obSyncMachine.process(event);
+
+        // run default & per-user classification
+        if (ob != null) classificationModule.process(ob);
+
+        // free
         event.clear();
     }
 }

@@ -51,12 +51,12 @@ public class UserFeedRegistry {
             return existing;
         }
 
-        Optional<UserClassificationRule> rule = ruleService.buildRuntimeRule(userId);
-        if (rule.isEmpty()) {
+        Optional<UserClassificationRules> rules = ruleService.buildRuntimeRule(userId);
+        if (rules.isEmpty()) {
             return null; // no rules → default-only session, no context
         }
 
-        UserClassificationContext ctx = new UserClassificationContext(userId, rule.get(), new OrderBookFeedStore(), new ConcurrentHashMap<>());
+        UserClassificationContext ctx = new UserClassificationContext(userId, rules.get(), new OrderBookFeedStore(), new ConcurrentHashMap<>());
         contexts.put(userId, ctx);
         refCounts.put(userId, 1);
         rebuildActiveArray();

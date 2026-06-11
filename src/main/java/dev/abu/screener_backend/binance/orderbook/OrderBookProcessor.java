@@ -24,9 +24,10 @@ public class OrderBookProcessor {
     public @Nullable OrderBook process(DepthEvent event) {
         // SNAPSHOT events: orderbook must already exist (created when the first diff arrived).
         // DIFF events: create lazily on first arrival for this symbol + market.
-        OrderBook ob = (event.type == EventType.SNAPSHOT)
-                ? store.get(event.symbol, event.market)
-                : store.getOrCreate(event.symbol, event.market);
+        OrderBook ob = switch (event.type) {
+            case SNAPSHOT -> store.get(event.symbol, event.market);
+            case DIFF -> store.getOrCreate(event.symbol, event.market);
+        };
 
         if (ob == null) {
             return null;

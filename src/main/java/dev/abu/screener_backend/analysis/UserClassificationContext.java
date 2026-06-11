@@ -22,12 +22,12 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class UserClassificationContext {
 
     private final UUID userId;
-    private final UserClassificationRule rule;
+    private final UserClassificationRules rule;
     private final OrderBookFeedStore feedStore;
     private final ConcurrentHashMap<String, SymbolState> states;
 
     public UserClassificationContext(UUID userId,
-                                     UserClassificationRule rule,
+                                     UserClassificationRules rule,
                                      OrderBookFeedStore feedStore,
                                      ConcurrentHashMap<String, SymbolState> states) {
         this.userId = userId;
@@ -40,7 +40,7 @@ public final class UserClassificationContext {
         return userId;
     }
 
-    public UserClassificationRule rule() {
+    public UserClassificationRules rule() {
         return rule;
     }
 

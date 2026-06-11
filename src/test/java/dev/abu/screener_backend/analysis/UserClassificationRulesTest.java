@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class UserClassificationRuleTest {
+class UserClassificationRulesTest {
 
     private static ThresholdClassificationRule leaf(int tier, double notional, double distance) {
         return ThresholdClassificationRule.of(List.of(
@@ -22,7 +22,7 @@ class UserClassificationRuleTest {
     void configuredKeysReflectsByKeyMap() {
         ThresholdClassificationRule btc = leaf(1, 100_000, 0.01);
         ThresholdClassificationRule eth = leaf(2, 200_000, 0.02);
-        UserClassificationRule rule = new UserClassificationRule(Map.of(
+        UserClassificationRules rule = new UserClassificationRules(Map.of(
                 "BTCUSDT:FUTURES", btc,
                 "ETHUSDT:SPOT", eth));
 
@@ -35,7 +35,7 @@ class UserClassificationRuleTest {
     @Test
     void ruleForReturnsLeafForConfiguredKeyAndNullOtherwise() {
         ThresholdClassificationRule btc = leaf(1, 100_000, 0.01);
-        UserClassificationRule rule = new UserClassificationRule(Map.of("BTCUSDT:FUTURES", btc));
+        UserClassificationRules rule = new UserClassificationRules(Map.of("BTCUSDT:FUTURES", btc));
 
         assertSame(btc, rule.ruleFor("BTCUSDT:FUTURES"));
         assertNull(rule.ruleFor("ETHUSDT:FUTURES"));
@@ -43,7 +43,7 @@ class UserClassificationRuleTest {
 
     @Test
     void emptyRuleHasNoConfiguredKeys() {
-        UserClassificationRule rule = new UserClassificationRule(Map.of());
+        UserClassificationRules rule = new UserClassificationRules(Map.of());
 
         assertTrue(rule.configuredKeys().isEmpty());
         assertNull(rule.ruleFor("ANYTHING"));

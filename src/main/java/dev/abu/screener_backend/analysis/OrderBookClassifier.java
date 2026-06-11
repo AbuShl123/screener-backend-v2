@@ -92,7 +92,7 @@ public class OrderBookClassifier {
     private final Map<String, SymbolState> defaultStates = new HashMap<>();
 
     /// Swapped atomically (never mutated in place) by the WebSocket connect/disconnect path via
-    /// DisruptorShardManager.setActiveUserContexts(...). Read once per process() call.
+    /// DisruptorShardManager.setActiveUserContexts(...).
     @Setter
     private volatile UserClassificationContext[] activeUserContexts = EMPTY;
 
@@ -106,6 +106,8 @@ public class OrderBookClassifier {
         String key = ob.getSymbol() + ":" + ob.getMarket();
         boolean highLiquidity = defaultRule.isHighLiquidity(ob.getSymbol()); // computed ONCE per book
 
+        // TODO: parallel classification for default and per-user rules
+
         // Pass 1 — default, always.
         SymbolState defaultState = defaultStates.computeIfAbsent(key, k -> new SymbolState());
         classifyOne(ob, key, defaultState, defaultRule, feedStore, highLiquidity);
@@ -114,9 +116,9 @@ public class OrderBookClassifier {
         UserClassificationContext[] ctxs = activeUserContexts;
         for (UserClassificationContext ctx : ctxs) {
             if (ctx.rule().configuredKeys().contains(key)) {
-                ThresholdClassificationRule leaf = ctx.rule().ruleFor(key);
+                ThresholdClassificationRule rule = ctx.rule().ruleFor(key);
                 SymbolState state = ctx.states().computeIfAbsent(key, k -> new SymbolState());
-                classifyOne(ob, key, state, leaf, ctx.feedStore(), highLiquidity);
+                classifyOne(ob, key, state, rule, ctx.feedStore(), highLiquidity);
             }
         }
     }
