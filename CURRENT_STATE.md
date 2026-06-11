@@ -16,7 +16,7 @@ src/
 │   │   ├── ThresholdClassificationRule.java
 │   │   ├── OrderBookClassifier.java
 │   │   ├── SymbolState.java
-│   │   ├── UserClassificationRule.java
+│   │   ├── UserClassificationRules.java
 │   │   ├── UserClassificationContext.java
 │   │   ├── UserFeedRegistry.java
 │   │   └── rule/
@@ -24,6 +24,7 @@ src/
 │   │       ├── ClassificationRuleRepository.java
 │   │       ├── ClassificationRuleService.java
 │   │       ├── ClassificationRuleController.java
+│   │       ├── RuleUpdatedEvent.java
 │   │       └── dto/
 │   │           ├── TierDto.java
 │   │           ├── RuleDto.java
@@ -95,6 +96,8 @@ src/
 │   │   ├── OrderBookBroadcaster.java
 │   │   ├── OrderBookFeedStore.java
 │   │   └── OrderBookUpdate.java
+│   ├── monitoring/
+│   │   └── PresenceController.java
 │   ├── ticker/
 │   │   ├── Ticker.java
 │   │   ├── TickerController.java
@@ -121,12 +124,16 @@ src/
 │       └── V3__create_classification_rules.sql
 └── test/java/dev/abu/screener_backend/
     ├── ScreenerBackendApplicationTests.java
-    └── analysis/
-        ├── UserClassificationRuleTest.java
-        └── UserFeedRegistryTest.java
+    ├── analysis/
+    │   ├── DefaultClassificationRuleTest.java
+    │   ├── ThresholdClassificationRuleTest.java
+    │   ├── UserClassificationRulesTest.java
+    │   ├── UserFeedRegistryTest.java
+    │   └── rule/
+    │       └── ClassificationRuleServiceTest.java
 ```
 
-**Implementation status**: All core features are complete. The full pipeline — Binance WebSocket integration, LMAX Disruptor processing, orderbook sync, order classification, feed broadcasting, and client WebSocket delivery — is implemented and wired together. JWT auth, PostgreSQL user storage, per-user classification rules (persistence, REST CRUD, runtime wiring, two-pass classifier, broadcaster merge), and Spring Security are all complete. The only major item not yet implemented is live propagation of rule edits to already-connected users.
+**Implementation status**: All core features are complete. The full pipeline — Binance WebSocket integration, LMAX Disruptor processing, orderbook sync, order classification, feed broadcasting, and client WebSocket delivery — is implemented and wired together. JWT auth, PostgreSQL user storage, per-user classification rules (persistence, REST CRUD, runtime wiring, two-pass classifier, broadcaster merge), live rule propagation to connected sessions, and Spring Security are all complete.
 
 ---
 
@@ -366,8 +373,8 @@ Not a Spring bean — constructed manually by `DisruptorShardManager`, one insta
 
 Package-private. Holds the `ActivityLevel`, `workBids`/`workAsks` arrays, and two `Scratch` buffers (nested class). Each instance is single-threaded (its key is pinned to one shard).
 
-### `UserClassificationRule`
-`src/main/java/dev/abu/screener_backend/analysis/UserClassificationRule.java`
+### `UserClassificationRules`
+`src/main/java/dev/abu/screener_backend/analysis/UserClassificationRules.java`
 
 POJO. A per-user lookup table `Map<String, ThresholdClassificationRule> byKey` keyed by `"SYMBOL:MARKET"`, plus a cached `configuredKeys()` set for O(1) hot-path membership. Does not implement `ClassificationRule` — the classifier fetches the leaf via `ruleFor(key)`.
 
@@ -379,7 +386,7 @@ POJO. One per connected user with at least one rule, shared by all that user's s
 ### `UserFeedRegistry`
 `src/main/java/dev/abu/screener_backend/analysis/UserFeedRegistry.java`
 
-`@Component`. Source of truth for active contexts, refcounted per `userId`. All mutation runs inside one `synchronized` block. `onUserConnect(userId)` builds a context via `ruleService.buildRuntimeRule` on first connect (returns `null` for a no-rules user) or reuses + bumps the refcount on subsequent connects. `onUserDisconnect(userId)` decrements and discards the context only when the last session closes. Each lifecycle change rebuilds an immutable `volatile active[]` array and fans it out to every shard via `shardManager.setActiveUserContexts(active)`.
+`@Component`. Source of truth for active contexts AND connected sessions (`sessionsByUser: Map<UUID, List<UserWebSocketSession>>` — the single source of truth; the old refcount is the list size). All mutation runs inside one `synchronized` block. `onUserConnect(userId, session)` registers the session and builds (or reuses) the context atomically, setting it on the session via `setContext`. `onUserDisconnect(userId, session)` removes the session (idempotent against the @OnClose/@OnError double-fire — second removal no-ops) and discards the context only when the list empties. `onRuleUpdated(RuleUpdatedEvent)` — `@TransactionalEventListener(AFTER_COMMIT)` — implements live rule propagation: re-reads the user's rules from DB outside the lock, then inside the lock rebuilds the context from scratch (fresh feed store, empty state map) or removes it when all rules were deleted, retargets every connected session (`setContext` before `setStatus(NEED_SNAPSHOT)` — write order establishes the happens-before for the broadcaster), and re-pushes `active[]`. Each lifecycle change rebuilds an immutable `volatile active[]` array and fans it out to every shard via `shardManager.setActiveUserContexts(active)`. `presenceSnapshot()` returns a consistent (lock-captured) `List<UserPresence>` of currently-connected users — one entry per user with open-session count and a `custom` flag (has an active context) — consumed by `PresenceController`.
 
 ---
 
@@ -400,13 +407,18 @@ JPA entity mapped to `classification_rules`. One row per tier — a logical rule
 
 `@Service`. CRUD + validation for user-defined classification rules. All validation runs before any DB write — the whole request is rejected atomically with `400` on first failure.
 
-- `upsertRules(userId, BulkRuleRequest)` — `@Transactional`; delete-then-insert the tier set per target
-- `deleteRules(userId, BulkDeleteRequest)` — `@Transactional`; bulk delete per target; idempotent
+- `upsertRules(userId, BulkRuleRequest)` — `@Transactional`; delete-then-insert the tier set per target; publishes `RuleUpdatedEvent(userId)` after the writes (consumed AFTER_COMMIT by `UserFeedRegistry` for live propagation)
+- `deleteRules(userId, BulkDeleteRequest)` — `@Transactional`; bulk delete per target; idempotent; also publishes `RuleUpdatedEvent`
 - `getRules(userId)` — groups tier rows by `(symbol, market)` into `RuleResponse` list
 - `getRule(userId, symbol, market)` — single pair; `404` if none
 - `buildRuntimeRule(userId)` — `@Transactional(readOnly = true)`. Translates persisted rows into an immutable runtime `UserClassificationRule` (`Optional.empty()` if the user has no rules). Called by `UserFeedRegistry` at WebSocket connect time.
 
 Validation: tiers non-empty; each tier ∈ `[1,4]`; no duplicates; tiers contiguous starting at 1; `minNotional ≥ 0`; `maxDistance ∈ (0, priceFilterThreshold]`; each target is a currently-tracked ticker covering the requested market; total targets per request ≤ `screener.classification.max-targets-per-request` (default 200).
+
+### `RuleUpdatedEvent`
+`src/main/java/dev/abu/screener_backend/analysis/rule/RuleUpdatedEvent.java`
+
+Record `(UUID userId)`. Published by `ClassificationRuleService` after each successful rule write, still inside the `@Transactional` boundary. `UserFeedRegistry.onRuleUpdated` consumes it with `@TransactionalEventListener(AFTER_COMMIT)`, so the listener's DB re-read always sees committed data. Plain record — not an `ApplicationEvent` subclass.
 
 ### `ClassificationRuleController`
 `src/main/java/dev/abu/screener_backend/analysis/rule/ClassificationRuleController.java`
@@ -420,6 +432,15 @@ Validation: tiers non-empty; each tier ∈ `[1,4]`; no duplicates; tiers contigu
 | `GET` | `/api/rules/{symbol}/{market}` | Bearer JWT | Caller's rule for one pair (404 if none) |
 | `PUT` | `/api/rules` | Bearer JWT | Bulk upsert — replace tier set for each target |
 | `DELETE` | `/api/rules` | Bearer JWT | Bulk delete (reset to default) |
+
+---
+
+## `monitoring` — Operational Endpoints
+
+### `PresenceController`
+`src/main/java/dev/abu/screener_backend/monitoring/PresenceController.java`
+
+`@RestController` at `/api/presence`. `GET /api/presence` returns live WebSocket presence read from `UserFeedRegistry.presenceSnapshot()` — `onlineUsers` (distinct connected users), `totalSessions`, and a per-user breakdown (`userId`, `sessions`, `custom`) sorted by session count. No DB access, no persistence — instantaneous state only (no history). Requires a Bearer JWT (any authenticated user; no `ADMIN` role exists yet).
 
 ---
 
@@ -500,12 +521,12 @@ Singleton `@Component` + `@ServerEndpoint("/ws")`. Per-session state is stored i
 
 | Callback | Responsibility |
 |---|---|
-| `@OnOpen` | Validate JWT query param, call `userFeedRegistry.onUserConnect(userId)`, create `UserWebSocketSession`, start send loop, register with broadcaster |
-| `@OnClose` | Retrieve session → `release(session)`: `disconnect()` + `broadcaster.removeSession()` + (guarded) `userFeedRegistry.onUserDisconnect(userId)` |
+| `@OnOpen` | Validate JWT query param, create `UserWebSocketSession` (no context yet), call `userFeedRegistry.onUserConnect(userId, session)` (registers + sets context) BEFORE `broadcaster.addSession` — so the broadcaster never serves a custom user from the global feed — then start the send loop |
+| `@OnClose` | Retrieve session → `release(session)`: `disconnect()` + `broadcaster.removeSession()` + `userFeedRegistry.onUserDisconnect(userId, session)` |
 | `@OnError` | Same `release(session)` path |
 | `@OnMessage` | Handles `SNAPSHOT_REQUEST` — sets session status to `NEED_SNAPSHOT` |
 
-Tomcat may fire both `@OnClose` and `@OnError` for one connection. The `release` path is guarded by the session's one-shot `markReleased()` (AtomicBoolean CAS), ensuring exactly one registry refcount decrement per session.
+Tomcat may fire both `@OnClose` and `@OnError` for one connection. Every step in `release` is idempotent — the registry's session-list removal absorbs the double-fire (no `markReleased()` guard anymore).
 
 ### `UserWebSocketSession`
 `src/main/java/dev/abu/screener_backend/ws/UserWebSocketSession.java`
@@ -517,8 +538,7 @@ Per-session object created in `@OnOpen`. Fields:
 - `running` (volatile) — send loop exit signal; written by `disconnect()`
 - `seqNumber` — per-session monotonic counter; accessed exclusively by the broadcaster thread
 - `virtualThread` (volatile) — reference to the send loop thread for interruption
-- `context` (final, nullable) — this user's `UserClassificationContext`, or `null` for a default-only user
-- `released` (AtomicBoolean) — one-shot guard for the registry decrement
+- `context` (volatile, nullable) — this user's `UserClassificationContext`, or `null` for a default-only user; written by `UserFeedRegistry` at connect time and on live rule updates (always BEFORE the `status = NEED_SNAPSHOT` write — that ordering is what guarantees the broadcaster sees the new context when it consumes the snapshot request)
 
 The send loop runs on a Java 21 virtual thread: `sendQueue.take()` parks when empty; `sendText()` parks when the TCP buffer is full. A stalled client parks only its own virtual thread.
 
@@ -610,11 +630,17 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 ### `ScreenerBackendApplicationTests`
 `@SpringBootTest` smoke test. Verifies the Spring context initializes without errors.
 
-### `UserClassificationRuleTest`
-Plain JUnit unit test. Verifies `UserClassificationRule.configuredKeys()` mirrors the `byKey` map and `ruleFor(key)` returns the leaf for configured keys / `null` otherwise.
+### `UserClassificationRulesTest`
+Plain JUnit unit test. Verifies `UserClassificationRules.configuredKeys()` mirrors the `byKey` map and `ruleFor(key)` returns the leaf for configured keys / `null` otherwise.
+
+### `DefaultClassificationRuleTest` / `ThresholdClassificationRuleTest`
+Plain JUnit unit tests for the default tier tables and the per-user threshold rule's tier computation.
 
 ### `UserFeedRegistryTest`
-Plain JUnit unit test of the refcount lifecycle, using hand-rolled test doubles (no Mockito): connect builds + pushes a context; a no-rules user gets no context; a second connect reuses the context without a DB reload or re-push; the context survives until the last session disconnects; disconnecting an unknown user is a no-op.
+Plain JUnit unit test of the session/context lifecycle and live rule propagation, using hand-rolled test doubles (no Mockito): connect builds + pushes a context and sets it on the session; a no-rules user gets no context; a second connect reuses the context without a DB reload or re-push; the context survives until the last session disconnects; disconnecting an unknown session or the same session twice is a no-op; `onRuleUpdated` Cases A (rule update → context replaced, sessions retargeted + NEED_SNAPSHOT), B (first rule while connected → context created; no sessions → no-op), and C (all rules deleted → context removed, sessions revert to null context); rapid consecutive updates leave last-write-wins state.
+
+### `ClassificationRuleServiceTest`
+Plain JUnit unit test with reflective proxy repository stubs. Verifies `RuleUpdatedEvent` is published exactly once after `upsertRules` and `deleteRules`, and never on validation failure.
 
 ---
 
@@ -622,7 +648,6 @@ Plain JUnit unit test of the refcount lifecycle, using hand-rolled test doubles 
 
 | Feature | Notes |
 |---------|-------|
-| Live rule propagation | Rule edits take effect only after all of a user's sessions reconnect; atomic swap + fresh snapshot push is not implemented |
 | Klines streams | Candlestick data integration for additional analysis signals |
 | Payment gateway | Integration with a payment provider (e.g. Stripe) for subscription billing and lifecycle events |
 | User subscription model | Per-plan limits (max tracked tickers, max custom rules) persisted on the `User` entity and enforced at the service layer |

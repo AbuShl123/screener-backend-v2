@@ -357,7 +357,7 @@ The following are fully implemented and production-ready:
 - **Client WebSocket server** — `/ws` endpoint, JWT auth via query param, Java 21 virtual-thread send loops, per-session state machine
 - **JWT authentication** — HS256 access tokens (3h), refresh tokens (7d) stored as SHA-256 hashes, BCrypt password hashing
 - **User management** — PostgreSQL-backed user and refresh token storage, Flyway migrations
-- **Per-user classification rules** — REST CRUD (`/api/rules`), per-`(symbol, market)` tier definitions, connect-time rule loading, refcounted context lifecycle
+- **Per-user classification rules** — REST CRUD (`/api/rules`), per-`(symbol, market)` tier definitions, connect-time rule loading, session-tracked context lifecycle, live rule propagation (rule edits rebuild the context, retarget connected sessions, and push a fresh snapshot — no reconnect required)
 - **Security** — Spring Security filter chain, stateless JWT, CORS configured for known origins
 - **REST API** — auth, rules CRUD, ticker list, orderbook debug endpoints
 
@@ -367,7 +367,6 @@ The following are fully implemented and production-ready:
 
 ### Planned
 - **Klines streams**: Subscribe to candlestick data for additional analysis signals. Less demanding than depth streams; can share the existing connection infrastructure.
-- **Live rule propagation**: Rule edits currently take effect only after all of a user's sessions reconnect. Live propagation (rebuild context + atomic swap + push fresh snapshot) is not yet implemented.
 - **Payment gateway**: Integrate a payment provider (e.g. Stripe) to handle subscription billing and lifecycle events.
 - **User subscription model**: Define subscription plans with associated limits (e.g. max tracked tickers, max custom rules). Persist the active plan on the `User` entity and enforce limits at the service layer.
 - **User roles and privileges**: Expand `UserRole` beyond the current single `USER` value. Planned roles: `USER` (free tier), `PREMIUM` (paid subscriber), `ADMIN` (platform management). Enforce role-based access on REST endpoints and WebSocket connections.

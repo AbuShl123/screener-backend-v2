@@ -11,6 +11,7 @@ import dev.abu.screener_backend.ticker.TickerRegistry;
 import dev.abu.screener_backend.user.User;
 import dev.abu.screener_backend.user.UserRepository;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,18 +39,21 @@ public class ClassificationRuleService {
     private final ClassificationRuleRepository ruleRepository;
     private final UserRepository userRepository;
     private final TickerRegistry tickerRegistry;
+    private final ApplicationEventPublisher eventPublisher;
     private final double maxDistanceUpperBound;
     private final int maxTargetsPerRequest;
 
     public ClassificationRuleService(ClassificationRuleRepository ruleRepository,
                                      UserRepository userRepository,
                                      TickerRegistry tickerRegistry,
+                                     ApplicationEventPublisher eventPublisher,
                                      OrderbookProperties orderbookProperties,
                                      @Value("${screener.classification.max-targets-per-request:200}")
                                      int maxTargetsPerRequest) {
         this.ruleRepository = ruleRepository;
         this.userRepository = userRepository;
         this.tickerRegistry = tickerRegistry;
+        this.eventPublisher = eventPublisher;
         // maxDistance can never usefully exceed the orderbook's price filter: levels beyond it
         // are already swept, so such a rule could never match. (User picked: tie to live config.)
         this.maxDistanceUpperBound = orderbookProperties.priceFilterThreshold();
@@ -87,6 +91,10 @@ public class ClassificationRuleService {
                 }
             }
         }
+
+        // Deferred by @TransactionalEventListener(AFTER_COMMIT) in UserFeedRegistry, so the
+        // listener's buildRuntimeRule read sees the committed rows.
+        eventPublisher.publishEvent(new RuleUpdatedEvent(userId));
     }
 
     @Transactional
@@ -103,6 +111,8 @@ public class ClassificationRuleService {
             ruleRepository.deleteByUserIdAndSymbolAndMarket(
                     userId, normalizeSymbol(target.symbol()), target.market());
         }
+
+        eventPublisher.publishEvent(new RuleUpdatedEvent(userId));
     }
 
     // ---------------------------------------------------------------------------------------

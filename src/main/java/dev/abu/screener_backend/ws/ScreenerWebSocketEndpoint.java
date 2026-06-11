@@ -1,6 +1,5 @@
 package dev.abu.screener_backend.ws;
 
-import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.auth.AuthenticatedUser;
 import dev.abu.screener_backend.auth.JwtService;
@@ -41,16 +40,15 @@ public class ScreenerWebSocketEndpoint {
             return;
         }
 
-        // Load (or reuse) the user's classification context off the hot path. Null when the user
-        // has no custom rules — that session consumes the global default feed directly.
-        UserClassificationContext context = userFeedRegistry.onUserConnect(user.userId());
-
-        UserWebSocketSession userSession = new UserWebSocketSession(session, user.userId(), context);
+        UserWebSocketSession userSession = new UserWebSocketSession(session, user.userId());
         session.getUserProperties().put("session", userSession);
+        // Register + set the context (null for a no-rules user) BEFORE the broadcaster sees the
+        // session — otherwise it could deliver a plain global snapshot to a custom-rules user.
+        userFeedRegistry.onUserConnect(user.userId(), userSession);
         userSession.startSendLoop();
         broadcaster.addSession(userSession);
         log.debug("WebSocket opened: {} user={} custom={}",
-                session.getId(), user.userId(), context != null);
+                session.getId(), user.userId(), userSession.getContext() != null);
     }
 
     @OnClose
@@ -70,16 +68,14 @@ public class ScreenerWebSocketEndpoint {
     }
 
     /**
-     * Tears down a session. Tomcat may fire BOTH @OnClose and @OnError for one connection, so this
-     * runs the parts that must happen once. {@code disconnect()}/{@code removeSession()} are
-     * idempotent on their own; the registry refcount decrement is guarded by {@code markReleased()}.
+     * Tears down a session. Tomcat may fire BOTH @OnClose and @OnError for one connection — every
+     * step here is idempotent, including the registry deregistration (its session-list removal
+     * no-ops on the second call).
      */
     private void release(UserWebSocketSession userSession) {
         userSession.disconnect();
         broadcaster.removeSession(userSession);
-        if (userSession.markReleased()) {
-            userFeedRegistry.onUserDisconnect(userSession.getUserId());
-        }
+        userFeedRegistry.onUserDisconnect(userSession.getUserId(), userSession);
     }
 
     @OnMessage
