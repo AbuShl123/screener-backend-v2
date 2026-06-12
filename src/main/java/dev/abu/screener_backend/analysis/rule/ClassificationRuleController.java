@@ -16,12 +16,13 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * Per-user classification rule management (Phase A).
+ * Per-user classification rule management.
  *
- * <p>Mounted under {@code /api/screener/rules}, which already matches
- * {@code /api/screener/**}.authenticated() in {@code SecurityConfig} — no security change needed.
- * The {@code userId} always comes from the JWT principal, never the request body, so a user can
- * only ever see or modify their own rules.
+ * <p>Mounted under {@code /api/rules}. All endpoints are covered by the
+ * {@code .anyRequest().authenticated()} catch-all in {@code SecurityConfig} (only {@code /api/auth/*}
+ * and {@code /ws} are public), so every call requires a Bearer JWT. The {@code userId} always comes
+ * from the JWT principal, never the request body, so a user can only ever see or modify their own
+ * rules.
  */
 @RestController
 @RequestMapping("/api/rules")

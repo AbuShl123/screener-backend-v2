@@ -64,7 +64,6 @@ src/
 │   │   │   └── EventType.java
 │   │   ├── orderbook/
 │   │   │   ├── OrderBook.java
-│   │   │   ├── OrderBookController.java
 │   │   │   ├── OrderBookProcessor.java
 │   │   │   ├── OrderBookResult.java
 │   │   │   ├── OrderBookState.java
@@ -97,7 +96,7 @@ src/
 │   │   ├── OrderBookFeedStore.java
 │   │   └── OrderBookUpdate.java
 │   ├── monitoring/
-│   │   └── PresenceController.java
+│   │   └── MonitoringController.java
 │   ├── ticker/
 │   │   ├── Ticker.java
 │   │   ├── TickerController.java
@@ -333,10 +332,7 @@ Core class. Maintains a local orderbook for one `(symbol, market)` pair.
 
 `@Component`. Rate-limited snapshot dispatcher. Maintains two `ConcurrentHashMap<String, OrderBook>` queues (spot and futures), each bounded by a configurable max size (default 10). `@Scheduled dispatchSpot()` / `dispatchFutures()` fire every 6 000ms. Each request applies a 3-second `delayElement` before publishing the snapshot — giving the diff buffer time to accumulate enough events to span the snapshot's `lastUpdateId`. On success, publishes a `SNAPSHOT` event to the correct shard's ring buffer. On failure, removes and re-enqueues. Uses `@Lazy DisruptorShardManager` to break the circular dependency.
 
-### `OrderBookController`
-`src/main/java/dev/abu/screener_backend/binance/orderbook/OrderBookController.java`
-
-`@RestController` at `/api/orderbook`. Debug endpoint — `GET /api/orderbook?symbol=BTCUSDT&market=FUTURES` returns the current bids/asks with price, quantity, distance, and lifetime for each level, plus the book's sync state and level counts. Reads are best-effort (no synchronization — acceptable for debugging).
+The orderbook debug endpoint formerly here (`OrderBookController`) has moved into `MonitoringController` (see `monitoring`).
 
 ---
 
@@ -427,7 +423,7 @@ Record `(UUID userId)`. Published by `ClassificationRuleService` after each succ
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `GET` | `/api/rules/default` | Public | Return the global default rule (`DefaultRuleResponse`) |
+| `GET` | `/api/rules/default` | Bearer JWT | Return the global default rule (`DefaultRuleResponse`) |
 | `GET` | `/api/rules` | Bearer JWT | List caller's rules grouped by `(symbol, market)` |
 | `GET` | `/api/rules/{symbol}/{market}` | Bearer JWT | Caller's rule for one pair (404 if none) |
 | `PUT` | `/api/rules` | Bearer JWT | Bulk upsert — replace tier set for each target |
@@ -437,10 +433,17 @@ Record `(UUID userId)`. Published by `ClassificationRuleService` after each succ
 
 ## `monitoring` — Operational Endpoints
 
-### `PresenceController`
-`src/main/java/dev/abu/screener_backend/monitoring/PresenceController.java`
+### `MonitoringController`
+`src/main/java/dev/abu/screener_backend/monitoring/MonitoringController.java`
 
-`@RestController` at `/api/presence`. `GET /api/presence` returns live WebSocket presence read from `UserFeedRegistry.presenceSnapshot()` — `onlineUsers` (distinct connected users), `totalSessions`, and a per-user breakdown (`userId`, `sessions`, `custom`) sorted by session count. No DB access, no persistence — instantaneous state only (no history). Requires a Bearer JWT (any authenticated user; no `ADMIN` role exists yet).
+`@RestController` at `/api/monitoring`, grouping the read-only operational/debug endpoints (intended to become `ADMIN`-only once a role model exists). Two endpoints:
+
+- `GET /api/monitoring/presence` — live WebSocket presence read from `UserFeedRegistry.presenceSnapshot()` — `onlineUsers` (distinct connected users), `totalSessions`, and a per-user breakdown (`userId`, `sessions`, `custom`) sorted by session count.
+- `GET /api/monitoring/orderbook?symbol=BTCUSDT&market=FUTURES` — current bids/asks with price, quantity, distance, and lifetime per level, plus the book's sync state and level counts. Reads are best-effort (no synchronization — acceptable for debugging).
+
+No DB access, no persistence — instantaneous state only (no history). Requires a Bearer JWT (any authenticated user; no `ADMIN` role exists yet). Future work will add persisted usage metrics (active-connection counts over time, last-access timestamps) alongside these live views.
+
+This merges the former `PresenceController` (monitoring) and `OrderBookController` (binance/orderbook).
 
 ---
 
