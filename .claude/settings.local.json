@@ -23,7 +23,9 @@
       "Bash(./mvnw -q -o -Dtest='UserFeedRegistryTest,UserClassificationRuleTest,ThresholdClassificationRuleTest,DefaultClassificationRuleTest' test)",
       "Bash(./mvnw -o -Dtest='UserFeedRegistryTest,UserClassificationRuleTest,ThresholdClassificationRuleTest,DefaultClassificationRuleTest' test)",
       "Bash(Get-ChildItem *)",
-      "Bash(./mvnw -q compile)"
+      "Bash(./mvnw -q compile)",
+      "Bash(./mvnw -q -Dtest=AdminBootstrapTest test)",
+      "Bash(./mvnw -Dtest=AdminBootstrapTest test)"
     ]
   }
 }

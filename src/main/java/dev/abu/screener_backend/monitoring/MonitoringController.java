@@ -29,12 +29,13 @@ import java.util.TreeMap;
  * </ul>
  *
  * <p>All endpoints are instantaneous, in-memory reads with no persistence and no history. They are
- * intended for development and operational verification, and are expected to become {@code ADMIN}-only
- * once a role model exists. Future work (per the project plan) will add persisted usage metrics —
- * e.g. active-connection counts over time and last-access timestamps — alongside these live views.
+ * intended for development and operational verification. Future work (per the project plan) will add
+ * persisted usage metrics — e.g. active-connection counts over time and last-access timestamps —
+ * alongside these live views.
  *
- * <p>Requires a valid Bearer JWT (any authenticated user) — there is no {@code ADMIN} role yet, so
- * access is intentionally open to all logged-in users for now.
+ * <p>ADMIN-only: {@code /api/monitoring/**} is gated by {@code hasRole("ADMIN")} in
+ * {@code SecurityConfig}. A Bearer JWT carrying the {@code ROLE_ADMIN} authority is required; any
+ * other authenticated user receives {@code 403}.
  */
 @RestController
 @RequestMapping("/api/monitoring")

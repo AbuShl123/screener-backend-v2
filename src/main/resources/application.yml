@@ -8,23 +8,29 @@ spring:
     web-application-type: servlet
 
   datasource:
-    url: "${DB_URL:jdbc:postgresql://localhost:5432/screener_new}"
-    username: "${DB_USER:postgres}"
-    password: "${DB_PASSWORD:password}"
+    url: "${DB_URL:}"
+    username: "${DB_USER:}"
+    password: "${DB_PASSWORD:}"
     hikari:
       maximum-pool-size: 10
       connection-timeout: 3000
 
   jpa:
     hibernate:
-      ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:update}
+      ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:}
     open-in-view: false
 
   flyway:
-    enabled: ${SPRING_FLYWAY_ENABLED:false}
+    enabled: ${SPRING_FLYWAY_ENABLED:}
     locations: classpath:db/migration
 
 screener:
+  admin:
+    # Comma-separated emails promoted to ADMIN on startup. Empty in the repo on purpose —
+    # the real list is supplied via the SCREENER_ADMIN_EMAILS environment variable in the
+    # deployment environment, so admin identities are never committed.
+    emails: "${SCREENER_ADMIN_EMAILS:}"
+
   binance:
     spot-base-url: https://api.binance.com
     futures-base-url: https://fapi.binance.com
@@ -70,6 +76,6 @@ screener:
     heartbeat-interval-seconds: 120
 
   jwt:
-    secret: "${JWT_SECRET:dGhpcyBpcyBhIGRldi1vbmx5IHNlY3JldCBrZXkgdGhhdCBtdXN0IGJlIHJlcGxhY2Vk}"
+    secret: "${JWT_SECRET:}"
     access-token-expiry: PT3H
     refresh-token-expiry: P7D

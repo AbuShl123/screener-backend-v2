@@ -27,7 +27,7 @@ import org.springframework.web.reactive.function.client.WebClient;
  * in {@code application.yml} forces servlet mode so the application remains on Spring MVC.
  */
 @Configuration
-@EnableConfigurationProperties({BinanceApiProperties.class, WebSocketProperties.class, DisruptorProperties.class, OrderbookProperties.class, JwtProperties.class})
+@EnableConfigurationProperties({BinanceApiProperties.class, WebSocketProperties.class, DisruptorProperties.class, OrderbookProperties.class, JwtProperties.class, AdminProperties.class})
 public class WebClientConfig {
 
     /**
