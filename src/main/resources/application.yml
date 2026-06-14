@@ -23,6 +23,8 @@ spring:
   flyway:
     enabled: ${SPRING_FLYWAY_ENABLED:}
     locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 4
 
 screener:
   admin:

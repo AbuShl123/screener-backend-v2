@@ -76,7 +76,16 @@
 			<scope>runtime</scope>
 		</dependency>
 
-		<!-- Flyway — database schema migrations -->
+		<!-- Flyway — database schema migrations.
+		     spring-boot-starter-flyway pulls in the spring-boot-flyway AUTOCONFIGURATION module.
+		     In Spring Boot 4.0 the per-technology autoconfigurations were split out of
+		     spring-boot-autoconfigure into dedicated modules, so flyway-core alone is the library
+		     WITHOUT Spring's integration — FlywayAutoConfiguration/FlywayProperties are absent and
+		     migrations never run. The starter is required. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-core</artifactId>
