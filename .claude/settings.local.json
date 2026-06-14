@@ -29,7 +29,13 @@
       "Bash(curl -sL \"https://docs.multicard.uz/introduction-4736405f0.md\")",
       "Bash(curl -sL \"https://docs.multicard.uz/%D0%BF%D0%BE%D0%BB%D1%83%D1%87%D0%B5%D0%BD%D0%B8%D0%B5-%D1%82%D0%BE%D0%BA%D0%B5%D0%BD%D0%B0-19729295e0.md\")",
       "Bash(bash fetch-multicard-docs.sh)",
-      "Read(./external-docs/**)"
+      "Read(./external-docs/**)",
+      "Bash(./mvnw -q dependency:list)",
+      "Bash(./mvnw dependency:list)",
+      "Bash(echo \"=== exit: $? ===\")",
+      "Bash(sed 's/-- module.*//')",
+      "Bash(./mvnw dependency:get -Dartifact=org.springframework.boot:spring-boot-flyway:4.0.6)",
+      "Bash(./mvnw dependency:get -Dartifact=org.springframework.boot:spring-boot-starter-flyway:4.0.6)"
     ]
   }
 }

@@ -60,6 +60,14 @@ screener:
     # one transaction's size.
     max-targets-per-request: 200
 
+  billing:
+    # Free trial granted on registration (ISO-8601 duration).
+    trial-duration: P7D
+    # Default region for the stub RegionResolver (UZS / Uzbekistan). Real geo/phone resolution
+    # is future work; nothing is persisted yet.
+    default-currency: UZS
+    default-country: UZ
+
   disruptor:
     shard-count: 2
     ring-buffer-size: 65536

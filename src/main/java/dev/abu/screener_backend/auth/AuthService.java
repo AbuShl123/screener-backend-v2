@@ -3,7 +3,10 @@ package dev.abu.screener_backend.auth;
 import dev.abu.screener_backend.auth.dto.AuthResponse;
 import dev.abu.screener_backend.auth.dto.LoginRequest;
 import dev.abu.screener_backend.auth.dto.RegisterRequest;
+import dev.abu.screener_backend.auth.dto.UserProfileResponse;
 import dev.abu.screener_backend.config.JwtProperties;
+import dev.abu.screener_backend.entitlement.EntitlementService;
+import dev.abu.screener_backend.entitlement.EntitlementView;
 import dev.abu.screener_backend.error.ApiException;
 import dev.abu.screener_backend.user.RefreshToken;
 import dev.abu.screener_backend.user.RefreshTokenRepository;
@@ -25,17 +28,20 @@ public class AuthService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final JwtService jwtService;
     private final PasswordEncoder passwordEncoder;
+    private final EntitlementService entitlementService;
     private final Duration refreshTokenExpiry;
 
     public AuthService(UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository,
                        JwtService jwtService,
                        PasswordEncoder passwordEncoder,
+                       EntitlementService entitlementService,
                        JwtProperties jwtProperties) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtService = jwtService;
         this.passwordEncoder = passwordEncoder;
+        this.entitlementService = entitlementService;
         this.refreshTokenExpiry = jwtProperties.refreshTokenExpiry();
     }
 
@@ -55,6 +61,9 @@ public class AuthService {
         user.setEmail(req.email().toLowerCase());
         user.setPasswordHash(passwordEncoder.encode(req.password()));
         userRepository.save(user);
+        // Seed the free trial in the same transaction so every account starts in TRIAL and the
+        // 1:1 user_entitlement invariant always holds for new users.
+        entitlementService.startTrial(user);
         return issueTokenPair(user);
     }
 
@@ -95,6 +104,21 @@ public class AuthService {
     public User getUser(UUID userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> ApiException.notFound("User not found"));
+    }
+
+    /**
+     * Profile + derived entitlement for {@code GET /api/auth/me}, so the SPA bootstraps identity and
+     * access state in one call.
+     */
+    @Transactional(readOnly = true)
+    public UserProfileResponse me(UUID userId) {
+        User user = getUser(userId);
+        EntitlementView view = entitlementService.currentState(user);
+        return new UserProfileResponse(
+                user.getId(), user.getFirstName(), user.getLastName(),
+                user.getEmail(), user.getRole().name(),
+                view.state(), view.accessExpiresAt()
+        );
     }
 
     private AuthResponse issueTokenPair(User user) {

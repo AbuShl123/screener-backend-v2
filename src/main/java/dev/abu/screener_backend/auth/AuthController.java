@@ -1,7 +1,6 @@
 package dev.abu.screener_backend.auth;
 
 import dev.abu.screener_backend.auth.dto.*;
-import dev.abu.screener_backend.user.User;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -42,10 +41,6 @@ public class AuthController {
     @GetMapping("/me")
     public UserProfileResponse me(Authentication authentication) {
         AuthenticatedUser principal = (AuthenticatedUser) authentication.getPrincipal();
-        User user = authService.getUser(principal.userId());
-        return new UserProfileResponse(
-                user.getId(), user.getFirstName(), user.getLastName(),
-                user.getEmail(), user.getRole().name()
-        );
+        return authService.me(principal.userId());
     }
 }

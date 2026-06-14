@@ -36,7 +36,7 @@ src/
 │   │           └── DefaultRuleResponse.java
 │   ├── auth/
 │   │   ├── AuthController.java
-│   │   ├── AuthService.java
+│   │   ├── AuthService.java   ← seeds free trial on register (EntitlementService.startTrial)
 │   │   ├── AuthenticatedUser.java
 │   │   ├── JwtAuthenticationFilter.java
 │   │   ├── JwtService.java
@@ -46,6 +46,34 @@ src/
 │   │       ├── RefreshRequest.java
 │   │       ├── RegisterRequest.java
 │   │       └── UserProfileResponse.java
+│   ├── billing/
+│   │   ├── Plan.java
+│   │   ├── PlanType.java
+│   │   ├── PlanPrice.java
+│   │   ├── PlanRepository.java
+│   │   ├── PlanPriceRepository.java
+│   │   ├── RegionResolver.java
+│   │   ├── DefaultRegionResolver.java
+│   │   ├── PricingService.java
+│   │   ├── BillingController.java       ← GET /api/billing/plans
+│   │   ├── PlanAdminService.java        ← ADMIN catalog CRUD
+│   │   ├── PlanAdminController.java     ← /api/admin/billing/** (ADMIN-only)
+│   │   └── dto/
+│   │       ├── PlanDto.java
+│   │       ├── PlanCatalogResponse.java
+│   │       ├── AdminPlanRequest.java
+│   │       ├── AdminPriceRequest.java
+│   │       ├── AdminPlanResponse.java
+│   │       └── AdminPriceResponse.java
+│   ├── entitlement/
+│   │   ├── UserEntitlement.java
+│   │   ├── UserEntitlementRepository.java
+│   │   ├── AccessState.java
+│   │   ├── EntitlementView.java
+│   │   ├── EntitlementService.java
+│   │   ├── EntitlementController.java   ← GET /api/billing/entitlement
+│   │   └── dto/
+│   │       └── EntitlementResponse.java
 │   ├── binance/
 │   │   ├── api/
 │   │   │   ├── BinanceApiException.java
@@ -78,6 +106,8 @@ src/
 │   │       ├── BinanceConnectionPool.java
 │   │       └── BinanceWebSocketManager.java
 │   ├── config/
+│   │   ├── AdminProperties.java
+│   │   ├── BillingProperties.java
 │   │   ├── BinanceApiProperties.java
 │   │   ├── DisruptorProperties.java
 │   │   ├── JwtProperties.java
@@ -120,7 +150,10 @@ src/
 │   └── db/migration/
 │       ├── V1__create_users.sql
 │       ├── V2__create_refresh_tokens.sql
-│       └── V3__create_classification_rules.sql
+│       ├── V3__create_classification_rules.sql
+│       ├── V4__update_role_check_constraint.sql
+│       ├── V5__create_plans.sql               ← plans + plan_prices + UZS seed
+│       └── V6__create_user_entitlement.sql    ← 1:1 access table (manual backfill, see scripts/)
 └── test/java/dev/abu/screener_backend/
     ├── ScreenerBackendApplicationTests.java
     ├── analysis/
@@ -130,6 +163,11 @@ src/
     │   ├── UserFeedRegistryTest.java
     │   └── rule/
     │       └── ClassificationRuleServiceTest.java
+    ├── billing/
+    │   ├── PricingServiceTest.java
+    │   └── PlanAdminServiceTest.java
+    └── entitlement/
+        └── EntitlementServiceTest.java
 ```
 
 **Implementation status**: All core features are complete. The full pipeline — Binance WebSocket integration, LMAX Disruptor processing, orderbook sync, order classification, feed broadcasting, and client WebSocket delivery — is implemented and wired together. JWT auth, PostgreSQL user storage, per-user classification rules (persistence, REST CRUD, runtime wiring, two-pass classifier, broadcaster merge), live rule propagation to connected sessions, and Spring Security are all complete.
@@ -166,6 +204,7 @@ Spring Boot entry point. Runs as a servlet/Tomcat application (not Netty) even t
 - `login` — verifies BCrypt hash (401 on mismatch), issues a token pair
 - `refresh` — SHA-256 hashes the incoming token, looks it up in DB, checks expiry, issues a new token pair
 - `logout` — deletes the user's refresh token row; no-op if none exists
+- `me` — `@Transactional(readOnly = true)`; builds `UserProfileResponse` from the user plus derived entitlement (`EntitlementService.currentState`) for a one-call SPA bootstrap
 
 ### `AuthController`
 `src/main/java/dev/abu/screener_backend/auth/AuthController.java`
@@ -180,7 +219,7 @@ Spring Boot entry point. Runs as a servlet/Tomcat application (not Netty) even t
 | `POST` | `/api/auth/logout` | Bearer JWT | 204 |
 | `GET` | `/api/auth/me` | Bearer JWT | 200 + `UserProfileResponse` |
 
-`AuthResponse` carries `accessToken`, `refreshToken` (raw value), and `expiresIn` (seconds).
+`AuthResponse` carries `accessToken`, `refreshToken` (raw value), and `expiresIn` (seconds). `GET /api/auth/me` returns `UserProfileResponse(id, firstName, lastName, email, role, accessState, accessExpiresAt)` — the last two derived by `EntitlementService` so the SPA gets identity and access state in one call.
 
 ### `AuthenticatedUser`
 `src/main/java/dev/abu/screener_backend/auth/AuthenticatedUser.java`
@@ -199,7 +238,7 @@ JPA entity mapped to the `users` table. Fields: `id` (UUID), `firstName`, `lastN
 ### `UserRole`
 `src/main/java/dev/abu/screener_backend/user/UserRole.java`
 
-Enum with one value: `USER`. Extend with `ADMIN`, `PREMIUM` as needed.
+Enum: `USER`, `ADMIN`. The entitlement gate short-circuits on `ADMIN`.
 
 ### `RefreshToken`
 `src/main/java/dev/abu/screener_backend/user/RefreshToken.java`
@@ -215,6 +254,107 @@ JPA entity mapped to `refresh_tokens`. Fields: `id`, `user` (eager `@ManyToOne`)
 `src/main/java/dev/abu/screener_backend/user/RefreshTokenRepository.java`
 
 `JpaRepository<RefreshToken, UUID>`. `findByTokenHash` for lookup; `deleteByUserId(UUID)` via `@Modifying @Query` for efficient single-statement delete.
+
+---
+
+## `billing` — Subscription Catalog & Pricing
+
+DB-driven plan catalog (no plan-type enum driving durations). Ships the data foundation, the pricing service, the public catalog endpoint (`GET /api/billing/plans`), and the ADMIN catalog-CRUD (`/api/admin/billing/**`). The `SecurityConfig` `/api/admin/**` ADMIN-only rule is wired in.
+
+### `Plan` / `PlanType`
+`src/main/java/dev/abu/screener_backend/billing/`
+
+`Plan` is a JPA entity mapped to `plans` — a named, pre-priced bundle of access days. Fields: `id` (UUID), `code` (stable unique identifier the frontend keys text/order off; immutable), `displayName` (admin/log label + English fallback only), `type` (`PlanType` enum STRING-mapped), `durationDays` (7/30/365 for `FIXED`, null for `PER_DAY`), `active` (soft-disable; never hard-delete), `createdAt`, `updatedAt`. `PlanType` is `{ FIXED, PER_DAY }` — pay-by-days is a `PER_DAY` plan, not a special entity.
+
+### `PlanPrice`
+`src/main/java/dev/abu/screener_backend/billing/PlanPrice.java`
+
+JPA entity mapped to `plan_prices`. Price of one `(plan, currency)` pair. `amount` is `BigDecimal NUMERIC(19,4)` in **major units** (sum) — for `FIXED` the full-period price, for `PER_DAY` the price of one day. LAZY `@ManyToOne Plan`. Documented exception to the no-`BigDecimal` rule (billing is low-frequency, correctness-critical). Minor-unit (tiyin) conversion is a future provider-boundary concern, never here.
+
+### `PlanRepository` / `PlanPriceRepository`
+`src/main/java/dev/abu/screener_backend/billing/`
+
+`PlanRepository.findByActiveTrueOrderByCode()` for the public catalog; `findAllByOrderByCode()` and `existsByCode(code)` for the admin surface. `PlanPriceRepository.findByPlan_IdInAndCurrencyAndActiveTrue(planIds, currency)` for the per-currency public lookup; `findByPlan_IdIn(planIds)` (all currencies, active + inactive) and `findByPlan_IdAndCurrency(planId, currency)` for the admin views/upsert.
+
+### `RegionResolver` / `DefaultRegionResolver`
+`src/main/java/dev/abu/screener_backend/billing/`
+
+Server-side region (country + billing currency) resolution seam. `RegionResolver.resolve(HttpServletRequest, User)` → `Region(countryCode, currency)`. `DefaultRegionResolver` (`@Component`) is a stub returning the configured default (`UZ` / `UZS`) for everyone, persisting nothing. Real geo/phone resolution is future work.
+
+### `PricingService`
+`src/main/java/dev/abu/screener_backend/billing/PricingService.java`
+
+`@Service`. `catalogFor(currency)` loads active plans + their active price rows in that currency and returns a `PlanCatalogResponse(currency, List<PlanDto>)`. Plans with no active price in the requested currency are omitted (logged at WARN). DTOs: `PlanDto(code, displayName, type, durationDays, amount)` (no per-plan currency — declared once on the response).
+
+### `BillingController`
+`src/main/java/dev/abu/screener_backend/billing/BillingController.java`
+
+`@RestController` at `/api/billing`. `GET /api/billing/plans` (Bearer JWT, via the `anyRequest().authenticated()` catch-all) resolves the caller's billing currency through `RegionResolver` (a UZ/UZS stub today), then returns `pricingService.catalogFor(currency)`. The client never sends a price or currency.
+
+### `PlanAdminService`
+`src/main/java/dev/abu/screener_backend/billing/PlanAdminService.java`
+
+`@Service @Transactional`. ADMIN catalog mutation over `plans`/`plan_prices`. All validation runs before any write — the whole request is rejected with `400` on the first failure (matching `ClassificationRuleService`); a missing plan/price is `404`.
+
+- `listPlans()` — all plans (active + inactive) with all their price rows (every currency), as full `AdminPlanResponse` views
+- `createPlan(req)` — validates `code` non-blank + unique (`409` on conflict), the `FIXED`⇒duration / `PER_DAY`⇒null invariant, positive duration
+- `updatePlan(id, req)` — mutates `displayName`/`durationDays`/`active`; `code` and `type` are immutable (the duration invariant is checked against the existing type)
+- `deletePlan(id)` — **soft-disable** (`active=false`), idempotent, never a hard delete
+- `upsertPrice(planId, req)` — validates `amount >= 0` and 3-letter ISO currency (normalized upper-case); updates the existing `(plan, currency)` row in place or inserts a new one
+- `deletePrice(id)` — soft-disable the price row, idempotent
+
+### `PlanAdminController`
+`src/main/java/dev/abu/screener_backend/billing/PlanAdminController.java`
+
+`@RestController` at `/api/admin/billing`. ADMIN-only via the `SecurityConfig` `/api/admin/**` rule. Returns full admin views (id, active, all currencies, both plan types) — distinct from the public catalog.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/admin/billing/plans` | List all plans (active + inactive) with their price rows |
+| `POST` | `/api/admin/billing/plans` | Create a plan (201) |
+| `PUT` | `/api/admin/billing/plans/{id}` | Update a plan (not `code`/`type`) |
+| `DELETE` | `/api/admin/billing/plans/{id}` | Soft-disable a plan (204) |
+| `PUT` | `/api/admin/billing/plans/{id}/prices` | Upsert a price for `(plan, currency)` |
+| `DELETE` | `/api/admin/billing/prices/{id}` | Soft-disable a price row (204) |
+
+Admin DTOs: `AdminPlanRequest(code, displayName, type, durationDays, active)`, `AdminPriceRequest(currency, amount, active)`, `AdminPlanResponse(id, code, displayName, type, durationDays, active, List<AdminPriceResponse>)`, `AdminPriceResponse(id, currency, amount, active)`.
+
+---
+
+## `entitlement` — Access State
+
+The authoritative "can this user use the screener right now?" domain. Ships the entity, service, derivation, and the read endpoint (`GET /api/billing/entitlement`) plus the `/api/auth/me` mirror. Access-gate enforcement (REST + WS `@OnOpen`) is still deferred to the enforcement plan.
+
+### `UserEntitlement`
+`src/main/java/dev/abu/screener_backend/entitlement/UserEntitlement.java`
+
+JPA entity mapped to `user_entitlement`, 1:1 with `users` via a shared-primary-key `@OneToOne` + `@MapsId` (`user_id` is both PK and FK; setting the `user` association derives `userId`). Holds access facts only: `accessExpiresAt` (the single authoritative field; null = never granted) and `hasPaid` (distinguishes TRIAL from ACTIVE). `updatedAt` touched on persist/update. Account/localization facts live elsewhere (future `user_settings`).
+
+### `UserEntitlementRepository`
+`src/main/java/dev/abu/screener_backend/entitlement/UserEntitlementRepository.java`
+
+`JpaRepository<UserEntitlement, UUID>`. `findByUserId` (equivalent to `findById` since `user_id` is the PK — named for intent).
+
+### `AccessState` / `EntitlementView`
+`src/main/java/dev/abu/screener_backend/entitlement/`
+
+`AccessState` is `{ TRIAL, ACTIVE, EXPIRED, ADMIN }` — derived on read, never stored. `EntitlementView(AccessState state, Instant accessExpiresAt)` is the service's read return type (`ADMIN` reports `accessExpiresAt = null`).
+
+### `EntitlementService`
+`src/main/java/dev/abu/screener_backend/entitlement/EntitlementService.java`
+
+`@Service @Transactional`. The single mutation + read path for access:
+- `startTrial(User)` — seeds `accessExpiresAt = now + trialDuration`, `hasPaid = false`. Called from `AuthService.register` in the same transaction.
+- `extend(userId, Duration, paid)` — stacking grant `accessExpiresAt = max(now, accessExpiresAt) + granted`; sets `hasPaid` when paid. Shared by trial top-ups and future purchases.
+- `currentState(User)` — derives `EntitlementView`; `ADMIN` short-circuits to `(ADMIN, null)`.
+- `hasAccess(User)` — `role == ADMIN || (expiresAt != null && now < expiresAt)`. Provided for the enforcement plan; not wired into any gate yet.
+
+### `EntitlementController`
+`src/main/java/dev/abu/screener_backend/entitlement/EntitlementController.java`
+
+`@RestController` at `/api/billing` (Bearer JWT via the catch-all). `GET /api/billing/entitlement` returns `EntitlementResponse(state, accessExpiresAt)` from `EntitlementService.currentState` for cheap UI polling. The same two fields are mirrored on `GET /api/auth/me`. DTO: `dto/EntitlementResponse(AccessState state, Instant accessExpiresAt)`.
+
+**Migrations**: `V5__create_plans.sql` (plans + plan_prices + placeholder UZS seed), `V6__create_user_entitlement.sql`. Existing-user backfill is **not** a migration — `scripts/backfill_user_entitlement.sql` is run manually in production (role-split: non-admins get a fresh 7-day trial, admins get `NULL` expiry) so a redeploy can never re-grant trials.
 
 ---
 
@@ -601,8 +741,14 @@ Java record bound from `screener.websocket.*`: stream URLs, connection counts, m
 ### `JwtProperties`
 Java record bound from `screener.jwt.*`: `secret` (base64-encoded), `accessTokenExpiry` (default 3h), `refreshTokenExpiry` (default 7d).
 
+### `AdminProperties`
+Java record bound from `screener.admin.*`: `emails` (comma-separated list, supplied via `SCREENER_ADMIN_EMAILS`, empty in the repo). Emails promoted to `ADMIN` on startup.
+
+### `BillingProperties`
+Java record bound from `screener.billing.*`: `trialDuration` (default `P7D`), `defaultCurrency` (default `UZS`), `defaultCountry` (default `UZ`). No per-day price here — that lives in `plan_prices`. All three records are registered via `WebClientConfig`'s `@EnableConfigurationProperties`.
+
 ### `SecurityConfig`
-`@Configuration`. Spring Security filter chain. Stateless (`STATELESS` session policy, CSRF disabled). Public paths: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/ws`. All other paths require Bearer JWT. `JwtAuthenticationFilter` instantiated directly here to prevent double-registration. Declares the `BCryptPasswordEncoder` bean. CORS configured for localhost and production origins.
+`@Configuration`. Spring Security filter chain. Stateless (`STATELESS` session policy, CSRF disabled). Public paths: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/ws`. `/api/monitoring/**` and `/api/admin/**` are ADMIN-only; all other paths require Bearer JWT (catch-all `anyRequest().authenticated()` — covers `/api/billing/**`). `JwtAuthenticationFilter` instantiated directly here to prevent double-registration. Declares the `BCryptPasswordEncoder` bean. CORS configured for localhost and production origins.
 
 ---
 
@@ -645,6 +791,15 @@ Plain JUnit unit test of the session/context lifecycle and live rule propagation
 ### `ClassificationRuleServiceTest`
 Plain JUnit unit test with reflective proxy repository stubs. Verifies `RuleUpdatedEvent` is published exactly once after `upsertRules` and `deleteRules`, and never on validation failure.
 
+### `PricingServiceTest`
+Plain JUnit unit test (reflective proxy repos). Verifies the resolved currency is echoed on the response, `BigDecimal` amounts survive exactly, plans without an active price in the requested currency are omitted, and an empty catalog when no active plans.
+
+### `PlanAdminServiceTest`
+Plain JUnit unit test with stateful in-memory reflective proxy repos. Verifies code-uniqueness conflict, the `FIXED`⇒duration / `PER_DAY`⇒null invariant, soft-delete (`active=false`, idempotent, `404` when absent), price upsert (create-then-update the same `(plan, currency)` row with currency normalization), negative-amount/bad-currency rejection, and `updatePlan` immutability of `code`/`type`.
+
+### `EntitlementServiceTest`
+Plain JUnit unit test with a stateful in-memory reflective proxy repo. Verifies trial seeding (7-day unpaid), stacking from a future vs a past expiry, the ADMIN short-circuit (`ADMIN`/null), the derived `{TRIAL, ACTIVE, EXPIRED}` states, and `hasAccess` for admin/valid/expired users.
+
 ---
 
 ## What Is Not Yet Implemented
@@ -652,9 +807,10 @@ Plain JUnit unit test with reflective proxy repository stubs. Verifies `RuleUpda
 | Feature | Notes |
 |---------|-------|
 | Klines streams | Candlestick data integration for additional analysis signals |
-| Payment gateway | Integration with a payment provider (e.g. Stripe) for subscription billing and lifecycle events |
-| User subscription model | Per-plan limits (max tracked tickers, max custom rules) persisted on the `User` entity and enforced at the service layer |
-| User roles and privileges | Expand `UserRole` to `USER` (free), `PREMIUM` (paid), and `ADMIN`; enforce role-based access on REST and WebSocket endpoints |
+| Payment gateway | `PaymentProvider` interface, Multicard adapter, orders + webhooks + reconciliation, pay-by-days math, major→tiyin conversion (payment plan) |
+| Access-gate enforcement | Wiring `EntitlementService.hasAccess` into REST endpoints and WS `@OnOpen`; mid-session WS expiry (enforcement plan) |
+| Account settings / localization | Real geo/IP/phone `RegionResolver`, `user_settings` table (currency/country/locale), multi-currency seed (KZT/RUB/crypto) |
+| User roles and privileges | `USER`/`ADMIN` exist; `PREMIUM` (paid) tier and per-plan limits (max tracked tickers, max custom rules) not yet enforced |
 | Distributed deployment | Ticker partitioning across multiple JVM instances |
 | Primitive orderbook store | Replace `TreeMap<Double, PriceLevelEntry>` with a memory-efficient structure |
 | Snapshot optimization | Caching, pre-warming, or higher-weight API access to reduce startup sync time |

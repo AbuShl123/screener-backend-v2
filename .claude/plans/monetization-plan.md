@@ -107,13 +107,22 @@ fall out as a natural variant rather than a special case.
 ## Entitlement & Access Gate
 
 ### Entitlement foundation
-A single authoritative field: **`accessExpiresAt` (Instant)** on the user (or a small entitlement
-record). It is the only thing access gates read. Every successful purchase moves it forward:
+A single authoritative field: **`accessExpiresAt` (Instant)**, stored on a **separate 1:1
+`user_entitlement` record** (not on the `User` entity — keeps identity/auth lean and gives the
+entitlement domain its own home). It is the only thing access gates read. Every successful purchase
+moves it forward:
 ```
 accessExpiresAt = max(now, accessExpiresAt) + grantedDuration
 ```
 Buying while access is still active **stacks** — the new duration is added on top of the remaining
-time. Generous and simple.
+time. Generous and simple. All mutation runs through one `EntitlementService.extend(...)` method
+(shared by trial-grant and purchase-grant); there is **no audit ledger** of changes. The
+entitlement record holds *access facts only* — `access_expires_at` plus `has_paid` (to distinguish
+trial from paid). Account/localization facts (currency, country, language) are **not** stored here —
+they belong to the account domain (a future `user_settings` table). **Invariant:** every user has
+exactly one entitlement row (created in the registration transaction; existing users backfilled);
+admins included, their row simply ignored by the gate. Detailed schema in
+`subscription-entitlement-foundation-plan.md`.
 
 ### Admin bypass
 Admins have unlimited access and do not participate in payments at all:
@@ -128,14 +137,25 @@ All enforcement below applies only to `USER`. Admins are never charged, never ex
   identically to any other active entitlement.
 
 ### Entitlement state (for the frontend)
-The backend exposes the current access **state** so the UI can render correctly. With auto-renew
-gone, the set is small:
-- `TRIAL` — within the free week
+The backend exposes the current access **state** so the UI can render correctly. The state is
+**derived on read** from the stored facts (`accessExpiresAt`, `has_paid`, role) — never stored as a
+column (a stored state column would go stale the instant a timestamp passes with no event to flip
+it). The set:
+- `TRIAL` — granted access (the free week) but never paid
 - `ACTIVE` — paid access (from a fixed plan or prepaid days) currently valid
 - `EXPIRED` — no valid access; user must purchase
+- `ADMIN` — admin bypass; **presentation-only**, reported with `accessExpiresAt = null`. Nothing
+  admin-specific is stored — `role == ADMIN` short-circuits the derivation.
 
-(Finer granularity — e.g. distinguishing trial-vs-paid or surfacing the source of the current
-period — can be added later if the UI needs it. The exact enum is finalized in the detailed plan.)
+Derivation:
+```
+role == ADMIN                            -> ADMIN
+expiresAt == null || now >= expiresAt    -> EXPIRED
+!has_paid                                -> TRIAL
+else                                     -> ACTIVE
+```
+For `TRIAL`/`ACTIVE`, `accessExpiresAt` is the same field — only the UI label differs (trial-end vs
+subscription-end).
 
 ### Enforcement points
 The access gate is applied at:
@@ -148,16 +168,27 @@ The access gate is applied at:
 
 ## Purchases: Plans & Pricing
 
-### Plan type
-- **Plan type = enum** (`WEEKLY` / `MONTHLY` / `YEARLY`). A fixed, closed set that drives the access
-  duration in code (+7 / +30 / +365 days). Not stored as DB rows — "subscriptions are all the
-  same", so table-driven plan definitions would be flexibility we don't need.
+### Plan catalog (revised — DB-driven, not an enum)
+- **Plans are DB rows**, not an enum. A plan is a named, pre-priced **bundle of days** — its
+  duration is *data*, not code. A `plans` table holds `code`, `display_name`, `type`
+  (`FIXED` | `PER_DAY`), `duration_days` (7/30/365 for fixed; null for pay-by-days), `active`, and
+  `sort_order`. Business edits the catalog (add quarterly, retire weekly via `active=false`) without
+  a code change, and the future admin console gets a CRUD surface for free.
+- **Pay-by-days is just a `type = PER_DAY` plan** — same two tables, no special entity. Its price
+  row *is* the per-day price.
+- **Never hard-delete** a plan referenced by historical orders; soft-disable with `active=false`.
+  Orders **snapshot** `days_granted` and `amount_paid` so later re-pricing never alters past grants.
 
 ### Pricing
-- **Price = data**, resolved by `(plan, currency)`; the per-day price is resolved by `(currency)`.
-  Config-driven now (**UZS only**); a pricing table later. Re-pricing must not require a code
-  change. Localization is additive — the resolver signature already takes currency, so adding
-  KZT/RUB/crypto later is purely additive.
+- **Price = data**, resolved by `(plan, currency)` from a `plan_prices` table (DB now, not config).
+  Re-pricing is a DML change, never a code change. Localization is additive — `plan_prices` is
+  already keyed by currency, so adding KZT/RUB/crypto rows later needs no migration.
+- **Currency is resolved server-side** via a `RegionResolver` seam (CDN/IP header → verified phone
+  country → user override). Today it is a stub returning UZS for everyone, resolved at request time
+  and **persisted nowhere**; when real geo/phone resolution lands, the chosen currency is stored on a
+  future `user_settings` account record so pricing stays stable across sessions (and is typically
+  locked after the first transaction to prevent price arbitrage). **The client never sends a price or
+  currency** — only a plan `code` (or, for pay-by-days, an amount of money).
 - Provider and currency are **linked dimensions** (Multicard→UZS, future Kaspi→KZT, …). Model that
   pairing even with only one of each today.
 
@@ -250,14 +281,17 @@ assumed. It stays high-level; exact request/response fields belong in the detail
 - The billing module is low-frequency and correctness-critical. The CLAUDE.md **"no `BigDecimal`"
   rule applies to the market-data hot path only** and explicitly does **not** apply here. This
   exception will be documented in code so it is not "optimized away" later.
-- Money is modelled as an **amount + currency** abstraction, stored canonically as **integer minor
-  units**. Multicard fits this perfectly (integer tiyin), so the Multicard path needs no
-  `BigDecimal`.
+- Money is modelled as an **amount + currency** abstraction, stored canonically as a **`BigDecimal`
+  in major units** (e.g. UZS sum), column `NUMERIC(19,4)`. Major units keep the value
+  provider-agnostic *and* directly displayable to the user (regular users never see tiyin). A
+  `BigDecimal` of *minor* units would buy nothing — minor units are integers by definition — so the
+  generality only pays off when the stored amount is the natural major-unit value.
+- **Provider boundary owns minor-unit conversion.** Each adapter converts the canonical `Money` to
+  its own wire format: the Multicard adapter multiplies by 100 to produce integer tiyin
+  (`amount.movePointRight(2).longValueExact()`) at the edge. The billing core never deals in tiyin.
 - **Future-proofing:** a later provider may price in fractional units or demand decimal arithmetic
-  (rates, crypto conversions, percentage fees). The money abstraction must not bake in
-  "integer-only" assumptions — it should allow a `BigDecimal`-backed representation where a future
-  provider requires it, without reworking the billing core. Provider adapters convert between the
-  canonical money model and their own wire format.
+  (rates, crypto conversions, percentage fees). `BigDecimal` major units already accommodate this;
+  the `NUMERIC` scale is widened additively for crypto's 8+ decimals when needed.
 
 ---
 
