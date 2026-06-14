@@ -25,7 +25,11 @@
       "Bash(Get-ChildItem *)",
       "Bash(./mvnw -q compile)",
       "Bash(./mvnw -q -Dtest=AdminBootstrapTest test)",
-      "Bash(./mvnw -Dtest=AdminBootstrapTest test)"
+      "Bash(./mvnw -Dtest=AdminBootstrapTest test)",
+      "Bash(curl -sL \"https://docs.multicard.uz/introduction-4736405f0.md\")",
+      "Bash(curl -sL \"https://docs.multicard.uz/%D0%BF%D0%BE%D0%BB%D1%83%D1%87%D0%B5%D0%BD%D0%B8%D0%B5-%D1%82%D0%BE%D0%BA%D0%B5%D0%BD%D0%B0-19729295e0.md\")",
+      "Bash(bash fetch-multicard-docs.sh)",
+      "Read(./external-docs/**)"
     ]
   }
 }
