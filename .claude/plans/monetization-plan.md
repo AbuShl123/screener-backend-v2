@@ -116,9 +116,12 @@ accessExpiresAt = max(now, accessExpiresAt) + grantedDuration
 ```
 Buying while access is still active **stacks** — the new duration is added on top of the remaining
 time. Generous and simple. All mutation runs through one `EntitlementService.extend(...)` method
-(shared by trial-grant and purchase-grant); there is **no audit ledger** of changes. The
+(shared by trial-grant and purchase-grant). The
 entitlement record holds *access facts only* — `access_expires_at` plus `has_paid` (to distinguish
-trial from paid). Account/localization facts (currency, country, language) are **not** stored here —
+trial from paid). **Update (payment phase):** the foundation plan's earlier "no audit ledger"
+decision is **reversed** once real money grants access — an append-only `entitlement_ledger` records
+every grant (trial, purchase, future admin gift) so access changes are auditable. Details in the
+payment plan. Account/localization facts (currency, country, language) are **not** stored here —
 they belong to the account domain (a future `user_settings` table). **Invariant:** every user has
 exactly one entitlement row (created in the registration transaction; existing users backfilled);
 admins included, their row simply ignored by the gate. Detailed schema in
@@ -219,27 +222,52 @@ crypto, …) are additive adapters behind the same interface.
 
 ### Order state machine (provider-neutral)
 ```
-CREATED → PENDING → PAID | FAILED | EXPIRED
+CREATED → PENDING → PAID
+              ├→ EXPIRED   (invoice TTL elapsed, no payment)
+              ├→ FAILED    (provider reported an error)
+              └→ CANCELED  (superseded / abandoned before payment)
+PAID → REVERTED            (refund detected — recorded only, access not revoked)
 ```
 Each order records **what it is for** (which fixed plan, or how many prepaid days) so the webhook
-handler knows which entitlement to grant on success. The order also stores the provider's
-transaction id for idempotency and reconciliation.
+handler knows which entitlement to grant on success. It also stores the provider's transaction id
+(for idempotency and reconciliation), a `reason` for non-happy transitions, and the chosen
+`payment_provider` + `ps` (payment service: card / Payme / Click / …) for future multi-provider
+analytics. Every transition is appended to an **`order_status_history`** table so a payment can be
+audited end-to-end. Refunds are out of scope for now (a future admin-console concern); if a `revert`
+is ever observed it is recorded as `REVERTED` but access is **not** auto-revoked.
 
 ### The canonical redirect flow (now concrete, via Multicard)
-1. User picks a plan / enters an amount → backend creates a `PENDING` order; price resolved in UZS.
+1. User picks a plan / enters an amount → backend **reuses an open order or creates a new `PENDING`
+   one** (at most one open order per user); price resolved server-side in UZS.
 2. Backend asks Multicard to create an invoice → receives a `checkout_url` and Multicard's
-   transaction `uuid` (persisted on the order) → user is redirected to the checkout page.
+   transaction `uuid` (persisted on the order). The endpoint **returns the `checkoutUrl` as JSON**
+   (the SPA performs the redirect — the backend never issues a 302).
 3. User pays on Multicard's hosted page (card, or apps like Payme/Click/Uzum).
-4. Multicard sends our **webhook** (public, signature-verified) on each status change.
-5. On a `success` status we verify the signature, mark the order `PAID` **idempotently**, and grant
-   the entitlement (extend `accessExpiresAt`).
+4. Multicard sends our **success callback** (public, signature-verified) once the payment succeeds.
+   The browser is separately redirected back to our `return_url` — that redirect is **UX only and
+   grants nothing**; the SPA polls our order-status endpoint to learn the outcome.
+5. On the callback we verify the signature + source IP, then **grant the entitlement and mark the
+   order `PAID` in one transaction, and only then acknowledge** (extend `accessExpiresAt`). The grant
+   is idempotent on Multicard's `uuid`.
+6. A **reconciliation sweep** is the safety net: for abandoned checkouts (no callback ever fires),
+   lost callbacks, and refund detection, a scheduled job resolves stale `PENDING` orders via the
+   durable status endpoint. Both the callback and the sweep funnel into the **same idempotent grant**.
 
 ### Non-negotiables for the payment flow
-- **Signature verification** on every webhook — never trust an unsigned callback.
+- **Signature + source verification** on every callback — never trust an unsigned/unknown-IP call.
+- **Grant before acknowledging.** Access must be granted (committed) *before* we return success to
+  the provider, so a "200 OK" is never sent for a payment the user didn't actually receive access
+  for.
+- **Transient vs permanent failure.** A failure we expect to recover from (our DB down) returns a
+  retry signal (HTTP 500), not a rejection — the provider freezes funds and retries. A deliberate
+  rejection (amount mismatch, unknown order) returns the provider's "reverse this payment" signal.
+  Never reject a good payment over a transient error.
 - **Idempotency** — providers retry callbacks; granting access twice for one payment must be
   impossible (unique constraint on the provider transaction id + a state-guarded transition).
-- **Reconciliation fallback** — a poller that queries the provider for the status of stale
-  `PENDING` orders, so a lost webhook never leaves a paying user without access.
+- **Never grant on the browser redirect.** The post-payment `return_url` is UX only; entitlement is
+  granted solely from the verified callback (and the reconciliation safety net).
+- **Reconciliation fallback** — a scheduled poller that queries the provider for the status of stale
+  `PENDING` orders, so a lost callback never leaves a paying user without access.
 
 ---
 
@@ -257,22 +285,30 @@ assumed. It stays high-level; exact request/response fields belong in the detail
 - **Hosted checkout.** `POST /payment/invoice` with our order id, the amount in tiyin, a
   `callback_url`, and a return URL → returns a `checkout_url` (redirect target) and Multicard's
   transaction `uuid`. This maps 1:1 onto `createPayment`.
-- **Webhooks (chosen notification mechanism).** Multicard offers two callback styles; we use the
-  **full webhooks** that fire on *every* status change (`draft / progress / success / error /
-  revert / hold`), because they give us complete visibility into failures and reversals, not just
-  the happy path. Each webhook is **signed** (an SHA-1 hash over a fixed field string that includes
-  our secret) and is sent from a **fixed Multicard IP**, so we can verify both the signature and
-  the source IP. Non-2xx responses are retried, which is exactly why idempotency is mandatory.
+- **Notification mechanism — the default success-only callback.** Multicard offers two callback
+  styles; we use the **default success callback** (fires once, on a successful payment), not the
+  richer per-status webhooks. The per-status webhooks must be enabled by Multicard support and add
+  five status types to handle — but they do **not** remove the need for a scheduled sweep (an
+  abandoned checkout never pushes any event, and lost callbacks still happen), so success-only is
+  the simpler complete system. The success callback is **signed with MD5** over
+  `{store_id}{invoice_id}{amount}{secret}` and arrives from a **fixed Multicard IP** (`195.158.26.90`);
+  we verify both. We must respond **HTTP 200 with `{"success": true}`**; a non-200 *or* `success != true`
+  makes Multicard **reverse/refund** the payment, while a **timeout or HTTP 500** makes it **freeze the
+  funds and retry** — hence "grant before acknowledging" and the transient-vs-permanent distinction
+  above. (If we later adopt per-status webhooks, the signature flips to **SHA-1** over
+  `{uuid}{invoice_id}{amount}{secret}`; the adapter isolates this so the switch is config, not a rewrite.)
 - **Idempotency key = Multicard `uuid`.** The provider explicitly documents that retried callbacks
   may repeat for the same transaction; we key idempotent grants on its `uuid`.
-- **Reconciliation.** `GET /payment/invoice/{uuid}` returns an invoice's current status, which the
-  reconciliation poller uses to resolve stale `PENDING` orders.
-- **Fiscalization (`ofd`) — deferred to production.** Multicard's invoice API can require fiscal
-  receipt data (an `ofd` block with Uzbek tax classification codes). This is tied to having an
-  **official merchant agreement**. We do not have one yet, so for now we use Multicard's
-  **published test/sandbox credentials** (see `external-docs/payments/multicard/README.md`), where
-  fiscalization is not a concern. Wiring real fiscal data is a **go-to-production** task, not part
-  of the initial build.
+- **Reconciliation uses the durable `GET /payment/{uuid}`** — **not** `GET /payment/invoice/{uuid}`.
+  The invoice endpoint returns `ERROR_TRANS_NOT_READY` / `ERROR_NOT_FOUND` once an invoice is
+  expired or cancelled — i.e. it goes blind exactly when we need it. `GET /payment/{uuid}` always
+  returns the full payment with an authoritative `status` (`draft/progress/billing/success/error/revert`),
+  so the sweep can resolve abandoned, lost-callback, and refunded cases reliably.
+- **Fiscalization (`ofd`) — configurable, off by default.** Multicard's invoice API documents `ofd`
+  (Uzbek tax classification data) as required, but on the **test/sandbox credentials** the call
+  succeeds **without** it (verified). So `ofd` is a **configurable** concern: omitted locally/in
+  sandbox, populated in production once a real merchant agreement and tax data exist. Wiring real
+  fiscal data is a **go-to-production** task, not part of the initial build.
 
 ---
 
