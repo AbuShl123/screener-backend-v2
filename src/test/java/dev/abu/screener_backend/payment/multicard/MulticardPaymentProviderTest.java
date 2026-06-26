@@ -71,7 +71,7 @@ class MulticardPaymentProviderTest {
         assertEquals(ProviderStatus.PENDING, fetchWithStatus("draft").status());
         assertEquals(ProviderStatus.PENDING, fetchWithStatus("progress").status());
         assertEquals(ProviderStatus.PENDING, fetchWithStatus("billing").status());
-        // Undocumented-but-observed cancelled status, both spellings (E3).
+        // Undocumented-but-observed cancelled status, both spellings.
         assertEquals(ProviderStatus.CANCELED, fetchWithStatus("cancelled").status());
         assertEquals(ProviderStatus.CANCELED, fetchWithStatus("canceled").status());
     }

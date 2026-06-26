@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Unit tests for {@link Currency} (E10): per-currency decimal places, case-insensitive resolution with
+ * Unit tests for {@link Currency}: per-currency decimal places, case-insensitive resolution with
  * rejection of badly-formatted/unsupported codes, and {@code requireScale} accepting amounts within the
  * currency's decimals (trailing zeros tolerated) while rejecting over-scale amounts.
  */

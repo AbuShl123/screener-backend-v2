@@ -51,7 +51,7 @@ public class OrderStatusHistory {
 
     /**
      * Monotonic, DB-generated sequence (identity column) — the deterministic ordering key for "latest
-     * transition" lookups (E7). Read-only here; assigned by the database on insert, never set by the app.
+     * transition" lookups. Read-only here; assigned by the database on insert, never set by the app.
      */
     @Column(name = "seq", insertable = false, updatable = false)
     private Long seq;

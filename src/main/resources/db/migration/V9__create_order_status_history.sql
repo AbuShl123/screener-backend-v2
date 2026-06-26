@@ -7,8 +7,8 @@
 -- the audit trail lives only here.
 --
 -- `seq` is a monotonic, DB-generated identity column: the deterministic ordering key for the "latest
--- transition" lookup (E7). Two transitions can share a created_at tick (app-clock Instant.now()),
--- making a created_at-ordered "latest reason" lookup ambiguous; ordering by seq DESC is deterministic.
+-- transition" lookup. Two transitions can share a created_at tick (app-clock Instant.now()), making a
+-- created_at-ordered "latest reason" lookup ambiguous; ordering by seq DESC is deterministic.
 
 CREATE TABLE order_status_history (
     id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),

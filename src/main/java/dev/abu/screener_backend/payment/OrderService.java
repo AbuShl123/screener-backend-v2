@@ -173,10 +173,9 @@ public class OrderService {
     /**
      * {@code days = FIXED ? duration_days : ceil(amount / pricePerDay)}. The pay-by-days {@code amount}
      * is in major units (sum) and must be positive and within the currency's allowed decimal places
-     * (E10): UZS permits 2 dp, BTC 8, ETH 18. Keeping the scale within the currency's decimals also
-     * guarantees the Multicard adapter's {@code movePointRight(decimals).longValueExact()} conversion
-     * stays exact, so we reject an over-scale amount up front with a clean 400 rather than failing deep
-     * in invoice creation.
+     * (UZS 2, BTC 8, ETH 18). Staying within the currency's scale also keeps the Multicard adapter's
+     * {@code movePointRight(decimals).longValueExact()} conversion exact, so an over-scale amount is
+     * rejected up front with a clean 400 rather than failing deep in invoice creation.
      */
     private static long computeDays(Plan plan, PlanPrice price, BigDecimal amountMoney, String currency) {
         if (plan.getType() == PlanType.FIXED) {
@@ -202,7 +201,7 @@ public class OrderService {
      * lock so concurrent callback + sweep cannot double-grant. The funnel for both the success callback
      * and reconciliation.
      *
-     * <p><strong>Late-success rescue (E6):</strong> a terminal order ({@code EXPIRED}/{@code FAILED}/
+     * <p><strong>Late-success rescue:</strong> a terminal order ({@code EXPIRED}/{@code FAILED}/
      * {@code CANCELED}) reached here via a race may be resurrected to {@code PAID} <em>only</em> by the
      * {@code CALLBACK} source — the authoritative success push. The reconciliation sweep must not rescue
      * a terminal order (it only ever scans {@code PENDING}; a terminal status at lock time is a rare race
@@ -241,7 +240,7 @@ public class OrderService {
 
     /**
      * Reconciliation: provider reports {@code success} but the amount does not match the order snapshot
-     * (E5, mirroring the callback's guard). Only a still-PENDING order is moved to FAILED; never grants.
+     * (mirroring the callback's guard). Only a still-PENDING order is moved to FAILED; never grants.
      */
     public void markAmountMismatch(UUID orderId, String detail) {
         transitionPendingOnly(orderId, OrderStatus.FAILED, OrderReason.AMOUNT_MISMATCH, detail);

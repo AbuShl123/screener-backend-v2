@@ -106,7 +106,7 @@ public class MulticardPaymentProvider implements PaymentProvider {
     /**
      * Fiscalization block — attached only when {@code ofd-enabled} (off in sandbox/local).
      *
-     * <p><strong>PLACEHOLDER PAYLOAD (E9, go-to-production dependency):</strong> the line detail here
+     * <p><strong>PLACEHOLDER PAYLOAD (go-to-production dependency):</strong> the line detail here
      * carries only {@code qty}/{@code price}/{@code total}/{@code name}. Real {@code mxik} /
      * {@code package_code} / tax-rate data is required before {@code ofd-enabled} is turned on against a
      * production merchant agreement — enabling it as-is sends incomplete fiscal data. Do not rely on this

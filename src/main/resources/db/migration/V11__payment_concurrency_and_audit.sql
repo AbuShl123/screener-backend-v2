@@ -1,4 +1,4 @@
--- Payment hardening pass — adjustments to PRE-EXISTING tables only (enhancements plan E2 + E10).
+-- Payment hardening pass — adjustments to PRE-EXISTING tables only.
 --
 -- The orders and order_status_history tables are created in their final shape in V8/V9 (version column,
 -- NUMERIC(38,18) amount, seq identity). This migration carries only the changes that touch tables which
@@ -10,7 +10,7 @@
 --    lost update. Existing entitlement paths serialize today, so this never contends.
 ALTER TABLE user_entitlement ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
 
--- 2. Widen plan_prices.amount to crypto-grade precision (E10), matching orders.amount NUMERIC(38,18).
+-- 2. Widen plan_prices.amount to crypto-grade precision, matching orders.amount NUMERIC(38,18).
 --    The original NUMERIC(19,4) is fine for fiat (<= 2 dp) but silently truncates cryptocurrencies
 --    (BTC = 8 dp, ETH = 18 dp) — a stated future direction. NUMERIC is variable-width, so the unused
 --    scale on small fiat values is nearly free; existing rows are padded to scale 18, no value changes.

@@ -50,7 +50,7 @@ public class Order {
     @Column(name = "granted_duration_seconds", nullable = false)
     private long grantedDurationSeconds;
 
-    /** Snapshot of what the user pays, in major units (sum). NUMERIC(38,18) — fiat + crypto precision (E10). */
+    /** Snapshot of what the user pays, in major units (sum). NUMERIC(38,18) — fiat + crypto precision. */
     @Column(nullable = false, precision = 38, scale = 18)
     private BigDecimal amount;
 

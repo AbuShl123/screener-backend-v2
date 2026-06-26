@@ -1,7 +1,6 @@
--- Append-only audit of every access grant. Reverses the foundation plan's "no ledger" decision now
--- that real money grants access: trial seeding, purchases, and future admin grants all write a row
--- here so access changes are auditable. No change to user_entitlement — EntitlementService.extend(...)
--- simply writes one ledger row per grant.
+-- Append-only audit of every access grant — now that real money grants access, access changes must be
+-- auditable: trial seeding, purchases, and future admin grants all write a row here. No change to
+-- user_entitlement — EntitlementService.extend(...) simply writes one ledger row per grant.
 
 CREATE TABLE entitlement_ledger (
     id                       UUID         PRIMARY KEY DEFAULT gen_random_uuid(),

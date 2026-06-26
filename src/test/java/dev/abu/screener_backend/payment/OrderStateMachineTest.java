@@ -10,8 +10,8 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for {@link OrderStateMachine}: the benign {@code from == to} no-op (E2) and the
- * late-success rescue legality (E6) — {@code EXPIRED/FAILED/CANCELED → PAID} legal, {@code REVERTED →
+ * Unit tests for {@link OrderStateMachine}: the benign {@code from == to} no-op and the late-success
+ * rescue legality — {@code EXPIRED/FAILED/CANCELED → PAID} legal, {@code REVERTED →
  * PAID} permanently illegal. Repositories are hand-rolled reflective proxies (the codebase avoids Mockito).
  */
 class OrderStateMachineTest {

@@ -18,7 +18,7 @@ import java.util.Objects;
  * ({@link OrderService#markPaidAndGrant}) runs in its own transaction and commits when it returns,
  * and only then does {@code handle} return {@code OK}.
  *
- * <p>Failure semantics (Decision #4): our-side failure → {@link CallbackOutcome#retry()} (HTTP 500;
+ * <p>Failure semantics: our-side failure → {@link CallbackOutcome#retry()} (HTTP 500;
  * Multicard freezes + retries); deliberate rejection → {@link CallbackOutcome#reject} (Multicard
  * reverses/refunds); bad signature / wrong IP → 400, unprocessed.
  */

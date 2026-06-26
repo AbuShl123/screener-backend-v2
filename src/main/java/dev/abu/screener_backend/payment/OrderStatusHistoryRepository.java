@@ -8,7 +8,7 @@ import java.util.UUID;
 
 public interface OrderStatusHistoryRepository extends JpaRepository<OrderStatusHistory, UUID> {
 
-    /** Full transition history for an order, newest first. Ordered by the monotonic {@code seq} (E7). */
+    /** Full transition history for an order, newest first. Ordered by the monotonic {@code seq}. */
     List<OrderStatusHistory> findByOrderIdOrderBySeqDesc(UUID orderId);
 
     /**

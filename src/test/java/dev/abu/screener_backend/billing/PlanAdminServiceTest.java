@@ -165,7 +165,7 @@ class PlanAdminServiceTest {
                 service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", "-1", true)));
         assertThrows(ApiException.class, () ->
                 service.upsertPrice(plan.id(), new AdminPriceRequest("US", "1", true)));
-        // Unsupported (but well-formed) currency is rejected — the system can't know its decimals (E10).
+        // Unsupported (but well-formed) currency is rejected — the system can't know its decimals.
         assertThrows(ApiException.class, () ->
                 service.upsertPrice(plan.id(), new AdminPriceRequest("XYZ", "1", true)));
     }
@@ -175,7 +175,7 @@ class PlanAdminServiceTest {
         AdminPlanResponse plan =
                 service.createPlan(new AdminPlanRequest("weekly", "Weekly", PlanType.FIXED, 7, true));
 
-        // UZS allows 2 dp; 3 significant decimals is a 400 (E10). Trailing zeros are fine.
+        // UZS allows 2 dp; 3 significant decimals is a 400. Trailing zeros are fine.
         assertThrows(ApiException.class, () ->
                 service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", "19.999", true)));
         AdminPriceResponse ok =

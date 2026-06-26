@@ -117,7 +117,7 @@ class OrderServiceTest {
     void payByDaysAcceptsWithinScaleFractionalAmount() {
         plan("pay_as_you_go", PlanType.PER_DAY, null);
         price("pay_as_you_go", "UZS", "1000");
-        // 7900.50 / 1000 = 7.9005 → ceil → 8 days. UZS permits 2 dp, so a fractional sum is valid (E10).
+        // 7900.50 / 1000 = 7.9005 → ceil → 8 days. UZS permits 2 dp, so a fractional sum is valid.
         assertEquals(8 * DAY, durationOf(service.createOrReuse(user, "pay_as_you_go", new BigDecimal("7900.50"), "UZS")));
     }
 
@@ -125,7 +125,7 @@ class OrderServiceTest {
     void payByDaysRejectsAmountWithTooManyDecimalsForCurrency() {
         plan("pay_as_you_go", PlanType.PER_DAY, null);
         price("pay_as_you_go", "UZS", "1000");
-        // UZS allows 2 dp; 100.123 carries 3 → 400 (E10).
+        // UZS allows 2 dp; 100.123 carries 3 → 400.
         assertThrows(ApiException.class, () -> service.createOrReuse(user, "pay_as_you_go", new BigDecimal("100.123"), "UZS"));
     }
 
@@ -153,7 +153,7 @@ class OrderServiceTest {
         assertEquals("https://existing", res.checkoutUrl());
         assertFalse(res.alreadyPaid());
         assertEquals(1, orders.size(), "no new order created on reuse");
-        // E1: reuse never probes the provider or grants — the sweep/callback handles a lost-tab payment.
+        // Reuse never probes the provider or grants — the sweep/callback handles a lost-tab payment.
         assertEquals(0, fetchCalls.get(), "reuse must not call the provider");
         assertEquals(0, extendCalls.get(), "reuse must not grant");
     }
@@ -172,7 +172,7 @@ class OrderServiceTest {
         assertEquals(List.of(old.getProviderUuid()), cancelCalls);
         assertNotEquals(old.getId(), res.orderId());
         assertEquals(OrderStatus.PENDING, orders.get(res.orderId()).getStatus());
-        // E2: exactly one open order remains (old CANCELED, new PENDING) — the invariant the
+        // Exactly one open order remains (old CANCELED, new PENDING) — the invariant the
         // flush-before-INSERT ordering protects at the DB partial index.
         assertEquals(1, orders.values().stream().filter(Order::isOpen).count());
     }
@@ -269,7 +269,7 @@ class OrderServiceTest {
         return orders.get(res.orderId()).getGrantedDurationSeconds();
     }
 
-    /** Last history row for the order in insertion order — mirrors the DB-generated {@code seq} ordering (E7). */
+    /** Last history row for the order in insertion order — mirrors the DB-generated {@code seq} ordering. */
     private OrderReason latestReason(UUID orderId) {
         OrderReason reason = null;
         for (OrderStatusHistory h : history) {

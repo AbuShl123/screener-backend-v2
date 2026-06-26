@@ -29,7 +29,7 @@ public class OrderStateMachine {
         ALLOWED.put(OrderStatus.PENDING, EnumSet.of(OrderStatus.PAID, OrderStatus.EXPIRED, OrderStatus.FAILED,
                 OrderStatus.CANCELED, OrderStatus.REVERTED));
         ALLOWED.put(OrderStatus.PAID, EnumSet.of(OrderStatus.REVERTED));
-        // Late-success rescue (E6): an authoritative success may resurrect a terminal order to PAID. The
+        // Late-success rescue: an authoritative success may resurrect a terminal order to PAID. The
         // transition is structurally legal here; whether it is *applied* (callback-only) is gated in
         // OrderService.markPaidAndGrant. REVERTED stays permanently terminal — refunded money never grants.
         ALLOWED.put(OrderStatus.EXPIRED, EnumSet.of(OrderStatus.PAID));

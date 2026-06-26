@@ -35,8 +35,8 @@ CREATE TABLE orders (
 -- Idempotency: one order per Multicard transaction. Retried callbacks repeat for the same uuid.
 CREATE UNIQUE INDEX uq_orders_provider_uuid ON orders(provider_uuid) WHERE provider_uuid IS NOT NULL;
 
--- At most one OPEN order per user (Decision #7): handles the lost-tab re-pay scenario and prevents a
--- user accidentally paying two different invoices.
+-- At most one OPEN order per user: handles the lost-tab re-pay scenario and prevents a user
+-- accidentally paying two different invoices.
 CREATE UNIQUE INDEX uq_orders_one_open_per_user ON orders(user_id) WHERE status IN ('CREATED','PENDING');
 
 CREATE INDEX idx_orders_user_status ON orders(user_id, status);

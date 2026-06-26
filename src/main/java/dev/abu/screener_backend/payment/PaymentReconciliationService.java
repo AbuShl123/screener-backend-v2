@@ -52,9 +52,9 @@ public class PaymentReconciliationService {
     private void reconcileOne(Order order) {
         Instant now = Instant.now();
         if (order.getProviderUuid() == null) {
-            // Defensive-only (E4): a persisted PENDING order ALWAYS has a provider_uuid — create is a
-            // single transaction and a failed createCheckout rolls the row back, so this branch is
-            // unreachable by design. A hit means a broken DB/code invariant — shout about it.
+            // Defensive-only: a persisted PENDING order ALWAYS has a provider_uuid — create is a single
+            // transaction and a failed createCheckout rolls the row back, so this branch is unreachable
+            // by design. A hit means a broken DB/code invariant — shout about it.
             log.error("PENDING order {} has no provider_uuid — broken invariant (create is single-transaction)",
                     order.getId());
             if (isStale(order, now)) {
@@ -69,7 +69,7 @@ public class PaymentReconciliationService {
             case SUCCESS -> grantIfAmountMatches(order, payment);
             case ERROR -> orderService.markFailed(order.getId(), payment.error());
             case REVERT -> orderService.markReverted(order.getId()); // access NOT revoked
-            case CANCELED -> orderService.expire(order.getId(), OrderSource.RECONCILIATION); // closed unpaid (E3)
+            case CANCELED -> orderService.expire(order.getId(), OrderSource.RECONCILIATION); // closed unpaid
             case PENDING -> {
                 if (isStale(order, now)) {
                     orderService.expire(order.getId(), OrderSource.RECONCILIATION);
@@ -80,8 +80,8 @@ public class PaymentReconciliationService {
     }
 
     /**
-     * Verifies the provider-reported amount matches the order snapshot before granting (E5), mirroring
-     * the callback's {@code AMOUNT_MISMATCH} guard. A {@code null} or mismatched amount fails the order
+     * Verifies the provider-reported amount matches the order snapshot before granting, mirroring the
+     * callback's {@code AMOUNT_MISMATCH} guard. A {@code null} or mismatched amount fails the order
      * (never grants); the durable {@code GET /payment/{uuid}} carries the authoritative {@code total_amount}.
      */
     private void grantIfAmountMatches(Order order, ProviderPayment payment) {

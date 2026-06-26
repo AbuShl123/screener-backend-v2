@@ -60,7 +60,7 @@ class PaymentReconciliationServiceTest {
 
     @Test
     void cancelledInvoiceExpires() {
-        Order cancelled = order(ProviderStatus.CANCELED, false); // closed unpaid (E3)
+        Order cancelled = order(ProviderStatus.CANCELED, false); // closed unpaid
         sweep(List.of(cancelled));
         assertEquals("EXPIRED", action.get(cancelled.getId()));
     }
@@ -68,7 +68,7 @@ class PaymentReconciliationServiceTest {
     @Test
     void successWithMismatchedAmountFailsWithoutGrant() {
         Order mismatch = order(ProviderStatus.SUCCESS, false);
-        mismatch.setAmount(new BigDecimal("5.00")); // 500 tiyin ≠ the provider double's reported 100 (E5)
+        mismatch.setAmount(new BigDecimal("5.00")); // 500 tiyin ≠ the provider double's reported 100
         sweep(List.of(mismatch));
         assertEquals("MISMATCH", action.get(mismatch.getId()), "amount mismatch must not grant");
     }
@@ -76,7 +76,7 @@ class PaymentReconciliationServiceTest {
     @Test
     void nullProviderUuidStaleExpires() {
         Order orphan = order(ProviderStatus.PENDING, true);
-        orphan.setProviderUuid(null); // defensive-only branch (E4) — still expires when stale
+        orphan.setProviderUuid(null); // defensive-only branch — still expires when stale
         sweep(List.of(orphan));
         assertEquals("EXPIRED", action.get(orphan.getId()));
     }

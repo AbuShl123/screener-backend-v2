@@ -57,7 +57,7 @@ public class MulticardCallbackController {
      * The callback's source IP. Behind a reverse proxy the real client IP is the first hop of
      * {@code X-Forwarded-For}; without a proxy header we fall back to the socket address.
      *
-     * <p><strong>SECURITY CAVEAT (E8, recorded — not fixed):</strong> trusting the first
+     * <p><strong>SECURITY CAVEAT (recorded — not fixed):</strong> trusting the first
      * {@code X-Forwarded-For} hop is only safe if every request reaches us <em>through</em> the trusted
      * proxy. If the app is also reachable directly (bypassing the proxy), a client can forge
      * {@code X-Forwarded-For: 195.158.26.90} and defeat the IP allow-list — leaving only the shared-secret

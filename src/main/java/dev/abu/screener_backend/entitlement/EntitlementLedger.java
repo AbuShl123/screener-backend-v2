@@ -13,8 +13,8 @@ import java.util.UUID;
  * {@link EntitlementService#startTrial}) call, so access changes — trial, purchase, future admin
  * gift — are reconstructable.
  *
- * <p>Real money moving entitlement must be auditable; this reverses the foundation plan's earlier
- * "no ledger" decision. {@code orderId}/{@code adminId} are stored as plain UUIDs (not JPA
+ * <p>Real money moving entitlement must be auditable. {@code orderId}/{@code adminId} are stored as
+ * plain UUIDs (not JPA
  * associations) to keep the entitlement domain decoupled from the payment domain.
  */
 @Entity
