@@ -213,6 +213,7 @@ public class PlanAdminService {
     }
 
     private static AdminPriceResponse toPriceResponse(PlanPrice price) {
-        return new AdminPriceResponse(price.getId(), price.getCurrency(), price.getAmount(), price.isActive());
+        BigDecimal amount = Currency.of(price.getCurrency()).forDisplay(price.getAmount());
+        return new AdminPriceResponse(price.getId(), price.getCurrency(), amount, price.isActive());
     }
 }

@@ -89,7 +89,8 @@ entitlement/                     (access state — pre-existing, extended for th
   EntitlementService              startTrial + extend (now writes the ledger)
   EntitlementLedger, EntitlementLedgerRepository   NEW: append-only grant audit
   GrantSource                     NEW: enum {TRIAL, PURCHASE, ADMIN}
-  AccessState, EntitlementView, EntitlementController
+  AccessState, EntitlementView, EntitlementController  (+ GET /api/billing/entitlement/history)
+  dto/EntitlementLedgerEntry      NEW: ledger read row; embeds the purchase's OrderDetailsEntry
 
 payment/                         (NEW: orders + provider boundary)
   Order                           JPA entity; @Version; snapshots grantedDurationSeconds + amount
@@ -104,7 +105,8 @@ payment/                         (NEW: orders + provider boundary)
   PaymentReconciliationService    @Scheduled sweep over PENDING orders
   PaymentProvider                 the provider-agnostic boundary (interface)
   CheckoutSession, ProviderPayment, ProviderStatus   boundary value types
-  dto/                            CreateOrderRequest, CreateOrderResponse, OrderStatusResponse
+  dto/                            CreateOrderRequest, OrderDetailsEntry (one order view for create +
+                                  status reads), OrderHistoryEntry
   multicard/
     MulticardClient               WebClient wrapper: auth-token cache, invoice, getPayment, cancel
     MulticardPaymentProvider      implements PaymentProvider; tiyin conversion; status mapping; ofd
@@ -404,18 +406,45 @@ CREATED ──► PENDING ──► PAID ──► REVERTED
 
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
-| `POST` | `/api/billing/orders` | `{ "planCode": "monthly" }` or `{ "planCode": "pay_as_you_go", "amount": "790000" }` | `CreateOrderResponse(orderId, status, checkoutUrl, alreadyPaid)` |
+| `POST` | `/api/billing/orders` | `{ "planCode": "monthly" }` or `{ "planCode": "pay_as_you_go", "amount": "790000" }` | `OrderDetailsEntry` (the created order, with a usable `checkoutUrl`) |
 | `GET`  | `/api/billing/orders` | — | order history, newest first, capped at 100 |
 | `GET`  | `/api/billing/orders/current` | — | latest open / most-recent order (UI polls this) |
-| `GET`  | `/api/billing/orders/{id}` | — | that order's status |
+| `GET`  | `/api/billing/orders/{id}` | — | that order's detail |
+| `GET`  | `/api/billing/orders/{id}/history` | — | that order's full status-transition audit, newest first |
 
 - **Client sends only `planCode` (+ `amount` for pay-by-days)** — never a price or currency. The server
   resolves currency via `RegionResolver` and looks up the authoritative price. `amount` is a **string**
   (E10). `planCode` (not `planId`) because the public catalog exposes only `code`, never internal UUIDs.
-- Status read DTO `OrderStatusResponse(orderId, status, reason, reasonDetail, expiresAt, paidAt)` —
-  `reason`/`reasonDetail` come from the latest `order_status_history` row (by `seq DESC`).
+- **One order view, `OrderDetailsEntry(orderId, status, planCode, amount, accessDurationSeconds,
+  currency, provider, reason, reasonDetail, checkoutUrl, providerUuid, expiresAt, paidAt, createdAt)`** —
+  returned on **both** create and status reads (a freshly created order and a polled order carry the same
+  facts; the separate `CreateOrderResponse` was dropped — its only extra field, `alreadyPaid`, was always
+  `false`). `reason`/`reasonDetail` come from the latest `order_status_history` row (by `seq DESC`). The
+  order **snapshot** fields let the SPA confirm what was bought: `planCode` echoes the request; `amount`
+  (a JSON number / `BigDecimal`, major units — matching the `PlanDto` output convention, *not* the string
+  input DTOs) is the FIXED price or echoed pay-by-days input; `accessDurationSeconds` is the access this
+  order buys (the order's snapshotted `granted_duration_seconds`); `currency`/`provider` are
+  server-resolved (today always `UZS` / `multicard`) and recorded for the future multi-currency /
+  multi-provider world. `checkoutUrl` lets the SPA redirect on create and **recover the hosted-payment
+  link** from `current`/`{id}` if it lost the `POST` response; `providerUuid` (the Multicard transaction
+  uuid) is exposed for support/debugging.
+- History read DTO `OrderHistoryEntry(fromStatus, toStatus, reason, reasonDetail, source, createdAt,
+  seq)` — one row per transition from `order_status_history`, ordered by `seq DESC`. The `/{id}/history`
+  endpoint is **owner-only** (404 if the order isn't the caller's), like `/{id}`.
 - A lost one-open-order create race surfaces as a retryable **409**; the SPA retries and reuses the
   now-committed open order.
+
+### Access-history endpoint — `GET /api/billing/entitlement/history` (Bearer JWT)
+
+Lives in the **entitlement** domain (`EntitlementController` → `EntitlementService.listAccessHistory`),
+not under `/orders`, because it reports access grants, not orders. Returns the caller's
+`entitlement_ledger` rows newest-first as `EntitlementLedgerEntry(source, grantedDurationSeconds,
+previousExpiresAt, newExpiresAt, order, reason, createdAt)`: `source` is `TRIAL`/`PURCHASE`/`ADMIN`;
+`previousExpiresAt`/`newExpiresAt` bracket the stacking move; `order` is the full `OrderDetailsEntry` for
+a `PURCHASE` grant's `order_id` (resolved at read time — the ledger stores only the id so the domains
+stay decoupled at the persistence layer), or `null` for trial/admin grants. `EntitlementService` injects
+`OrderService` **`@Lazy`** to break the bean cycle (`OrderService` → `EntitlementService` for grants;
+`EntitlementService` → `OrderService.findOrderDetails` only at read time).
 
 ### Callback endpoint — `POST /api/payment/multicard/callback` (PUBLIC)
 

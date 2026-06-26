@@ -2,12 +2,15 @@ package dev.abu.screener_backend.entitlement;
 
 import dev.abu.screener_backend.auth.AuthenticatedUser;
 import dev.abu.screener_backend.auth.AuthService;
+import dev.abu.screener_backend.entitlement.dto.EntitlementLedgerEntry;
 import dev.abu.screener_backend.entitlement.dto.EntitlementResponse;
 import dev.abu.screener_backend.user.User;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * Exposes the caller's current access state for the frontend. Mounted under {@code /api/billing};
@@ -35,5 +38,15 @@ public class EntitlementController {
         User user = authService.getUser(principal.userId());
         EntitlementView view = entitlementService.currentState(user);
         return new EntitlementResponse(view.state(), view.accessExpiresAt());
+    }
+
+    /**
+     * The caller's access-granting events (entitlement ledger), newest first — trial seed, paid
+     * purchases (each embedding the full order detail), and future admin grants.
+     */
+    @GetMapping("/entitlement/history")
+    public List<EntitlementLedgerEntry> entitlementHistory(Authentication authentication) {
+        AuthenticatedUser principal = (AuthenticatedUser) authentication.getPrincipal();
+        return entitlementService.listAccessHistory(principal.userId());
     }
 }

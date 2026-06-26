@@ -31,7 +31,7 @@ class EntitlementServiceTest {
     private final Map<UUID, UserEntitlement> store = new HashMap<>();
     private final List<EntitlementLedger> ledger = new ArrayList<>();
     private final EntitlementService service =
-            new EntitlementService(repo(store), ledgerRepo(ledger),
+            new EntitlementService(repo(store), ledgerRepo(ledger), null,
                     new BillingProperties(Duration.ofDays(7), "UZS", "UZ"));
 
     @SuppressWarnings("unchecked")

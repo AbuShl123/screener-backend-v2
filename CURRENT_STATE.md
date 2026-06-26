@@ -74,10 +74,11 @@ src/
 │   │   ├── GrantSource.java             ← enum {TRIAL, PURCHASE, ADMIN}
 │   │   ├── AccessState.java
 │   │   ├── EntitlementView.java
-│   │   ├── EntitlementService.java      ← startTrial + extend now write the ledger
-│   │   ├── EntitlementController.java   ← GET /api/billing/entitlement
+│   │   ├── EntitlementService.java      ← startTrial + extend write the ledger; listAccessHistory reads it
+│   │   ├── EntitlementController.java   ← GET /api/billing/entitlement (+ /entitlement/history)
 │   │   └── dto/
-│   │       └── EntitlementResponse.java
+│   │       ├── EntitlementResponse.java
+│   │       └── EntitlementLedgerEntry.java ← GET /api/billing/entitlement/history (access-grant events)
 │   ├── payment/                          ← orders + provider boundary (Multicard adapter)
 │   │   ├── Order.java
 │   │   ├── OrderStatus.java
@@ -96,8 +97,8 @@ src/
 │   │   ├── ProviderStatus.java
 │   │   ├── dto/
 │   │   │   ├── CreateOrderRequest.java
-│   │   │   ├── CreateOrderResponse.java
-│   │   │   └── OrderStatusResponse.java
+│   │   │   ├── OrderDetailsEntry.java     ← one order view (create + status reads)
+│   │   │   └── OrderHistoryEntry.java     ← GET /api/billing/orders/{id}/history
 │   │   └── multicard/
 │   │       ├── MulticardClient.java
 │   │       ├── MulticardPaymentProvider.java
@@ -402,11 +403,12 @@ JPA entity mapped to `user_entitlement`, 1:1 with `users` via a shared-primary-k
 - `extend(userId, Duration, paid)` — stacking grant `accessExpiresAt = max(now, accessExpiresAt) + granted`; sets `hasPaid` when paid. Shared by trial top-ups and future purchases.
 - `currentState(User)` — derives `EntitlementView`; `ADMIN` short-circuits to `(ADMIN, null)`.
 - `hasAccess(User)` — `role == ADMIN || (expiresAt != null && now < expiresAt)`. Provided for the enforcement plan; not wired into any gate yet.
+- `listAccessHistory(userId)` — the user's `entitlement_ledger` rows newest-first as `dto/EntitlementLedgerEntry`; a `PURCHASE` row's `order_id` is resolved to the full `payment.dto.OrderDetailsEntry`, trial/admin rows carry `null` order. Injects `payment.OrderService` **`@Lazy`** to break the bean cycle (`OrderService` depends on this service for grants; this back-edge is read-time only).
 
 ### `EntitlementController`
 `src/main/java/dev/abu/screener_backend/entitlement/EntitlementController.java`
 
-`@RestController` at `/api/billing` (Bearer JWT via the catch-all). `GET /api/billing/entitlement` returns `EntitlementResponse(state, accessExpiresAt)` from `EntitlementService.currentState` for cheap UI polling. The same two fields are mirrored on `GET /api/auth/me`. DTO: `dto/EntitlementResponse(AccessState state, Instant accessExpiresAt)`.
+`@RestController` at `/api/billing` (Bearer JWT via the catch-all). `GET /api/billing/entitlement` returns `EntitlementResponse(state, accessExpiresAt)` from `EntitlementService.currentState` for cheap UI polling (the same two fields are mirrored on `GET /api/auth/me`). `GET /api/billing/entitlement/history` returns `List<EntitlementLedgerEntry>` from `EntitlementService.listAccessHistory` — the caller's access-grant events (trial/purchase/admin), newest first, each purchase embedding its full `OrderDetailsEntry`. DTOs: `dto/EntitlementResponse(AccessState, Instant)`, `dto/EntitlementLedgerEntry(GrantSource source, long grantedDurationSeconds, Instant previousExpiresAt, Instant newExpiresAt, OrderDetailsEntry order, String reason, Instant createdAt)`.
 
 **Migrations**: `V5__create_plans.sql` (plans + plan_prices + placeholder UZS seed), `V6__create_user_entitlement.sql`. Existing-user backfill is **not** a migration — `scripts/backfill_user_entitlement.sql` is run manually in production (role-split: non-admins get a fresh 7-day trial, admins get `NULL` expiry) so a redeploy can never re-grant trials.
 

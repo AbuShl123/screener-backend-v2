@@ -11,7 +11,7 @@ import dev.abu.screener_backend.config.PaymentProperties.MulticardProperties;
 import dev.abu.screener_backend.entitlement.EntitlementService;
 import dev.abu.screener_backend.entitlement.GrantSource;
 import dev.abu.screener_backend.error.ApiException;
-import dev.abu.screener_backend.payment.dto.CreateOrderResponse;
+import dev.abu.screener_backend.payment.dto.OrderDetailsEntry;
 import dev.abu.screener_backend.user.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Unit tests for {@link OrderService}: fixed-plan create (seconds snapshot), pay-by-days {@code ceil},
  * reuse same plan, supersede different plan (history reason SUPERSEDED), expired-open recreate,
- * server-side currency resolution, the already-paid double-pay path, and idempotent grant. Uses
+ * server-side currency resolution, the lost-tab reuse path, and idempotent grant. Uses
  * stateful in-memory reflective-proxy repositories plus a real {@link OrderStateMachine} (the codebase
  * avoids Mockito).
  */
@@ -81,7 +81,7 @@ class OrderServiceTest {
         plan("monthly", PlanType.FIXED, 30);
         price("monthly", "UZS", "150000");
 
-        CreateOrderResponse res = service.createOrReuse(user, "monthly", null, "UZS");
+        OrderDetailsEntry res = service.createOrReuse(user, "monthly", null, "UZS");
 
         assertEquals(OrderStatus.PENDING, res.status());
         assertEquals("https://checkout", res.checkoutUrl());
@@ -147,11 +147,10 @@ class OrderServiceTest {
         price("monthly", "UZS", "150000");
         Order open = seedOpenOrder(monthly, "https://existing", Instant.now().plusSeconds(600));
 
-        CreateOrderResponse res = service.createOrReuse(user, "monthly", null, "UZS");
+        OrderDetailsEntry res = service.createOrReuse(user, "monthly", null, "UZS");
 
         assertEquals(open.getId(), res.orderId());
         assertEquals("https://existing", res.checkoutUrl());
-        assertFalse(res.alreadyPaid());
         assertEquals(1, orders.size(), "no new order created on reuse");
         // Reuse never probes the provider or grants — the sweep/callback handles a lost-tab payment.
         assertEquals(0, fetchCalls.get(), "reuse must not call the provider");
@@ -165,7 +164,7 @@ class OrderServiceTest {
         price("monthly", "UZS", "150000");
         Order old = seedOpenOrder(yearly, "https://old", Instant.now().plusSeconds(600));
 
-        CreateOrderResponse res = service.createOrReuse(user, "monthly", null, "UZS");
+        OrderDetailsEntry res = service.createOrReuse(user, "monthly", null, "UZS");
 
         assertEquals(OrderStatus.CANCELED, orders.get(old.getId()).getStatus());
         assertEquals(OrderReason.SUPERSEDED, latestReason(old.getId()));
@@ -195,7 +194,7 @@ class OrderServiceTest {
         price("monthly", "UZS", "150000");
         Order stale = seedOpenOrder(monthly, "https://stale", Instant.now().minusSeconds(60));
 
-        CreateOrderResponse res = service.createOrReuse(user, "monthly", null, "UZS");
+        OrderDetailsEntry res = service.createOrReuse(user, "monthly", null, "UZS");
 
         assertEquals(OrderStatus.EXPIRED, orders.get(stale.getId()).getStatus());
         assertEquals(OrderReason.INVOICE_EXPIRED, latestReason(stale.getId()));
@@ -265,7 +264,7 @@ class OrderServiceTest {
         history.clear();
     }
 
-    private long durationOf(CreateOrderResponse res) {
+    private long durationOf(OrderDetailsEntry res) {
         return orders.get(res.orderId()).getGrantedDurationSeconds();
     }
 
@@ -409,7 +408,7 @@ class OrderServiceTest {
     }
 
     private EntitlementService entitlementService() {
-        return new EntitlementService(null, null, new BillingProperties(Duration.ofDays(7), "UZS", "UZ")) {
+        return new EntitlementService(null, null, null, new BillingProperties(Duration.ofDays(7), "UZS", "UZ")) {
             @Override
             public void extend(UUID userId, Duration granted, boolean paid,
                                GrantSource source, UUID orderId, UUID adminId, String reason) {

@@ -1,14 +1,19 @@
 package dev.abu.screener_backend.entitlement;
 
 import dev.abu.screener_backend.config.BillingProperties;
+import dev.abu.screener_backend.entitlement.dto.EntitlementLedgerEntry;
 import dev.abu.screener_backend.error.ApiException;
+import dev.abu.screener_backend.payment.OrderService;
+import dev.abu.screener_backend.payment.dto.OrderDetailsEntry;
 import dev.abu.screener_backend.user.User;
 import dev.abu.screener_backend.user.UserRole;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -28,13 +33,22 @@ public class EntitlementService {
 
     private final UserEntitlementRepository repository;
     private final EntitlementLedgerRepository ledgerRepository;
+    private final OrderService orderService;
     private final Duration trialDuration;
 
+    /**
+     * {@code orderService} is injected {@code @Lazy} to break the construction cycle: {@link OrderService}
+     * depends on this service (to grant access on payment), and this service depends on it only at read
+     * time (to resolve a ledger row's order into an {@link OrderDetailsEntry}). The lazy proxy defers that
+     * back-edge until first use. (Same pattern the codebase uses elsewhere to break a bean cycle.)
+     */
     public EntitlementService(UserEntitlementRepository repository,
                               EntitlementLedgerRepository ledgerRepository,
+                              @Lazy OrderService orderService,
                               BillingProperties props) {
         this.repository = repository;
         this.ledgerRepository = ledgerRepository;
+        this.orderService = orderService;
         this.trialDuration = props.trialDuration();
     }
 
@@ -123,5 +137,26 @@ public class EntitlementService {
         return repository.findByUserId(user.getId())
                 .map(e -> e.getAccessExpiresAt() != null && now.isBefore(e.getAccessExpiresAt()))
                 .orElse(false);
+    }
+
+    /**
+     * The user's access-granting events from the ledger, newest first — every push of
+     * {@code accessExpiresAt} forward (trial seed, paid purchase, future admin grant). A {@code PURCHASE}
+     * row's {@code order_id} is resolved to a full {@link OrderDetailsEntry}; trial/admin rows carry a
+     * {@code null} order (no order id on the ledger row).
+     */
+    @Transactional(readOnly = true)
+    public List<EntitlementLedgerEntry> listAccessHistory(UUID userId) {
+        return ledgerRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .map(this::toLedgerEntry).toList();
+    }
+
+    private EntitlementLedgerEntry toLedgerEntry(EntitlementLedger ledger) {
+        OrderDetailsEntry order = ledger.getOrderId() == null ? null
+                : orderService.findOrderDetails(ledger.getOrderId()).orElse(null);
+        return new EntitlementLedgerEntry(
+                ledger.getSource(), ledger.getGrantedDurationSeconds(),
+                ledger.getPreviousExpiresAt(), ledger.getNewExpiresAt(),
+                order, ledger.getReason(), ledger.getCreatedAt());
     }
 }

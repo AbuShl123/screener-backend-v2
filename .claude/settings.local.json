@@ -43,7 +43,17 @@
       "Bash(git --no-pager diff --no-color src/main/java/dev/abu/screener_backend/config/SecurityConfig.java src/main/java/dev/abu/screener_backend/config/WebClientConfig.java src/main/resources/application.yml src/main/java/dev/abu/screener_backend/billing/PlanRepository.java)",
       "Bash(./mvnw -q -o test -Dtest='CurrencyTest,OrderServiceTest,PlanAdminServiceTest,MulticardPaymentProviderTest,PricingServiceTest')",
       "Bash(./mvnw -q -o test -Dtest='CurrencyTest,OrderServiceTest,PlanAdminServiceTest,MulticardPaymentProviderTest,PricingServiceTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest')",
-      "Bash(./mvnw -o test -Dtest='CurrencyTest,OrderServiceTest,PlanAdminServiceTest,MulticardPaymentProviderTest,PricingServiceTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest')"
+      "Bash(./mvnw -o test -Dtest='CurrencyTest,OrderServiceTest,PlanAdminServiceTest,MulticardPaymentProviderTest,PricingServiceTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest')",
+      "Bash(grep -E '\\\\.\\(java|sql\\)$')",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "PowerShell(foreach \\($c in 'winget','choco','scoop','ngrok','cloudflared'\\) { $cmd = Get-Command $c -ErrorAction SilentlyContinue; if \\($cmd\\) { \"{0}: {1}\" -f $c, $cmd.Source } else { \"{0}: NOT FOUND\" -f $c } })",
+      "Bash(git --no-pager diff --stat HEAD)",
+      "Bash(git --no-pager log --oneline -3)",
+      "Bash(git *)",
+      "PowerShell(.\\\\mvnw.cmd -q -o compile 2>&1 | Select-Object -Last 30)",
+      "PowerShell(.\\\\mvnw.cmd -q -o test \"-Dtest=PricingServiceTest,OrderServiceTest,PlanAdminServiceTest,CurrencyTest\" 2>&1 | Select-Object -Last 40)",
+      "PowerShell(git status --short; \"----\"; git diff --stat)"
     ]
   }
 }

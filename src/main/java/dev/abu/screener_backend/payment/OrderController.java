@@ -5,8 +5,8 @@ import dev.abu.screener_backend.auth.AuthService;
 import dev.abu.screener_backend.billing.RegionResolver;
 import dev.abu.screener_backend.error.ApiException;
 import dev.abu.screener_backend.payment.dto.CreateOrderRequest;
-import dev.abu.screener_backend.payment.dto.CreateOrderResponse;
-import dev.abu.screener_backend.payment.dto.OrderStatusResponse;
+import dev.abu.screener_backend.payment.dto.OrderDetailsEntry;
+import dev.abu.screener_backend.payment.dto.OrderHistoryEntry;
 import dev.abu.screener_backend.user.User;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.Authentication;
@@ -37,9 +37,9 @@ public class OrderController {
     }
 
     @PostMapping
-    public CreateOrderResponse create(Authentication authentication,
-                                      HttpServletRequest request,
-                                      @RequestBody CreateOrderRequest body) {
+    public OrderDetailsEntry create(Authentication authentication,
+                                    HttpServletRequest request,
+                                    @RequestBody CreateOrderRequest body) {
         if (body == null || body.planCode() == null || body.planCode().isBlank()) {
             throw ApiException.badRequest("planCode is required");
         }
@@ -65,18 +65,24 @@ public class OrderController {
     }
 
     @GetMapping
-    public List<OrderStatusResponse> history(Authentication authentication) {
+    public List<OrderDetailsEntry> history(Authentication authentication) {
         return orderService.listOrders(principal(authentication).userId());
     }
 
     @GetMapping("/current")
-    public OrderStatusResponse current(Authentication authentication) {
+    public OrderDetailsEntry current(Authentication authentication) {
         return orderService.currentOrder(principal(authentication).userId());
     }
 
     @GetMapping("/{id}")
-    public OrderStatusResponse one(Authentication authentication, @PathVariable UUID id) {
+    public OrderDetailsEntry one(Authentication authentication, @PathVariable UUID id) {
         return orderService.getOrder(principal(authentication).userId(), id);
+    }
+
+    /** Full status-transition audit for one order (newest first). Owner-only. */
+    @GetMapping("/{id}/history")
+    public List<OrderHistoryEntry> statusHistory(Authentication authentication, @PathVariable UUID id) {
+        return orderService.getOrderHistory(principal(authentication).userId(), id);
     }
 
     private User currentUser(Authentication authentication) {

@@ -6,8 +6,8 @@ import dev.abu.screener_backend.config.PaymentProperties;
 import dev.abu.screener_backend.entitlement.EntitlementService;
 import dev.abu.screener_backend.entitlement.GrantSource;
 import dev.abu.screener_backend.error.ApiException;
-import dev.abu.screener_backend.payment.dto.CreateOrderResponse;
-import dev.abu.screener_backend.payment.dto.OrderStatusResponse;
+import dev.abu.screener_backend.payment.dto.OrderDetailsEntry;
+import dev.abu.screener_backend.payment.dto.OrderHistoryEntry;
 import dev.abu.screener_backend.user.User;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -69,7 +69,7 @@ public class OrderService {
     // Create / reuse  (POST /api/billing/orders)
     // ---------------------------------------------------------------------------------------
 
-    public CreateOrderResponse createOrReuse(User user, String planCode, BigDecimal amountMoney, String currency) {
+    public OrderDetailsEntry createOrReuse(User user, String planCode, BigDecimal amountMoney, String currency) {
         Plan plan = planRepository.findByCode(planCode)
                 .filter(Plan::isActive)
                 .orElseThrow(() -> ApiException.badRequest("Unknown or inactive plan: " + planCode));
@@ -90,7 +90,7 @@ public class OrderService {
                 // Same plan: lost-tab re-pay. Reuse the existing checkout URL as-is.
                 // If the user already paid, the reconciliation sweep (or the
                 // success callback) flips this order to PAID within one cycle.
-                return new CreateOrderResponse(existing.getId(), existing.getStatus(), existing.getCheckoutUrl(), false);
+                return toDetails(existing);
             } else {
                 // Different plan: supersede the old open order (locked + re-checked), then create fresh.
                 supersede(existing.getId());
@@ -133,7 +133,7 @@ public class OrderService {
         }
     }
 
-    private CreateOrderResponse createNew(
+    private OrderDetailsEntry createNew(
             User user,
             Plan plan,
             PlanPrice price,
@@ -167,7 +167,7 @@ public class OrderService {
         order.setProviderUuid(session.providerUuid());
         order.setCheckoutUrl(session.checkoutUrl());
         stateMachine.transition(order, OrderStatus.PENDING, OrderSource.API, null, null);
-        return new CreateOrderResponse(order.getId(), order.getStatus(), order.getCheckoutUrl(), false);
+        return toDetails(order);
     }
 
     /**
@@ -279,13 +279,13 @@ public class OrderService {
     // ---------------------------------------------------------------------------------------
 
     @Transactional(readOnly = true)
-    public List<OrderStatusResponse> listOrders(UUID userId) {
+    public List<OrderDetailsEntry> listOrders(UUID userId) {
         return orderRepository.findByUser_IdOrderByCreatedAtDesc(userId, PageRequest.of(0, ORDER_HISTORY_LIMIT))
-                .stream().map(this::toStatusResponse).toList();
+                .stream().map(this::toDetails).toList();
     }
 
     @Transactional(readOnly = true)
-    public OrderStatusResponse currentOrder(UUID userId) {
+    public OrderDetailsEntry currentOrder(UUID userId) {
         Order order = orderRepository.findFirstByUser_IdAndStatusIn(userId, OPEN)
                 .orElseGet(() -> orderRepository
                         .findByUser_IdOrderByCreatedAtDesc(userId, PageRequest.of(0, 1))
@@ -293,22 +293,57 @@ public class OrderService {
         if (order == null) {
             throw ApiException.notFound("No orders for user");
         }
-        return toStatusResponse(order);
+        return toDetails(order);
     }
 
     @Transactional(readOnly = true)
-    public OrderStatusResponse getOrder(UUID userId, UUID orderId) {
-        Order order = orderRepository.findById(orderId)
-                .filter(o -> o.getUser().getId().equals(userId))
-                .orElseThrow(() -> ApiException.notFound("Order not found: " + orderId));
-        return toStatusResponse(order);
+    public OrderDetailsEntry getOrder(UUID userId, UUID orderId) {
+        return toDetails(requireOwnedOrder(userId, orderId));
     }
 
-    private OrderStatusResponse toStatusResponse(Order order) {
+    /**
+     * Resolves one order to its detail view by id, for cross-domain reads (the entitlement ledger embeds
+     * a purchase's order). No ownership filter: the only caller resolves an {@code order_id} taken from a
+     * ledger row already scoped to its owning user, so the order is the caller's own.
+     */
+    @Transactional(readOnly = true)
+    public Optional<OrderDetailsEntry> findOrderDetails(UUID orderId) {
+        return orderRepository.findById(orderId).map(this::toDetails);
+    }
+
+    /**
+     * Full transition audit for one order (newest first by {@code seq}). Ownership is enforced — a user
+     * may only read their own order's history.
+     */
+    @Transactional(readOnly = true)
+    public List<OrderHistoryEntry> getOrderHistory(UUID userId, UUID orderId) {
+        requireOwnedOrder(userId, orderId); // 404 if not found / not owned
+        return historyRepository.findByOrderIdOrderBySeqDesc(orderId).stream()
+                .map(OrderService::toHistoryEntry).toList();
+    }
+
+    private Order requireOwnedOrder(UUID userId, UUID orderId) {
+        return orderRepository.findById(orderId)
+                .filter(o -> o.getUser().getId().equals(userId))
+                .orElseThrow(() -> ApiException.notFound("Order not found: " + orderId));
+    }
+
+    private OrderDetailsEntry toDetails(Order order) {
         var latest = historyRepository.findFirstByOrderIdOrderBySeqDesc(order.getId());
         String reason = latest.map(h -> h.getReason() == null ? null : h.getReason().name()).orElse(null);
         String detail = latest.map(OrderStatusHistory::getReasonDetail).orElse(null);
-        return new OrderStatusResponse(order.getId(), order.getStatus(), reason, detail,
-                order.getExpiresAt(), order.getPaidAt());
+        BigDecimal amount = Currency.of(order.getCurrency()).forDisplay(order.getAmount());
+        return new OrderDetailsEntry(order.getId(), order.getStatus(),
+                order.getPlan().getCode(), amount, order.getGrantedDurationSeconds(),
+                order.getCurrency(), order.getPaymentProvider(), reason, detail,
+                order.getCheckoutUrl(), order.getProviderUuid(),
+                order.getExpiresAt(), order.getPaidAt(), order.getCreatedAt());
+    }
+
+    private static OrderHistoryEntry toHistoryEntry(OrderStatusHistory h) {
+        return new OrderHistoryEntry(
+                h.getFromStatus(), h.getToStatus(),
+                h.getReason() == null ? null : h.getReason().name(),
+                h.getReasonDetail(), h.getSource(), h.getCreatedAt(), h.getSeq());
     }
 }

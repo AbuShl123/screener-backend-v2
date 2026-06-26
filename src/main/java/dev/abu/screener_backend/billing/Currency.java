@@ -3,6 +3,7 @@ package dev.abu.screener_backend.billing;
 import dev.abu.screener_backend.error.ApiException;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Locale;
 
 /**
@@ -64,5 +65,16 @@ public enum Currency {
             throw ApiException.badRequest(
                     "amount has more than " + decimals + " decimal place(s) allowed for " + name());
         }
+    }
+
+    /**
+     * Rescales a stored amount to exactly this currency's decimal places for display, dropping the
+     * padding zeros that {@code NUMERIC(38,18)} storage carries (e.g. {@code 150000.000000000000000000}
+     * → {@code 150000.00} for UZS). Because input scale is validated {@code <=} decimals on the way in
+     * (see {@link #requireScale}), every digit being trimmed is a zero, so {@link RoundingMode#UNNECESSARY}
+     * never throws — it asserts that invariant rather than silently rounding real precision away.
+     */
+    public BigDecimal forDisplay(BigDecimal amount) {
+        return amount == null ? null : amount.setScale(decimals, RoundingMode.UNNECESSARY);
     }
 }

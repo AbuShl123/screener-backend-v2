@@ -32,6 +32,7 @@ public class PricingService {
 
     @Transactional(readOnly = true)
     public PlanCatalogResponse catalogFor(String currency) {
+        Currency cur = Currency.of(currency);
         List<Plan> plans = planRepository.findByActiveTrueOrderByCode();
         if (plans.isEmpty()) {
             return new PlanCatalogResponse(currency, List.of());
@@ -49,7 +50,8 @@ public class PricingService {
                 log.warn("Plan '{}' has no active price in {}; omitting from catalog", plan.getCode(), currency);
                 continue;
             }
-            dtos.add(new PlanDto(plan.getCode(), plan.getDisplayName(), plan.getType(), plan.getDurationDays(), amount));
+            dtos.add(new PlanDto(plan.getCode(), plan.getDisplayName(), plan.getType(),
+                    plan.getDurationDays(), cur.forDisplay(amount)));
         }
         return new PlanCatalogResponse(currency, dtos);
     }
