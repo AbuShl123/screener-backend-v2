@@ -3,9 +3,13 @@ package dev.abu.screener_backend.billing;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface PlanRepository extends JpaRepository<Plan, UUID> {
+
+    /** Resolve a plan by its stable {@code code} (used by the order endpoint — the client sends only the code). */
+    Optional<Plan> findByCode(String code);
 
     /**
      * Active plans for the public catalog. The frontend re-orders by {@code code} for display, so

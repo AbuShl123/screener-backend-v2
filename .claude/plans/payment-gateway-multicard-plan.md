@@ -51,7 +51,8 @@ reconciliation sweep, pay-by-days math, and the audit ledgers.
 | 9 | **Order TTL 30 min**, aligned with Multicard invoice `ttl`. | So "is it still payable?" is a local `age < 30m` check without an extra API call on the reuse happy-path. |
 | 10 | **`entitlement_ledger` + `order_status_history` added now.** Reverses foundation Decision #4 ("no ledger"). | Real money moving entitlement must be auditable; future admin grant/extend writes to the ledger. |
 | 11 | **`ofd` (fiscalization) is config-driven, off by default.** | Verified: sandbox accepts invoice creation without `ofd`. Populate in production once a merchant agreement + tax data exist. |
-| 12 | **`days_granted` and `amount` are snapshotted on the order.** | Later re-pricing or plan edits never alter a past grant. |
+| 12 | **`granted_duration_seconds` and `amount` are snapshotted on the order.** | Later re-pricing or plan edits never alter a past grant. Duration is stored in **seconds (BIGINT)** — not days — to match `entitlement_ledger.granted_duration_seconds` and the `Duration`-based entitlement model, and to stay generic for future non-day grants (hourly promos, gift hours). |
+| 13 | **`order_status_history` carries `reason` + `reason_detail`.** `reason` is a canonical `OrderReason` enum code (centralized, self-documenting); `reason_detail` is free-form text (e.g. a raw provider error message). `orders` no longer has its own `reason` column — the audit trail lives only in history. | One enum is the single source of truth for what each reason means; provider error text is preserved for forensic reconciliation without trying to enumerate it. |
 
 ---
 
@@ -86,9 +87,8 @@ CREATE TABLE orders (
     id               UUID PRIMARY KEY,
     user_id          UUID NOT NULL REFERENCES users(id),
     plan_id          UUID NOT NULL REFERENCES plans(id),
-    status           TEXT NOT NULL,                 -- CREATED|PENDING|PAID|EXPIRED|FAILED|CANCELED|REVERTED
-    reason           TEXT,                          -- detail for non-happy transitions
-    days_granted     INT  NOT NULL,                 -- snapshot: FIXED=duration_days; PER_DAY=ceil(amount/pricePerDay)
+    status                  TEXT NOT NULL,            -- CREATED|PENDING|PAID|EXPIRED|FAILED|CANCELED|REVERTED
+    granted_duration_seconds BIGINT NOT NULL,         -- snapshot: FIXED=duration_days×86400; PER_DAY=ceil(amount/pricePerDay)×86400
     amount           NUMERIC(19,4) NOT NULL,        -- snapshot, major units (sum)
     currency         CHAR(3) NOT NULL,
     payment_provider TEXT NOT NULL DEFAULT 'multicard',
@@ -114,12 +114,13 @@ CREATE INDEX idx_orders_open ON orders(status) WHERE status = 'PENDING';  -- swe
 -- V9__create_order_status_history.sql
 CREATE TABLE order_status_history (
     id          UUID PRIMARY KEY,
-    order_id    UUID NOT NULL REFERENCES orders(id),
-    from_status TEXT,
-    to_status   TEXT NOT NULL,
-    reason      TEXT,
-    source      TEXT NOT NULL,                      -- API | CALLBACK | RECONCILIATION | SYSTEM
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    order_id      UUID NOT NULL REFERENCES orders(id),
+    from_status   TEXT,
+    to_status     TEXT NOT NULL,
+    reason        TEXT,                            -- canonical OrderReason enum code (e.g. SUPERSEDED, AMOUNT_MISMATCH)
+    reason_detail TEXT,                            -- free-form detail (e.g. raw provider error message); NULL for self-explanatory reasons
+    source        TEXT NOT NULL,                   -- API | CALLBACK | RECONCILIATION | SYSTEM
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_osh_order ON order_status_history(order_id);
 ```
@@ -130,8 +131,8 @@ CREATE INDEX idx_osh_order ON order_status_history(order_id);
 CREATE TABLE entitlement_ledger (
     id                  UUID PRIMARY KEY,
     user_id             UUID NOT NULL REFERENCES users(id),
-    source              TEXT NOT NULL,              -- TRIAL | PURCHASE | ADMIN
-    granted_seconds     BIGINT NOT NULL,           -- the Duration applied
+    source                   TEXT NOT NULL,         -- TRIAL | PURCHASE | ADMIN
+    granted_duration_seconds BIGINT NOT NULL,       -- the Duration applied (consistent name with orders.granted_duration_seconds)
     previous_expires_at TIMESTAMPTZ,
     new_expires_at      TIMESTAMPTZ NOT NULL,
     order_id            UUID REFERENCES orders(id), -- set for PURCHASE
@@ -155,13 +156,33 @@ Ledger lives with the entitlement domain.
 - **`Order`** — JPA entity for `orders`; `status` is `OrderStatus` enum (STRING-mapped),
   `payment_provider` a plain string for now. `@PrePersist`/`@PreUpdate` timestamps (mirror `Plan`).
 - **`OrderStatus`** — enum `{ CREATED, PENDING, PAID, EXPIRED, FAILED, CANCELED, REVERTED }`.
+- **`OrderReason`** — enum: the **canonical, centralized list** of `reason` codes that the backend
+  writes into `order_status_history.reason`. Each constant carries a human-readable `description` so
+  the meaning lives in exactly one place. Initial set:
+
+  | Constant | Stored when | Description |
+  |----------|-------------|-------------|
+  | `SUPERSEDED` | open order canceled because the user started a new order for a different plan | "Replaced by a new order for a different plan." |
+  | `INVOICE_EXPIRED` | invoice TTL elapsed with no payment | "Invoice TTL elapsed; no payment received." |
+  | `AMOUNT_MISMATCH` | callback amount ≠ order amount | "Callback amount did not match the order amount." |
+  | `UNKNOWN_ORDER` | callback `uuid` matched no order | "Callback referenced a provider uuid with no matching order." |
+  | `PROVIDER_ERROR` | sweep sees provider `status=error` | "Provider reported the payment failed." |
+  | `PROVIDER_REVERT` | sweep sees provider `status=revert` | "Provider reversed/refunded the payment; access not revoked." |
+  | `CALLBACK_GRANT` | paid + granted via the success callback | "Paid and granted via the success callback." |
+  | `RECONCILED_GRANT` | paid + granted via the reconciliation sweep | "Paid and granted via reconciliation (lost callback recovered)." |
+
+  Free-form provider text (e.g. a raw error message) goes into `reason_detail`, never into the enum.
+  New reasons are added here, never as scattered string literals at call sites.
 - **`OrderRepository`** —
   `Optional<Order> findFirstByUser_IdAndStatusIn(UUID, Collection<OrderStatus>)` (open-order lookup),
   `Optional<Order> findByProviderUuid(String)` (callback/reconciliation),
-  `List<Order> findByStatus(OrderStatus)` (sweep over `PENDING`).
-- **`OrderStatusHistory`** entity + **`OrderStatusHistoryRepository`**. A small
-  **`OrderStateMachine`** helper centralizes legal transitions and writes a history row on every
-  change (so no caller forgets the audit trail).
+  `List<Order> findByStatus(OrderStatus)` (sweep over `PENDING`),
+  `List<Order> findByUser_IdOrderByCreatedAtDesc(UUID, Pageable)` (capped order-history list).
+- **`OrderStatusHistory`** entity (`reason` = `OrderReason` name, `reason_detail` = free text) +
+  **`OrderStatusHistoryRepository`**. A small **`OrderStateMachine`** helper centralizes legal
+  transitions and writes a history row on every change — its `transition(...)` signature takes an
+  `OrderReason reason` + optional `String detail` so no caller forgets the audit trail or invents an
+  ad-hoc reason string.
 
 ### Provider boundary
 ```java
@@ -177,6 +198,14 @@ The **success callback is provider-specific** (different providers post differen
 **not** on this interface — it is handled by a dedicated `MulticardCallbackController` + service.
 The interface stays minimal; a future Kaspi/crypto adapter implements the same two methods plus its
 own callback controller.
+
+> **Known generalization point (not built now).** `CheckoutSession.checkoutUrl: String` bakes in the
+> **hosted-redirect** model — fine for Multicard, but a future crypto adapter returns an
+> address/QR, and a synchronous saved-card charge returns nothing to redirect to. When provider #2
+> lands, generalize this return type to a neutral `PaymentInitiation` (e.g. a sealed interface with
+> `Redirect(url)` / `Qr(payload)` / `Completed` variants) via the same additive expand/contract
+> migration used for the `orders` table. **Today, with only Multicard, the plain
+> `CheckoutSession(providerUuid, checkoutUrl)` stays as-is** — we do not pre-build the abstraction.
 
 - **`MulticardPaymentProvider implements PaymentProvider`** — converts `Money` → tiyin at the edge
   (`amount.movePointRight(2).longValueExact()`), builds the invoice request (adds `ofd` only when
@@ -205,12 +234,13 @@ createOrReuse(user, planCode, amountMoneyOrNull):
             if provider says SUCCESS: markPaidAndGrant(open.providerUuid); return AlreadyPaid
             return reuse(open.checkoutUrl)
         else:  // different plan
-            cancelAtProvider(open); transition(open → CANCELED, reason="superseded"); // then create new
+            cancelAtProvider(open); transition(open → CANCELED, OrderReason.SUPERSEDED); // then create new
     // compute grant
     days  = plan.type == FIXED ? plan.durationDays
                                : ceil(amountMoney / price.amount)       // pay-by-days, BigDecimal ceil
+    grantedDurationSeconds = days * 86_400L                              // days are natural here; stored generic (seconds)
     grantAmount = plan.type == FIXED ? price.amount : amountMoney
-    order = new Order(user, plan, status=CREATED, days, grantAmount, currency, expiresAt=now+ttl)
+    order = new Order(user, plan, status=CREATED, grantedDurationSeconds, grantAmount, currency, expiresAt=now+ttl)
     save(order)                                                          // partial-unique index guards races
     session = provider.createCheckout(order)                            // calls Multicard
     order.providerUuid = session.providerUuid; order.checkoutUrl = session.checkoutUrl
@@ -232,9 +262,9 @@ handle(payload, sourceIp):
     if sourceIp != allowedIp:                      return REJECT_BAD_SOURCE   // → HTTP 400
     if !MulticardSignature.valid(payload, secret): return REJECT_BAD_SIGN     // → HTTP 400
     order = orderRepository.findByProviderUuid(payload.uuid)
-    if order == null:                              return REJECT("unknown order") // → 200 {success:false}
+    if order == null:                              return REJECT(OrderReason.UNKNOWN_ORDER)   // → 200 {success:false}
     if order.status == PAID:                       return OK   // idempotent replay → 200 {success:true}
-    if payload.amountTiyin != toTiyin(order.amount): return REJECT("amount mismatch") // → 200 {success:false} (refund)
+    if payload.amountTiyin != toTiyin(order.amount): return REJECT(OrderReason.AMOUNT_MISMATCH)  // → 200 {success:false} (refund); order left PENDING for the sweep
     try {
         markPaidAndGrant(order, payload.ps, source=CALLBACK)   // @Transactional, commits here
     } catch (transient/db error) {
@@ -247,8 +277,9 @@ the sweep:
 ```
 reload order FOR UPDATE; if status == PAID: return        // re-check under lock (idempotent)
 order.ps = ps; order.paidAt = now
-transition(order → PAID, source)                          // writes order_status_history
-entitlementService.extend(order.userId, Duration.ofDays(order.daysGranted),
+grantReason = source == CALLBACK ? OrderReason.CALLBACK_GRANT : OrderReason.RECONCILED_GRANT
+transition(order → PAID, source, grantReason)             // writes order_status_history
+entitlementService.extend(order.userId, Duration.ofSeconds(order.grantedDurationSeconds),
                           paid=true, source=PURCHASE, orderId=order.id, reason=null)  // writes entitlement_ledger
 ```
 
@@ -262,10 +293,10 @@ for order in orderRepository.findByStatus(PENDING):
     p = provider.fetchPayment(order.providerUuid)   // durable GET /payment/{uuid}
     switch p.status:
         SUCCESS:  markPaidAndGrant(order, p.ps, RECONCILIATION)   // lost callback recovered
-        ERROR:    transition(order → FAILED,  reason=p, RECONCILIATION)
-        REVERT:   transition(order → REVERTED, reason="provider revert", RECONCILIATION)  // access NOT revoked
-        PENDING:  if order.expiresAt <= now: transition(order → EXPIRED, RECONCILIATION)  // else leave
-        NOT_FOUND:transition(order → EXPIRED, RECONCILIATION)
+        ERROR:    transition(order → FAILED,   RECONCILIATION, OrderReason.PROVIDER_ERROR, detail=p.error)
+        REVERT:   transition(order → REVERTED, RECONCILIATION, OrderReason.PROVIDER_REVERT)  // access NOT revoked
+        PENDING:  if order.expiresAt <= now: transition(order → EXPIRED, RECONCILIATION, OrderReason.INVOICE_EXPIRED)  // else leave
+        NOT_FOUND:transition(order → EXPIRED, RECONCILIATION, OrderReason.INVOICE_EXPIRED)
 ```
 Low volume ⇒ scanning open orders each minute is cheap (no Binance-style weight pressure). Catch and
 log per-order failures so one bad order never aborts the sweep.
@@ -299,18 +330,32 @@ public void extend(UUID userId, Duration granted, boolean paid,
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
 | `POST` | `/api/billing/orders` | `{ "planCode": "monthly" }` or `{ "planCode": "pay_as_you_go", "amount": 790000 }` | `{ orderId, status, checkoutUrl, alreadyPaid? }` |
+| `GET`  | `/api/billing/orders` | — | caller's order history, newest first, **capped** (e.g. `LIMIT 100`) |
 | `GET`  | `/api/billing/orders/current` | — | latest open/most-recent order status (UI polls this) |
 | `GET`  | `/api/billing/orders/{id}` | — | that order's status (`PENDING/PAID/EXPIRED/FAILED/…`) |
 
+**Why `planCode` (not `planId`):** the public catalog (`GET /api/billing/plans` → `PlanDto`)
+deliberately exposes only `code`, never the internal `id` (the SPA keys all text/order/styling off
+`code`, which is `UNIQUE` and immutable). The client therefore only *has* `code`; requiring `planId`
+would force leaking internal UUIDs into the public catalog for no reliability gain. Server resolves
+`code` → active `Plan`.
+
+The order-history list (`GET /api/billing/orders`) is capped server-side (newest-first) so it can't
+grow unbounded; per-user volume is tiny, so no pagination cursor is needed on day one.
+
 DTOs: `CreateOrderRequest(String planCode, BigDecimal amount /*nullable*/)`,
 `CreateOrderResponse(UUID orderId, OrderStatus status, String checkoutUrl, boolean alreadyPaid)`,
-`OrderStatusResponse(UUID orderId, OrderStatus status, String reason, Instant expiresAt, Instant paidAt)`.
+`OrderStatusResponse(UUID orderId, OrderStatus status, String reason, String reasonDetail, Instant expiresAt, Instant paidAt)`
+— `reason`/`reasonDetail` are read from the **latest `order_status_history` row** for the order
+(since `orders` no longer carries its own `reason` column).
 
 ### `MulticardCallbackController` (`/api/payment/multicard/callback`, **public**)
 - `POST` consumes the callback JSON. Reads source IP (mind `X-Forwarded-For` behind a proxy),
   delegates to `MulticardCallbackService.handle`, maps `CallbackOutcome` → HTTP:
   - `OK` → `200 {"success": true}`
-  - `REJECT(message)` → `200 {"success": false, "message": message}` (Multicard refunds)
+  - `REJECT(reason)` → `200 {"success": false, "message": reason.description}` (Multicard refunds) —
+    `reason` is an `OrderReason` (e.g. `UNKNOWN_ORDER`, `AMOUNT_MISMATCH`); its `description` is the
+    client-facing message
   - `REJECT_BAD_SIGN` / `REJECT_BAD_SOURCE` → `400` (unprocessed; likely forged)
   - `RETRY` → `500` (Multicard freezes + retries)
 - No CORS concerns (server-to-server). Never reads/writes session.
@@ -375,15 +420,19 @@ callback is the only new public endpoint; it is protected by signature + IP, not
 
 ## Build Order
 
-1. **Migrations** `V8` (orders), `V9` (order_status_history), `V10` (entitlement_ledger).
-2. **Order domain** — `Order`, `OrderStatus`, repositories, `OrderStatusHistory` + repo,
-   `OrderStateMachine`.
+1. **Migrations** `V8` (orders — `granted_duration_seconds`, no `reason` column), `V9`
+   (order_status_history — `reason` + `reason_detail`), `V10` (entitlement_ledger —
+   `granted_duration_seconds`).
+2. **Order domain** — `Order`, `OrderStatus`, `OrderReason` (centralized reason enum), repositories
+   (incl. capped order-history query), `OrderStatusHistory` + repo, `OrderStateMachine`
+   (`transition(status, source, OrderReason, detail?)`).
 3. **Ledger** — `EntitlementLedger` entity + repo; extend `EntitlementService.extend(...)` +
    `startTrial`; `GrantSource` enum. Update existing call site (registration) + the stale Javadoc.
 4. **`PaymentProperties`/`MulticardProperties`** + `multicardWebClient` bean + local sandbox creds.
 5. **Multicard adapter** — `MulticardClient` (auth cache, invoice, getPayment), `MulticardSignature`,
    `MulticardPaymentProvider` (+ `PaymentProvider` interface, DTOs).
-6. **`OrderService`** — create/reuse + pay-by-days; **`OrderController`**.
+6. **`OrderService`** — create/reuse + pay-by-days (days×86 400 → `granted_duration_seconds`);
+   **`OrderController`** (incl. capped `GET /api/billing/orders` history list).
 7. **`MulticardCallbackService`** + **`MulticardCallbackController`** (outcome→HTTP mapping).
 8. **`PaymentReconciliationService`** (`@Scheduled`).
 9. **`SecurityConfig`** — public callback matcher.
@@ -393,8 +442,9 @@ callback is the only new public endpoint; it is protected by signature + IP, not
 
 ## Tests (plain JUnit, matching existing style)
 
-- **`OrderService`** — fixed-plan create; pay-by-days `ceil` (exact, +1 partial, reject non-positive);
-  reuse same plan; supersede different plan; expired-open recreate; currency resolved server-side.
+- **`OrderService`** — fixed-plan create (`granted_duration_seconds` = `duration_days × 86 400`);
+  pay-by-days `ceil` (exact, +1 partial, reject non-positive) → seconds; reuse same plan; supersede
+  different plan (history reason `SUPERSEDED`); expired-open recreate; currency resolved server-side.
 - **`MulticardSignature`** — known-vector MD5 from the doc example; tamper → invalid.
 - **`MulticardCallbackService`** — happy grant; idempotent replay (already `PAID`); unknown order;
   amount mismatch → reject; bad IP / bad sign → 400 outcome; transient failure → RETRY.

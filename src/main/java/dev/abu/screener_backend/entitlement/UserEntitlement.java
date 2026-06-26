@@ -53,6 +53,15 @@ public class UserEntitlement {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * Optimistic-lock guard (future-proofing). Concurrent extends on one user are impossible today (the
+     * one-open-order index ⇒ at most one payable order, trial seeding happens only at registration), but
+     * a future admin/gift grant racing a purchase would surface loudly rather than lost-update.
+     */
+    @Version
+    @Column(nullable = false)
+    private long version;
+
     @PrePersist
     @PreUpdate
     private void touch() {

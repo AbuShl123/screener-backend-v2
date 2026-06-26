@@ -28,24 +28,18 @@ spring:
 
 screener:
   admin:
-    # Comma-separated emails promoted to ADMIN on startup. Empty in the repo on purpose —
-    # the real list is supplied via the SCREENER_ADMIN_EMAILS environment variable in the
-    # deployment environment, so admin identities are never committed.
     emails: "${SCREENER_ADMIN_EMAILS:}"
 
   binance:
     spot-base-url: https://api.binance.com
     futures-base-url: https://fapi.binance.com
-    # Binance exchangeInfo responses exceed 16 MB; the default 256 KB WebClient codec
-    # buffer throws DataBufferLimitException without this setting.
     codec-buffer-size-mb: 18
-    # Requests are held until the next wall-clock minute once usage reaches these levels.
     # Binance hard limits: spot 6 000, futures 2 400.
     spot-weight-threshold: 5800
     futures-weight-threshold: 2200
 
   ticker:
-    # ISO-8601 duration. fixedDelayString — the next run starts this long AFTER the previous completes.
+    # ISO-8601 duration.
     refresh-interval: PT4H
 
   orderbook:
@@ -56,6 +50,10 @@ screener:
     futures-snapshot-dispatch-rate-ms: 6000
     spot-snapshot-queue-size: 10
     futures-snapshot-queue-size: 10
+
+  disruptor:
+    shard-count: 2
+    ring-buffer-size: 65536
 
   classification:
     # Max (symbol, market) targets allowed in a single rule upsert/delete request — bounds
@@ -70,9 +68,26 @@ screener:
     default-currency: UZS
     default-country: UZ
 
-  disruptor:
-    shard-count: 2
-    ring-buffer-size: 65536
+  payment:
+    # How often the reconciliation sweep resolves stale PENDING orders (ISO-8601 duration).
+    reconciliation-interval: PT1M
+    multicard:
+      # Sandbox by default; production is https://mesh.multicard.uz.
+      base-url: https://dev-mesh.multicard.uz
+      # Secrets supplied via environment variables, never committed.
+      application-id: "${MULTICARD_APP_ID:}"
+      secret: "${MULTICARD_SECRET:}"
+      store-id: "${MULTICARD_STORE_ID:}"
+      callback-url: "${MULTICARD_CALLBACK_URL:}"   # public URL of our callback endpoint
+      return-url: "${MULTICARD_RETURN_URL:}"       # SPA post-payment landing page
+      invoice-ttl: PT30M
+      allowed-ip: 195.158.26.90
+      lang: ru
+      # Fiscalization. Env-overridable; production default true. NOTE: the buildOfd payload is still a
+      # PLACEHOLDER (no real mxik/package_code tax data) — enabling this against a production merchant
+      # agreement sends incomplete fiscal data. A go-to-production dependency. application-local.yml forces
+      # this false (sandbox accepts invoices without ofd).
+      ofd-enabled: ${MULTICARD_OFD_ENABLED:true}
 
   websocket:
     spot-stream-url: wss://stream.binance.com/ws

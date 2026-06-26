@@ -8,7 +8,9 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,16 +22,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Unit tests for {@link EntitlementService}: trial seeding, the stacking grant (from a past vs a
- * future expiry), and the derived {@link AccessState} for all four cases including the ADMIN
- * short-circuit. The repository is a stateful in-memory reflective proxy (the codebase avoids
- * Mockito) keyed by user id; {@code save} mirrors JPA {@code @MapsId} by deriving the id from the
- * {@code user} association when absent.
+ * future expiry), the derived {@link AccessState} for all four cases including the ADMIN short-circuit,
+ * and that every grant writes an {@link EntitlementLedger} row with the correct prev/new expiry. The
+ * repositories are stateful in-memory reflective proxies (the codebase avoids Mockito).
  */
 class EntitlementServiceTest {
 
     private final Map<UUID, UserEntitlement> store = new HashMap<>();
+    private final List<EntitlementLedger> ledger = new ArrayList<>();
     private final EntitlementService service =
-            new EntitlementService(repo(store), new BillingProperties(Duration.ofDays(7), "UZS", "UZ"));
+            new EntitlementService(repo(store), ledgerRepo(ledger),
+                    new BillingProperties(Duration.ofDays(7), "UZS", "UZ"));
 
     @SuppressWarnings("unchecked")
     private static UserEntitlementRepository repo(Map<UUID, UserEntitlement> store) {
@@ -46,6 +49,20 @@ class EntitlementServiceTest {
                     }
                     case "findByUserId" -> Optional.ofNullable(store.get((UUID) args[0]));
                     default -> Optional.class.isAssignableFrom(method.getReturnType()) ? Optional.empty() : null;
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private static EntitlementLedgerRepository ledgerRepo(List<EntitlementLedger> ledger) {
+        return (EntitlementLedgerRepository) Proxy.newProxyInstance(
+                EntitlementLedgerRepository.class.getClassLoader(),
+                new Class<?>[]{EntitlementLedgerRepository.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "save" -> {
+                        ledger.add((EntitlementLedger) args[0]);
+                        yield args[0];
+                    }
+                    default -> List.class.isAssignableFrom(method.getReturnType()) ? List.of() : null;
                 });
     }
 
@@ -66,7 +83,7 @@ class EntitlementServiceTest {
     }
 
     @Test
-    void startTrialSeedsSevenDayUnpaidTrial() {
+    void startTrialSeedsSevenDayUnpaidTrialAndWritesLedger() {
         User u = user(UserRole.USER);
         Instant before = Instant.now();
 
@@ -78,21 +95,35 @@ class EntitlementServiceTest {
         assertTrue(e.getAccessExpiresAt().isBefore(before.plus(Duration.ofDays(7)).plusSeconds(5)));
         assertEquals(false, e.isHasPaid());
         assertEquals(AccessState.TRIAL, service.currentState(u).state());
+
+        assertEquals(1, ledger.size());
+        EntitlementLedger row = ledger.get(0);
+        assertEquals(GrantSource.TRIAL, row.getSource());
+        assertNull(row.getPreviousExpiresAt());
+        assertEquals(e.getAccessExpiresAt(), row.getNewExpiresAt());
     }
 
     @Test
-    void extendFromFutureExpiryStacksOnRemainingTime() {
+    void extendFromFutureExpiryStacksOnRemainingTimeAndLogsLedger() {
         User u = user(UserRole.USER);
         Instant future = Instant.now().plus(Duration.ofDays(10));
         seed(u.getId(), future, false);
+        UUID orderId = UUID.randomUUID();
 
-        service.extend(u.getId(), Duration.ofDays(30), true);
+        service.extend(u.getId(), Duration.ofDays(30), true, GrantSource.PURCHASE, orderId, null, null);
 
         UserEntitlement e = store.get(u.getId());
         // Stacks on the remaining future time: future + 30d (not now + 30d).
         assertEquals(future.plus(Duration.ofDays(30)), e.getAccessExpiresAt());
         assertTrue(e.isHasPaid());
         assertEquals(AccessState.ACTIVE, service.currentState(u).state());
+
+        EntitlementLedger row = ledger.get(ledger.size() - 1);
+        assertEquals(GrantSource.PURCHASE, row.getSource());
+        assertEquals(orderId, row.getOrderId());
+        assertEquals(future, row.getPreviousExpiresAt());
+        assertEquals(future.plus(Duration.ofDays(30)), row.getNewExpiresAt());
+        assertEquals(Duration.ofDays(30).toSeconds(), row.getGrantedDurationSeconds());
     }
 
     @Test
@@ -102,7 +133,7 @@ class EntitlementServiceTest {
         seed(u.getId(), past, false);
         Instant before = Instant.now();
 
-        service.extend(u.getId(), Duration.ofDays(7), true);
+        service.extend(u.getId(), Duration.ofDays(7), true, GrantSource.PURCHASE, UUID.randomUUID(), null, null);
 
         Instant result = store.get(u.getId()).getAccessExpiresAt();
         // Past expiry is ignored: base is "now", so result ≈ now + 7d.

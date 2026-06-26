@@ -35,7 +35,12 @@
       "Bash(echo \"=== exit: $? ===\")",
       "Bash(sed 's/-- module.*//')",
       "Bash(./mvnw dependency:get -Dartifact=org.springframework.boot:spring-boot-flyway:4.0.6)",
-      "Bash(./mvnw dependency:get -Dartifact=org.springframework.boot:spring-boot-starter-flyway:4.0.6)"
+      "Bash(./mvnw dependency:get -Dartifact=org.springframework.boot:spring-boot-starter-flyway:4.0.6)",
+      "Bash(./mvnw -q -o test -Dtest='OrderServiceTest,MulticardSignatureTest,MulticardPaymentProviderTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest,EntitlementServiceTest')",
+      "Bash(./mvnw -o test -Dtest='OrderServiceTest,MulticardSignatureTest,MulticardPaymentProviderTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest,EntitlementServiceTest')",
+      "Bash(git -C /c/git/screener-backend-new log --oneline -5 -- src/test/java/dev/abu/screener_backend/ScreenerBackendApplicationTests.java)",
+      "Bash(git check-ignore *)",
+      "Bash(git --no-pager diff --no-color src/main/java/dev/abu/screener_backend/config/SecurityConfig.java src/main/java/dev/abu/screener_backend/config/WebClientConfig.java src/main/resources/application.yml src/main/java/dev/abu/screener_backend/billing/PlanRepository.java)"
     ]
   }
 }

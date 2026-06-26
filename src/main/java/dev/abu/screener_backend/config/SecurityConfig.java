@@ -4,6 +4,7 @@ import dev.abu.screener_backend.auth.JwtAuthenticationFilter;
 import dev.abu.screener_backend.auth.JwtService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -31,6 +32,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/register", "/api/auth/login", "/api/auth/refresh").permitAll()
                         .requestMatchers("/ws").permitAll()
+                        // Public Multicard success callback — protected by signature + source IP, not JWT.
+                        .requestMatchers(HttpMethod.POST, "/api/payment/multicard/callback").permitAll()
                         .requestMatchers("/api/monitoring/**").hasRole("ADMIN")
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated()
