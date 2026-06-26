@@ -114,6 +114,22 @@ class OrderServiceTest {
     }
 
     @Test
+    void payByDaysAcceptsWithinScaleFractionalAmount() {
+        plan("pay_as_you_go", PlanType.PER_DAY, null);
+        price("pay_as_you_go", "UZS", "1000");
+        // 7900.50 / 1000 = 7.9005 → ceil → 8 days. UZS permits 2 dp, so a fractional sum is valid (E10).
+        assertEquals(8 * DAY, durationOf(service.createOrReuse(user, "pay_as_you_go", new BigDecimal("7900.50"), "UZS")));
+    }
+
+    @Test
+    void payByDaysRejectsAmountWithTooManyDecimalsForCurrency() {
+        plan("pay_as_you_go", PlanType.PER_DAY, null);
+        price("pay_as_you_go", "UZS", "1000");
+        // UZS allows 2 dp; 100.123 carries 3 → 400 (E10).
+        assertThrows(ApiException.class, () -> service.createOrReuse(user, "pay_as_you_go", new BigDecimal("100.123"), "UZS"));
+    }
+
+    @Test
     void currencyResolvedServerSideRejectsMissingPrice() {
         plan("monthly", PlanType.FIXED, 30);
         price("monthly", "UZS", "150000");

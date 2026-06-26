@@ -50,6 +50,7 @@ src/
 │   │   ├── Plan.java
 │   │   ├── PlanType.java
 │   │   ├── PlanPrice.java
+│   │   ├── Currency.java                 ← enum {UZS,USD,BTC,ETH}: per-currency decimals + scale validation
 │   │   ├── PlanRepository.java
 │   │   ├── PlanPriceRepository.java
 │   │   ├── RegionResolver.java
@@ -68,12 +69,50 @@ src/
 │   ├── entitlement/
 │   │   ├── UserEntitlement.java
 │   │   ├── UserEntitlementRepository.java
+│   │   ├── EntitlementLedger.java       ← append-only grant audit row
+│   │   ├── EntitlementLedgerRepository.java
+│   │   ├── GrantSource.java             ← enum {TRIAL, PURCHASE, ADMIN}
 │   │   ├── AccessState.java
 │   │   ├── EntitlementView.java
-│   │   ├── EntitlementService.java
+│   │   ├── EntitlementService.java      ← startTrial + extend now write the ledger
 │   │   ├── EntitlementController.java   ← GET /api/billing/entitlement
 │   │   └── dto/
 │   │       └── EntitlementResponse.java
+│   ├── payment/                          ← orders + provider boundary (Multicard adapter)
+│   │   ├── Order.java
+│   │   ├── OrderStatus.java
+│   │   ├── OrderReason.java
+│   │   ├── OrderSource.java
+│   │   ├── OrderStateMachine.java
+│   │   ├── OrderStatusHistory.java
+│   │   ├── OrderStatusHistoryRepository.java
+│   │   ├── OrderRepository.java
+│   │   ├── OrderService.java
+│   │   ├── OrderController.java          ← /api/billing/orders/**
+│   │   ├── PaymentReconciliationService.java   ← @Scheduled sweep over PENDING orders
+│   │   ├── PaymentProvider.java          ← provider-agnostic boundary (interface)
+│   │   ├── CheckoutSession.java
+│   │   ├── ProviderPayment.java
+│   │   ├── ProviderStatus.java
+│   │   ├── dto/
+│   │   │   ├── CreateOrderRequest.java
+│   │   │   ├── CreateOrderResponse.java
+│   │   │   └── OrderStatusResponse.java
+│   │   └── multicard/
+│   │       ├── MulticardClient.java
+│   │       ├── MulticardPaymentProvider.java
+│   │       ├── MulticardSignature.java
+│   │       ├── MulticardCallbackController.java   ← public POST /api/payment/multicard/callback
+│   │       ├── MulticardCallbackService.java
+│   │       ├── CallbackOutcome.java
+│   │       ├── MulticardException.java
+│   │       └── dto/
+│   │           ├── MulticardAuthResponse.java
+│   │           ├── MulticardInvoiceRequest.java
+│   │           ├── MulticardInvoiceResponse.java
+│   │           ├── MulticardPaymentResponse.java
+│   │           ├── MulticardCallbackPayload.java
+│   │           └── MulticardError.java
 │   ├── binance/
 │   │   ├── api/
 │   │   │   ├── BinanceApiException.java
@@ -112,6 +151,7 @@ src/
 │   │   ├── DisruptorProperties.java
 │   │   ├── JwtProperties.java
 │   │   ├── OrderbookProperties.java
+│   │   ├── PaymentProperties.java        ← screener.payment.* (+ nested MulticardProperties)
 │   │   ├── SecurityConfig.java
 │   │   ├── WebClientConfig.java
 │   │   └── WebSocketProperties.java
@@ -153,7 +193,12 @@ src/
 │       ├── V3__create_classification_rules.sql
 │       ├── V4__update_role_check_constraint.sql
 │       ├── V5__create_plans.sql               ← plans + plan_prices + UZS seed
-│       └── V6__create_user_entitlement.sql    ← 1:1 access table (manual backfill, see scripts/)
+│       ├── V6__create_user_entitlement.sql    ← 1:1 access table (manual backfill, see scripts/)
+│       ├── V7__align_constraints_and_indexes.sql  ← cross-env index/FK/constraint alignment
+│       ├── V8__create_orders.sql              ← orders (version + NUMERIC(38,18) amount)
+│       ├── V9__create_order_status_history.sql    ← append-only transition audit (seq identity)
+│       ├── V10__create_entitlement_ledger.sql ← append-only grant audit
+│       └── V11__payment_concurrency_and_audit.sql ← user_entitlement.version + plan_prices → NUMERIC(38,18)
 └── test/java/dev/abu/screener_backend/
     ├── ScreenerBackendApplicationTests.java
     ├── analysis/
@@ -165,9 +210,18 @@ src/
     │       └── ClassificationRuleServiceTest.java
     ├── billing/
     │   ├── PricingServiceTest.java
-    │   └── PlanAdminServiceTest.java
-    └── entitlement/
-        └── EntitlementServiceTest.java
+    │   ├── PlanAdminServiceTest.java
+    │   └── CurrencyTest.java
+    ├── entitlement/
+    │   └── EntitlementServiceTest.java
+    └── payment/
+        ├── OrderServiceTest.java
+        ├── OrderStateMachineTest.java
+        ├── PaymentReconciliationServiceTest.java
+        └── multicard/
+            ├── MulticardCallbackServiceTest.java
+            ├── MulticardPaymentProviderTest.java
+            └── MulticardSignatureTest.java
 ```
 
 **Implementation status**: All core features are complete. The full pipeline — Binance WebSocket integration, LMAX Disruptor processing, orderbook sync, order classification, feed broadcasting, and client WebSocket delivery — is implemented and wired together. JWT auth, PostgreSQL user storage, per-user classification rules (persistence, REST CRUD, runtime wiring, two-pass classifier, broadcaster merge), live rule propagation to connected sessions, and Spring Security are all complete.
@@ -355,6 +409,12 @@ JPA entity mapped to `user_entitlement`, 1:1 with `users` via a shared-primary-k
 `@RestController` at `/api/billing` (Bearer JWT via the catch-all). `GET /api/billing/entitlement` returns `EntitlementResponse(state, accessExpiresAt)` from `EntitlementService.currentState` for cheap UI polling. The same two fields are mirrored on `GET /api/auth/me`. DTO: `dto/EntitlementResponse(AccessState state, Instant accessExpiresAt)`.
 
 **Migrations**: `V5__create_plans.sql` (plans + plan_prices + placeholder UZS seed), `V6__create_user_entitlement.sql`. Existing-user backfill is **not** a migration — `scripts/backfill_user_entitlement.sql` is run manually in production (role-split: non-admins get a fresh 7-day trial, admins get `NULL` expiry) so a redeploy can never re-grant trials.
+
+---
+
+## `payment` — Subscription Payments & Multicard Adapter
+
+The subscription-payment module: provider-agnostic `Order`s (create/reuse, pay-by-days math, idempotent grant-on-success, a `@Scheduled` reconciliation sweep, append-only status-history audit) sitting behind a two-method `PaymentProvider` boundary, with the first and only adapter under `multicard/` (UZS, Uzbekistan — `WebClient` client, hosted-checkout invoice, MD5-signed success callback, durable status polling). On a verified payment it calls `EntitlementService.extend(...)`, which now also writes the new `entitlement_ledger` grant audit; the `billing.Currency` enum is the source of truth for per-currency decimal precision. **This is only a generic summary** — the full reference (flow, state machine, edge cases, config, tests) lives in `.claude/docs/payment-gateway-multicard.md`.
 
 ---
 
@@ -807,8 +867,9 @@ Plain JUnit unit test with a stateful in-memory reflective proxy repo. Verifies 
 | Feature | Notes |
 |---------|-------|
 | Klines streams | Candlestick data integration for additional analysis signals |
-| Payment gateway | `PaymentProvider` interface, Multicard adapter, orders + webhooks + reconciliation, pay-by-days math, major→tiyin conversion (payment plan) |
 | Access-gate enforcement | Wiring `EntitlementService.hasAccess` into REST endpoints and WS `@OnOpen`; mid-session WS expiry (enforcement plan) |
+| Auto-renewal / saved cards | Recurring charges, saved-instrument concept, renewal sweep, grace period — out of scope by business decision (see payment doc §15) |
+| Full webhooks & production fiscalization | Per-status (SHA-1) Multicard webhooks and real `ofd` tax payload (`mxik`/`package_code`) — the payment adapter is shaped for these but they are deferred |
 | Account settings / localization | Real geo/IP/phone `RegionResolver`, `user_settings` table (currency/country/locale), multi-currency seed (KZT/RUB/crypto) |
 | User roles and privileges | `USER`/`ADMIN` exist; `PREMIUM` (paid) tier and per-plan limits (max tracked tickers, max custom rules) not yet enforced |
 | Distributed deployment | Ticker partitioning across multiple JVM instances |

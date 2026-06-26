@@ -40,7 +40,10 @@
       "Bash(./mvnw -o test -Dtest='OrderServiceTest,MulticardSignatureTest,MulticardPaymentProviderTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest,EntitlementServiceTest')",
       "Bash(git -C /c/git/screener-backend-new log --oneline -5 -- src/test/java/dev/abu/screener_backend/ScreenerBackendApplicationTests.java)",
       "Bash(git check-ignore *)",
-      "Bash(git --no-pager diff --no-color src/main/java/dev/abu/screener_backend/config/SecurityConfig.java src/main/java/dev/abu/screener_backend/config/WebClientConfig.java src/main/resources/application.yml src/main/java/dev/abu/screener_backend/billing/PlanRepository.java)"
+      "Bash(git --no-pager diff --no-color src/main/java/dev/abu/screener_backend/config/SecurityConfig.java src/main/java/dev/abu/screener_backend/config/WebClientConfig.java src/main/resources/application.yml src/main/java/dev/abu/screener_backend/billing/PlanRepository.java)",
+      "Bash(./mvnw -q -o test -Dtest='CurrencyTest,OrderServiceTest,PlanAdminServiceTest,MulticardPaymentProviderTest,PricingServiceTest')",
+      "Bash(./mvnw -q -o test -Dtest='CurrencyTest,OrderServiceTest,PlanAdminServiceTest,MulticardPaymentProviderTest,PricingServiceTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest')",
+      "Bash(./mvnw -o test -Dtest='CurrencyTest,OrderServiceTest,PlanAdminServiceTest,MulticardPaymentProviderTest,PricingServiceTest,MulticardCallbackServiceTest,PaymentReconciliationServiceTest')"
     ]
   }
 }

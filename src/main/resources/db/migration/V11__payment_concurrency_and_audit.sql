@@ -1,19 +1,17 @@
--- Payment hardening pass (enhancements plan E2 + E7).
+-- Payment hardening pass — adjustments to PRE-EXISTING tables only (enhancements plan E2 + E10).
 --
--- 1. Optimistic-locking version columns (defense-in-depth). The existing payment paths already serialize
---    order mutations with SELECT ... FOR UPDATE, so these never contend and @Version never fires
---    spuriously; they exist so any FUTURE unlocked path that races surfaces a loud OptimisticLockException
---    instead of a silent lost update.
-ALTER TABLE orders           ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE user_entitlement ADD COLUMN version BIGINT NOT NULL DEFAULT 0;  -- future admin/gift grants
+-- The orders and order_status_history tables are created in their final shape in V8/V9 (version column,
+-- NUMERIC(38,18) amount, seq identity). This migration carries only the changes that touch tables which
+-- predate the payment feature (V5 plan_prices, V6 user_entitlement) and therefore cannot be folded into
+-- their CREATE statements.
 
--- 2. Deterministic ordering of the status audit trail. Two transitions can share a created_at tick
---    (app-clock Instant.now()), making a "latest reason" lookup ordered by created_at ambiguous. A
---    monotonic identity seq is deterministic. Existing rows are assigned seq values in physical
---    insertion order; no backfill needed.
-ALTER TABLE order_status_history ADD COLUMN seq BIGINT GENERATED ALWAYS AS IDENTITY;
+-- 1. Optimistic-locking version column on user_entitlement (defense-in-depth, mirrors orders.version).
+--    Future admin/gift grant paths that race surface a loud OptimisticLockException rather than a silent
+--    lost update. Existing entitlement paths serialize today, so this never contends.
+ALTER TABLE user_entitlement ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
 
--- The composite (order_id, seq DESC) fully covers the per-order "latest transition" and ordered-list
--- queries, so it replaces the plain order_id index.
-DROP INDEX IF EXISTS idx_osh_order;
-CREATE INDEX idx_osh_order_seq ON order_status_history(order_id, seq DESC);
+-- 2. Widen plan_prices.amount to crypto-grade precision (E10), matching orders.amount NUMERIC(38,18).
+--    The original NUMERIC(19,4) is fine for fiat (<= 2 dp) but silently truncates cryptocurrencies
+--    (BTC = 8 dp, ETH = 18 dp) — a stated future direction. NUMERIC is variable-width, so the unused
+--    scale on small fiat values is nearly free; existing rows are padded to scale 18, no value changes.
+ALTER TABLE plan_prices ALTER COLUMN amount TYPE NUMERIC(38,18);

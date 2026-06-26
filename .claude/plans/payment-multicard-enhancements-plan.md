@@ -24,6 +24,9 @@ reconciliation sweep, `OrderStateMachine`, `EntitlementService.extend(...)` with
 - Make the "latest status reason" lookup deterministic via a monotonic sequence, not a timestamp (E7).
 - Record (not fix) the `X-Forwarded-For` source-IP trust risk in code + this plan (E8).
 - Config note on `ofd-enabled` (E9).
+- Make money storage precision-correct and multi-currency-ready (keep major-unit `BigDecimal`, widen
+  the column, add a `Currency` decimals source of truth, validate input scale per-currency, accept
+  money amounts as JSON strings) (E10).
 
 **Explicitly NOT in scope (unchanged deferrals):** auto-renewal / saved cards, refund initiation,
 per-status (full) webhooks, access-gate enforcement, multi-provider selection wiring, production `ofd`
@@ -44,6 +47,7 @@ tax-data payload, the `X-Forwarded-For` spoofing fix (recorded only).
 | E7 | **`order_status_history` gets a monotonic `seq` (DB identity); "latest reason" orders by `seq DESC`, not `created_at DESC`.** | Two transitions can share a `created_at` tick (app-clock `Instant.now()`), making the latest-row lookup ambiguous. A monotonic sequence is deterministic. |
 | E8 | **Record the `X-Forwarded-For` source-IP trust risk** in code + plan; do not fix now. | If the app is reachable bypassing the trusted proxy, `X-Forwarded-For` can be spoofed to defeat the IP allow-list, leaving only the shared-secret MD5 signature. Accepted for now; must be revisited before exposing the callback outside a trusted proxy. |
 | E9 | **`ofd-enabled` stays `true` in committed `application.yml` but becomes env-overridable; `application-local.yml` forces it `false`.** The `buildOfd` payload is a **placeholder** and must carry real `mxik`/`package_code` tax data before it is relied on in production. | Dev/sandbox uses `application-local.yml` (ofd off, accepted by sandbox). Production leans `ofd` on, but enabling it with the current placeholder payload sends incomplete fiscal data — a go-to-production dependency, flagged loudly. |
+| E10 | **Keep money as major-unit `BigDecimal`; widen storage to `NUMERIC(38,18)`, add a `Currency` enum as the per-currency decimals source of truth, validate input scale per-currency, and accept money amounts as JSON strings.** The minor-unit `BIGINT` alternative is **rejected**. | `BIGINT` minor units overflow on 18-decimal assets (ETH: `Long.MAX` ≈ 9.2 ETH expressed in wei) — the exact crypto case the design is future-proofing for. `BigDecimal`/`NUMERIC` is arbitrary-precision and is already the model; the real gaps were the scale-4 column (truncates BTC 8 / ETH 18), the absence of a per-currency decimals source of truth (tiyin hardcoded `×100`), a whole-number-only pay-by-days hack, and precision-fragile JSON-number money inputs. Major units stay directly displayable; minor-unit conversion stays at the provider edge. |
 
 ---
 
@@ -215,6 +219,54 @@ See "Concurrency: the full picture" above. **Files:** `OrderService.java` (locke
 - **Files:** `application.yml`, `application-local.yml`, comment on `MulticardPaymentProvider.buildOfd`.
 - *(Comment cleanup in `application.yml` is owned by the user — do not revert removed comments.)*
 
+### E10 — Money precision & multi-currency-ready storage
+
+- **Problem.** Money is `BigDecimal` in **major units**, stored as `NUMERIC(19,4)` (`V5`, `V8`; JPA
+  `precision=19, scale=4` on `PlanPrice.amount` / `Order.amount`). Scale 4 is fine for fiat (≤ 2 dp)
+  but silently truncates crypto (BTC 8, ETH 18) — a stated future direction. Three further gaps:
+  pay-by-days rejects **any** fractional amount (`OrderService.computeDays` →
+  `stripTrailingZeros().scale() > 0`), which is wrong per-currency; there is **no single source of
+  truth** for a currency's decimal places (the Multicard boundary hardcodes `movePointRight(2)`); and
+  money amounts arrive as **JSON numbers** (`CreateOrderRequest.amount`, `AdminPriceRequest.amount`),
+  which lose precision when a client serialises from a `double`.
+- **Rejected alternative.** Storing money as minor-unit `BIGINT` (the Stripe-style integer model).
+  Great for fiat, but `Long.MAX` ≈ 9.2 × 10¹⁸ and 1 ETH = 10¹⁸ wei, so a `BIGINT` of wei tops out at
+  **~9.2 ETH** — it cannot represent the very crypto case we want to support, and it forfeits the
+  directly-displayable major-unit value. `BigDecimal` (arbitrary precision) + Postgres `NUMERIC`
+  (effectively unbounded) is the only model that holds UZS, USD, BTC **and** ETH without special-casing.
+- **Decision (E10).** Keep `BigDecimal` major units (the existing architecture is correct); close the
+  four real gaps:
+  1. **`Currency` enum** — new `billing/Currency.java`: `{ UZS(2), USD(2), BTC(8), ETH(18) }` with
+     `decimals()`, `of(code)` (normalise to upper-case + reject an unsupported/badly-formatted code with
+     `400`), and `requireScale(amount)` (reject a value carrying more decimals than the currency allows,
+     `400`). The single source of truth for per-currency decimal places. An enum now (currencies bind to
+     provider adapters, which are code anyway); it can graduate to a `currencies` reference table later,
+     additively.
+  2. **Widen storage** to `NUMERIC(38,18)` (migration `V12`) on `orders.amount` and `plan_prices.amount`
+     (+ JPA `precision=38, scale=18`). 20 integer digits cover every fiat sum and crypto supply; 18
+     fractional digits cover ETH. `NUMERIC` is variable-width, so the unused scale is nearly free.
+  3. **Per-currency input validation.** Replace the whole-number pay-by-days check with
+     `Currency.of(currency).requireScale(amount)`; add the same guard to admin `upsertPrice`. So `$19.9`
+     (USD, scale 1 ≤ 2) is accepted and stored `19.90`; `480.888` (UZS, scale 3 > 2) → `400`; an ETH
+     amount at 18 dp is accepted and stored losslessly. Pay-by-days `ceil(amount / pricePerDay)` is
+     unchanged and works for any currency. Validating scale ≤ the currency's decimals also guarantees the
+     boundary `movePointRight(decimals).longValueExact()` never throws.
+  4. **String money DTOs.** `CreateOrderRequest.amount` and `AdminPriceRequest.amount` become `String`,
+     parsed to `BigDecimal` at the boundary (lossless; malformed → `400`). The client still sends only a
+     plan `code` (+ amount for pay-by-days) — never a price or currency.
+  - The Multicard boundary's `toTiyin` reads `Currency.UZS.decimals()` instead of a literal `2` (Multicard
+    transacts only in UZS, so this is honest and keeps the call sites/tests unchanged); a future non-UZS
+    provider would convert against its order's own currency. Storage stays major-unit; minor-unit
+    conversion stays at the provider edge (unchanged design).
+- **Files:** new `billing/Currency.java`; `V12__widen_money_scale.sql`; `Order.java`, `PlanPrice.java`
+  (column `precision=38, scale=18`); `OrderService.computeDays`; `PlanAdminService.upsertPrice` /
+  `validateCurrency`; `CreateOrderRequest`, `AdminPriceRequest`, `OrderController` (string→`BigDecimal`
+  parse); `MulticardPaymentProvider.toTiyin`.
+- **Tests:** `Currency` (decimals; `of` normalise + reject bad/unsupported; `requireScale` accept within
+  scale, reject over scale, trailing-zeros tolerated); `OrderService` pay-by-days now accepts a
+  within-scale fractional amount and rejects an over-scale one; `PlanAdminService` rejects an over-scale
+  price; updated existing DTO-construction in `PlanAdminServiceTest` to string amounts.
+
 ---
 
 ## Migrations
@@ -232,6 +284,15 @@ CREATE INDEX idx_osh_order_seq ON order_status_history(order_id, seq DESC);
 > No data backfill needed: `version` defaults to 0; `seq` is assigned to existing rows in insertion
 > order by the identity column. Keep the existing `idx_osh_order` or drop it in favour of the composite.
 
+`V12__widen_money_scale.sql` (E10 — widen money columns for crypto precision):
+```sql
+-- Major-unit money was NUMERIC(19,4): fine for fiat (<=2 dp) but truncates crypto (BTC 8, ETH 18).
+-- Widen to NUMERIC(38,18): 20 integer digits (every fiat sum + crypto supply) + 18 fractional (ETH).
+-- Existing values are padded to scale 18; no data change.
+ALTER TABLE orders      ALTER COLUMN amount TYPE NUMERIC(38,18);
+ALTER TABLE plan_prices ALTER COLUMN amount TYPE NUMERIC(38,18);
+```
+
 ---
 
 ## Build Order
@@ -248,7 +309,10 @@ CREATE INDEX idx_osh_order_seq ON order_status_history(order_id, seq DESC);
 8. **E7** — history `seq` mapping + repository/read switch to `seq DESC`.
 9. **E8** — `resolveSourceIp` risk comment.
 10. **E9** — `ofd-enabled` env-overridable; `application-local.yml` false; `buildOfd` placeholder comment.
-11. **Tests** (below).
+11. **E10** — migration `V12` (widen money columns); `Currency` enum; entity `precision=38, scale=18`;
+    per-currency input validation (pay-by-days + admin price); string money DTOs + boundary parse;
+    `toTiyin` reads `Currency.UZS.decimals()`.
+12. **Tests** (below).
 
 ---
 
@@ -269,6 +333,12 @@ CREATE INDEX idx_osh_order_seq ON order_status_history(order_id, seq DESC);
   mismatched amount → `FAILED`/`AMOUNT_MISMATCH`, no grant; matching amount → grants (E5); null-uuid
   branch logs at error and expires when stale (E4); one bad order doesn't abort the sweep (existing).
 - **History ordering** — two transitions sharing `created_at` → latest reason is the higher `seq` (E7).
+- **`Currency`** — `decimals()` per code; `of` normalises case + rejects bad-format/unsupported; `requireScale`
+  accepts within scale (incl. trailing zeros like `19.900` for a 2-dp currency) and rejects over scale (E10).
+- **`OrderService`** — pay-by-days accepts a within-scale fractional amount (e.g. `7900.50` UZS → `ceil`)
+  and rejects an over-scale one (`100.123` UZS → `400`) (E10).
+- **`PlanAdminService`** — `upsertPrice` rejects an over-scale price for the currency (E10); existing
+  price tests pass string amounts.
 
 ---
 

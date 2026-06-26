@@ -13,7 +13,6 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -134,11 +133,13 @@ public class PlanAdminService {
         if (req == null) {
             throw ApiException.badRequest("request body required");
         }
-        String currency = validateCurrency(req.currency());
-        BigDecimal amount = req.amount();
-        if (amount == null || amount.signum() < 0) {
+        Currency cur = Currency.of(req.currency());
+        BigDecimal amount = parseAmount(req.amount());
+        if (amount.signum() < 0) {
             throw ApiException.badRequest("amount must be >= 0");
         }
+        cur.requireScale(amount);
+        String currency = cur.name();
         Plan plan = planRepository.findById(planId)
                 .orElseThrow(() -> ApiException.notFound("plan not found: " + planId));
 
@@ -180,15 +181,16 @@ public class PlanAdminService {
         }
     }
 
-    private static String validateCurrency(String currency) {
-        if (currency == null || currency.isBlank()) {
-            throw ApiException.badRequest("currency required");
+    /** Parses an admin-supplied money string losslessly; a missing/malformed value is a {@code 400}. */
+    private static BigDecimal parseAmount(String amount) {
+        if (amount == null || amount.isBlank()) {
+            throw ApiException.badRequest("amount required");
         }
-        String normalized = currency.trim().toUpperCase(Locale.ROOT);
-        if (normalized.length() != 3 || !normalized.chars().allMatch(Character::isLetter)) {
-            throw ApiException.badRequest("currency must be a 3-letter ISO 4217 code: " + currency);
+        try {
+            return new BigDecimal(amount.trim());
+        } catch (NumberFormatException e) {
+            throw ApiException.badRequest("amount is not a valid number: " + amount);
         }
-        return normalized;
     }
 
     private static String requireText(String value, String field) {

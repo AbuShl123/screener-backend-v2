@@ -42,8 +42,8 @@ public class PlanPrice {
     @Column(nullable = false, length = 3)
     private String currency;
 
-    /** Major units (sum). Never minor units. */
-    @Column(nullable = false, precision = 19, scale = 4)
+    /** Major units (sum). Never minor units. NUMERIC(38,18) holds fiat and crypto precision (E10). */
+    @Column(nullable = false, precision = 38, scale = 18)
     private BigDecimal amount;
 
     @Column(nullable = false)

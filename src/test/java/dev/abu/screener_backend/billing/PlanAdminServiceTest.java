@@ -143,12 +143,12 @@ class PlanAdminServiceTest {
                 service.createPlan(new AdminPlanRequest("weekly", "Weekly", PlanType.FIXED, 7, true));
 
         AdminPriceResponse first =
-                service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", new BigDecimal("50000.00"), true));
+                service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", "50000.00", true));
         assertEquals(0, new BigDecimal("50000.00").compareTo(first.amount()));
         assertEquals(1, prices.size());
 
         AdminPriceResponse second =
-                service.upsertPrice(plan.id(), new AdminPriceRequest("uzs", new BigDecimal("60000.00"), true));
+                service.upsertPrice(plan.id(), new AdminPriceRequest("uzs", "60000.00", true));
         // Same (plan, currency) row updated in place — not a new row, currency normalized to upper.
         assertEquals(1, prices.size());
         assertEquals(first.id(), second.id());
@@ -162,15 +162,31 @@ class PlanAdminServiceTest {
                 service.createPlan(new AdminPlanRequest("weekly", "Weekly", PlanType.FIXED, 7, true));
 
         assertThrows(ApiException.class, () ->
-                service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", new BigDecimal("-1"), true)));
+                service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", "-1", true)));
         assertThrows(ApiException.class, () ->
-                service.upsertPrice(plan.id(), new AdminPriceRequest("US", new BigDecimal("1"), true)));
+                service.upsertPrice(plan.id(), new AdminPriceRequest("US", "1", true)));
+        // Unsupported (but well-formed) currency is rejected — the system can't know its decimals (E10).
+        assertThrows(ApiException.class, () ->
+                service.upsertPrice(plan.id(), new AdminPriceRequest("XYZ", "1", true)));
+    }
+
+    @Test
+    void upsertPriceRejectsAmountWithTooManyDecimalsForCurrency() {
+        AdminPlanResponse plan =
+                service.createPlan(new AdminPlanRequest("weekly", "Weekly", PlanType.FIXED, 7, true));
+
+        // UZS allows 2 dp; 3 significant decimals is a 400 (E10). Trailing zeros are fine.
+        assertThrows(ApiException.class, () ->
+                service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", "19.999", true)));
+        AdminPriceResponse ok =
+                service.upsertPrice(plan.id(), new AdminPriceRequest("UZS", "19.900", true));
+        assertEquals(0, new BigDecimal("19.9").compareTo(ok.amount()));
     }
 
     @Test
     void upsertPriceNotFoundWhenPlanAbsent() {
         ApiException ex = assertThrows(ApiException.class, () ->
-                service.upsertPrice(UUID.randomUUID(), new AdminPriceRequest("UZS", BigDecimal.ONE, true)));
+                service.upsertPrice(UUID.randomUUID(), new AdminPriceRequest("UZS", "1", true)));
         assertEquals(404, ex.getStatus().value());
     }
 

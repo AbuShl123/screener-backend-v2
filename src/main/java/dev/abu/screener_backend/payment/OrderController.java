@@ -12,6 +12,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -44,7 +45,23 @@ public class OrderController {
         }
         User user = currentUser(authentication);
         String currency = regionResolver.resolve(request, user).currency();
-        return orderService.createOrReuse(user, body.planCode().trim(), body.amount(), currency);
+        return orderService.createOrReuse(user, body.planCode().trim(), parseAmount(body.amount()), currency);
+    }
+
+    /**
+     * Parses the optional pay-by-days {@code amount} string into a {@code BigDecimal} losslessly. Null
+     * or blank (a FIXED plan carries no amount) returns {@code null}; a malformed value is a {@code 400}.
+     * Per-currency scale and sign validation happens server-side in {@link OrderService}.
+     */
+    private static BigDecimal parseAmount(String amount) {
+        if (amount == null || amount.isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(amount.trim());
+        } catch (NumberFormatException e) {
+            throw ApiException.badRequest("amount is not a valid number: " + amount);
+        }
     }
 
     @GetMapping

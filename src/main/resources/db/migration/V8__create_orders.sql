@@ -1,10 +1,12 @@
 -- One row per purchase attempt. Provider-neutral; the Multicard transaction uuid is stored in
 -- provider_uuid once the invoice is created.
 --
--- All money is in MAJOR units (UZS sum) as NUMERIC(19,4) — tiyin (minor units) never touches the DB;
--- the Multicard adapter converts at the provider boundary. The granted access duration is snapshotted
--- in SECONDS (BIGINT) so later re-pricing or plan edits never alter a past grant, and so the value
--- stays generic for future non-day grants (hourly promos, gift hours).
+-- All money is in MAJOR units (UZS sum) as NUMERIC(38,18) — tiyin (minor units) never touches the DB;
+-- the Multicard adapter converts at the provider boundary. NUMERIC(38,18) carries fiat + crypto-grade
+-- precision (20 integer digits cover any fiat sum / crypto supply; 18 fractional digits cover ETH);
+-- NUMERIC is variable-width, so the unused scale on small fiat values is nearly free. The granted
+-- access duration is snapshotted in SECONDS (BIGINT) so later re-pricing or plan edits never alter a
+-- past grant, and so the value stays generic for future non-day grants (hourly promos, gift hours).
 
 CREATE TABLE orders (
     id                       UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -12,7 +14,7 @@ CREATE TABLE orders (
     plan_id                  UUID          NOT NULL REFERENCES plans(id),
     status                   VARCHAR(16)   NOT NULL,            -- CREATED|PENDING|PAID|EXPIRED|FAILED|CANCELED|REVERTED
     granted_duration_seconds BIGINT        NOT NULL,            -- snapshot: FIXED=duration_days*86400; PER_DAY=ceil(amount/pricePerDay)*86400
-    amount                   NUMERIC(19,4) NOT NULL,            -- snapshot, MAJOR units (sum)
+    amount                   NUMERIC(38,18) NOT NULL,           -- snapshot, MAJOR units (sum)
     currency                 VARCHAR(3)    NOT NULL,            -- ISO 4217 (VARCHAR to match the JPA @Column(length=3))
     payment_provider         VARCHAR(32)   NOT NULL DEFAULT 'multicard',
     provider_uuid            VARCHAR(64),                       -- Multicard transaction uuid (set after invoice creation)
@@ -22,6 +24,10 @@ CREATE TABLE orders (
     paid_at                  TIMESTAMPTZ,
     created_at               TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at               TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- Optimistic-lock guard (defense-in-depth). The live mutation paths serialize with SELECT ... FOR
+    -- UPDATE, so this never contends; it exists so any FUTURE unlocked racing write surfaces a loud
+    -- OptimisticLockException instead of a silent lost update.
+    version                  BIGINT        NOT NULL DEFAULT 0,
     CONSTRAINT orders_status_check CHECK (status IN ('CREATED','PENDING','PAID','EXPIRED','FAILED','CANCELED','REVERTED')),
     CONSTRAINT orders_amount_nonneg CHECK (amount >= 0)
 );

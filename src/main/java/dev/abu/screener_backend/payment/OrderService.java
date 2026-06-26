@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.payment;
 
 import dev.abu.screener_backend.billing.*;
+import dev.abu.screener_backend.billing.Currency;
 import dev.abu.screener_backend.config.PaymentProperties;
 import dev.abu.screener_backend.entitlement.EntitlementService;
 import dev.abu.screener_backend.entitlement.GrantSource;
@@ -140,7 +141,7 @@ public class OrderService {
             String currency,
             Instant now
     ) {
-        long days = computeDays(plan, price, amountMoney);
+        long days = computeDays(plan, price, amountMoney, currency);
         BigDecimal grantAmount = plan.getType() == PlanType.FIXED ? price.getAmount() : amountMoney;
 
         Order order = new Order();
@@ -171,21 +172,20 @@ public class OrderService {
 
     /**
      * {@code days = FIXED ? duration_days : ceil(amount / pricePerDay)}. The pay-by-days {@code amount}
-     * is in major units (sum) and must be a positive <em>whole</em> number: a fractional sum would carry
-     * sub-tiyin precision that the Multicard adapter's {@code amount.movePointRight(2).longValueExact()}
-     * conversion cannot represent exactly (it would throw {@code ArithmeticException}), so we reject it
-     * up front with a clean 400 rather than failing deep in invoice creation.
+     * is in major units (sum) and must be positive and within the currency's allowed decimal places
+     * (E10): UZS permits 2 dp, BTC 8, ETH 18. Keeping the scale within the currency's decimals also
+     * guarantees the Multicard adapter's {@code movePointRight(decimals).longValueExact()} conversion
+     * stays exact, so we reject an over-scale amount up front with a clean 400 rather than failing deep
+     * in invoice creation.
      */
-    private static long computeDays(Plan plan, PlanPrice price, BigDecimal amountMoney) {
+    private static long computeDays(Plan plan, PlanPrice price, BigDecimal amountMoney, String currency) {
         if (plan.getType() == PlanType.FIXED) {
             return plan.getDurationDays();
         }
         if (amountMoney == null || amountMoney.signum() <= 0) {
             throw ApiException.badRequest("amount must be a positive number for pay-by-days");
         }
-        if (amountMoney.stripTrailingZeros().scale() > 0) {
-            throw ApiException.badRequest("amount must be a whole number (no fractional part)");
-        }
+        Currency.of(currency).requireScale(amountMoney);
         BigDecimal pricePerDay = price.getAmount();
         if (pricePerDay.signum() <= 0) {
             throw ApiException.badRequest("per-day price is not configured");
