@@ -53,7 +53,13 @@
       "Bash(git *)",
       "PowerShell(.\\\\mvnw.cmd -q -o compile 2>&1 | Select-Object -Last 30)",
       "PowerShell(.\\\\mvnw.cmd -q -o test \"-Dtest=PricingServiceTest,OrderServiceTest,PlanAdminServiceTest,CurrencyTest\" 2>&1 | Select-Object -Last 40)",
-      "PowerShell(git status --short; \"----\"; git diff --stat)"
+      "PowerShell(git status --short; \"----\"; git diff --stat)",
+      "Bash(./mvnw -q -Dtest=OrderServiceTest test)",
+      "Bash(./mvnw -Dtest=OrderServiceTest test)",
+      "Bash(./mvnw -Dtest=EntitlementServiceTest test)",
+      "Bash(./mvnw -Dtest=OrderServiceTest,EntitlementServiceTest test)",
+      "Bash(./mvnw -q test-compile)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

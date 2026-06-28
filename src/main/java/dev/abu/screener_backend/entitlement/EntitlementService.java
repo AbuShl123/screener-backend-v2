@@ -35,6 +35,7 @@ public class EntitlementService {
     private final EntitlementLedgerRepository ledgerRepository;
     private final OrderService orderService;
     private final Duration trialDuration;
+    private final Duration renewalWindow;
 
     /**
      * {@code orderService} is injected {@code @Lazy} to break the construction cycle: {@link OrderService}
@@ -50,6 +51,7 @@ public class EntitlementService {
         this.ledgerRepository = ledgerRepository;
         this.orderService = orderService;
         this.trialDuration = props.trialDuration();
+        this.renewalWindow = props.renewalWindow();
     }
 
     /**
@@ -136,6 +138,30 @@ public class EntitlementService {
         Instant now = Instant.now();
         return repository.findByUserId(user.getId())
                 .map(e -> e.getAccessExpiresAt() != null && now.isBefore(e.getAccessExpiresAt()))
+                .orElse(false);
+    }
+
+    /**
+     * Whether the user holds a paid subscription that is <em>not yet eligible for renewal</em> — i.e.
+     * paid access that expires further out than the configured {@code renewalWindow} (default 5 days).
+     * This is the condition that blocks a redundant fixed-plan purchase.
+     *
+     * <p>Deliberately distinct from {@link #hasAccess}: a trial user "has access" but holds no paid
+     * subscription, and admins bypass entitlement entirely (they are not subscribers). Returns
+     * {@code false} — so the purchase is <em>allowed</em> — for trial users (mid-conversion), expired
+     * users, admins, and a paid subscriber whose access expires within the renewal window (so they may
+     * renew before it lapses). Pay-by-days is exempt at the call site regardless of this value.
+     */
+    @Transactional(readOnly = true)
+    public boolean hasPaidAccessBeyondRenewalWindow(User user) {
+        if (user.getRole() == UserRole.ADMIN) {
+            return false; // admins aren't subscribers — never gated from creating an order
+        }
+        Instant renewableFrom = Instant.now().plus(renewalWindow);
+        return repository.findByUserId(user.getId())
+                .map(e -> e.isHasPaid()
+                        && e.getAccessExpiresAt() != null
+                        && e.getAccessExpiresAt().isAfter(renewableFrom))
                 .orElse(false);
     }
 

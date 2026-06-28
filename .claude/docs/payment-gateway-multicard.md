@@ -415,6 +415,21 @@ CREATED ──► PENDING ──► PAID ──► REVERTED
 - **Client sends only `planCode` (+ `amount` for pay-by-days)** — never a price or currency. The server
   resolves currency via `RegionResolver` and looks up the authoritative price. `amount` is a **string**
   (E10). `planCode` (not `planId`) because the public catalog exposes only `code`, never internal UUIDs.
+- **Active-subscription gate (create-time), with a renewal window.** A `FIXED` order is rejected with
+  **409** when the caller already holds a paid subscription that is **not yet near expiry** —
+  `OrderService.createOrReuse` calls `EntitlementService.hasPaidAccessBeyondRenewalWindow(user)` right
+  after resolving the plan and before any reuse/create work. The check is intentionally narrower than
+  `hasAccess`: it is true only when `has_paid` **and** `accessExpiresAt > now + renewalWindow`. So a paid
+  subscriber whose access is comfortably in the future cannot stack a redundant fixed period (nothing to
+  renew yet; it would muddy the audit), **but once access falls within the renewal window they may buy
+  again to extend** — the normal "renew before it lapses" flow. The window is configurable via
+  `screener.billing.renewal-window` (ISO-8601 duration, default **`P5D`** = 5 days): access expiring in
+  >5 days is blocked, ≤5 days is allowed. Deliberately **not** gated in any case: **trial** users
+  (`has_paid = false` → conversion mid-trial still works), **expired** users (free to buy again), a paid
+  user **within the renewal window**, and **admins** (`hasPaidAccessBeyondRenewalWindow` returns false
+  for `ADMIN` — they bypass entitlement and aren't subscribers, keeping payment testing easy).
+  **`PER_DAY` (pay-by-days) is exempt** by business rule — a user may top up arbitrary days at any time,
+  even mid-subscription.
 - **One order view, `OrderDetailsEntry(orderId, status, planCode, amount, accessDurationSeconds,
   currency, provider, reason, reasonDetail, checkoutUrl, providerUuid, expiresAt, paidAt, createdAt)`** —
   returned on **both** create and status reads (a freshly created order and a polled order carry the same
@@ -500,6 +515,9 @@ Sandbox test credentials live in `application-local.yml` for local runs.
 | **Abandoned checkout** (never pays) | No callback fires. Sweep marks `EXPIRED` once `expires_at` passes (PENDING+stale, or `CANCELED`/`NOT_FOUND` from the provider). |
 | **Lost/failed success callback** | Sweep's `GET /payment/{uuid}` sees `success`, verifies amount, runs the same `markPaidAndGrant`. |
 | **Duplicate/retried callback** | `provider_uuid` unique + `PAID`-state guard → second call no-ops, returns `200 {success:true}`. |
+| **Active paid user buys a fixed plan again, expiry far off** | Rejected at create with **409** (`hasPaidAccessBeyondRenewalWindow` gate: paid + `accessExpiresAt > now + renewalWindow`). |
+| **Active paid user buys a fixed plan within the renewal window** | Allowed — access expiring in ≤ `renewalWindow` (default 5d) may renew; the new period stacks on the remaining time. |
+| **Trial/expired user, or admin, buys a fixed plan** | Allowed — none are gated (trial converts, expired re-buys, admin bypasses entitlement). Pay-by-days is always exempt. |
 | **Lost-tab re-pay, same plan** | One-open-order lookup returns the existing `PENDING`; reuse its `checkoutUrl` (no grant — sweep/callback flips to PAID within a cycle, E1). |
 | **Re-pay, different plan** | Locked `supersede`: cancel old invoice best-effort, mark old `CANCELED`/`SUPERSEDED`, create fresh. |
 | **Race expired the order, then a real success callback arrives** | Callback rescues `EXPIRED/FAILED/CANCELED → PAID` (E6). Sweep does not. |
@@ -518,7 +536,8 @@ Plain JUnit, matching existing style (under `src/test/.../payment/` and `.../bil
 
 - **`OrderServiceTest`** — fixed-plan create; pay-by-days `ceil` (exact / +1 partial / reject
   non-positive / within-scale fractional accepted / over-scale rejected); reuse same plan (no grant);
-  supersede different plan; expired-open recreate; one-open-order flush ordering.
+  supersede different plan; expired-open recreate; one-open-order flush ordering; **active-subscription
+  gate (FIXED rejected with 409 when paid-beyond-window; pay-by-days exempt)**.
 - **`OrderStateMachineTest`** — `from == to` no-op; `EXPIRED/FAILED/CANCELED → PAID` legal,
   `REVERTED → PAID` illegal.
 - **`MulticardCallbackServiceTest`** — happy grant; idempotent replay; unknown order; amount mismatch;
@@ -530,7 +549,8 @@ Plain JUnit, matching existing style (under `src/test/.../payment/` and `.../bil
   `FAILED`; `revert` → `REVERTED` (no grant); `CANCELED`/stale → `EXPIRED`; one bad order doesn't abort
   the sweep.
 - **`EntitlementServiceTest`** — `extend` writes a ledger row with correct prev/new expiry; `startTrial`
-  ledger row; stacking from past vs future expiry.
+  ledger row; stacking from past vs future expiry; **`hasPaidAccessBeyondRenewalWindow` gates only a
+  paid sub expiring beyond the window — trial / expired / within-window / admin / no-row all allowed**.
 - **`CurrencyTest`** — `decimals()`; `of` normalize/reject; `requireScale` accept-within / reject-over /
   trailing-zeros tolerated.
 - **`PlanAdminServiceTest`** — over-scale price rejected; existing tests use string amounts.

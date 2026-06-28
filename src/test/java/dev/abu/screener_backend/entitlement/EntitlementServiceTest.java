@@ -32,7 +32,7 @@ class EntitlementServiceTest {
     private final List<EntitlementLedger> ledger = new ArrayList<>();
     private final EntitlementService service =
             new EntitlementService(repo(store), ledgerRepo(ledger), null,
-                    new BillingProperties(Duration.ofDays(7), "UZS", "UZ"));
+                    new BillingProperties(Duration.ofDays(7), "UZS", "UZ", Duration.ofDays(5)));
 
     @SuppressWarnings("unchecked")
     private static UserEntitlementRepository repo(Map<UUID, UserEntitlement> store) {
@@ -174,6 +174,37 @@ class EntitlementServiceTest {
         User active = user(UserRole.USER);
         seed(active.getId(), Instant.now().plus(Duration.ofDays(5)), true);
         assertEquals(AccessState.ACTIVE, service.currentState(active).state());
+    }
+
+    @Test
+    void paidAccessBeyondRenewalWindowGatesOnlyNotYetRenewablePaidSubs() {
+        // Paid, expires in 7 days (> 5d window) → blocked (true).
+        User farPaid = user(UserRole.USER);
+        seed(farPaid.getId(), Instant.now().plus(Duration.ofDays(7)), true);
+        assertTrue(service.hasPaidAccessBeyondRenewalWindow(farPaid));
+
+        // Paid, expires in 3 days (≤ 5d window) → renewable, allowed (false).
+        User nearPaid = user(UserRole.USER);
+        seed(nearPaid.getId(), Instant.now().plus(Duration.ofDays(3)), true);
+        assertEquals(false, service.hasPaidAccessBeyondRenewalWindow(nearPaid));
+
+        // Trial (unpaid) far out → allowed (conversion mid-trial).
+        User trial = user(UserRole.USER);
+        seed(trial.getId(), Instant.now().plus(Duration.ofDays(7)), false);
+        assertEquals(false, service.hasPaidAccessBeyondRenewalWindow(trial));
+
+        // Expired paid sub → allowed (buy again).
+        User expired = user(UserRole.USER);
+        seed(expired.getId(), Instant.now().minus(Duration.ofDays(1)), true);
+        assertEquals(false, service.hasPaidAccessBeyondRenewalWindow(expired));
+
+        // Admin → never gated, even with a far-future paid row.
+        User admin = user(UserRole.ADMIN);
+        seed(admin.getId(), Instant.now().plus(Duration.ofDays(30)), true);
+        assertEquals(false, service.hasPaidAccessBeyondRenewalWindow(admin));
+
+        // No entitlement row at all → allowed.
+        assertEquals(false, service.hasPaidAccessBeyondRenewalWindow(user(UserRole.USER)));
     }
 
     @Test

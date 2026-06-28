@@ -67,6 +67,10 @@ screener:
     # is future work; nothing is persisted yet.
     default-currency: UZS
     default-country: UZ
+    # How close to expiry a paid subscription must be before the user may buy another fixed plan
+    # (ISO-8601 duration). A paid sub expiring further out than this is blocked from a redundant
+    # fixed purchase; within this window it may renew. Pay-by-days ignores this.
+    renewal-window: P5D
 
   payment:
     # How often the reconciliation sweep resolves stale PENDING orders (ISO-8601 duration).

@@ -15,6 +15,7 @@ import dev.abu.screener_backend.payment.dto.OrderDetailsEntry;
 import dev.abu.screener_backend.user.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
@@ -51,6 +52,7 @@ class OrderServiceTest {
     private final AtomicInteger extendCalls = new AtomicInteger();
     private final AtomicInteger fetchCalls = new AtomicInteger();
     private final List<String> cancelCalls = new ArrayList<>();
+    private boolean paidAccessBeyondRenewal = false;
 
     private OrderService service;
     private final User user = user();
@@ -64,6 +66,7 @@ class OrderServiceTest {
         cancelCalls.clear();
         extendCalls.set(0);
         fetchCalls.set(0);
+        paidAccessBeyondRenewal = false;
 
         OrderRepository orderRepo = orderRepo();
         OrderStatusHistoryRepository historyRepo = historyRepo();
@@ -135,6 +138,31 @@ class OrderServiceTest {
         price("monthly", "UZS", "150000");
         // No KZT price row → resolved currency that lacks a price is a 400.
         assertThrows(ApiException.class, () -> service.createOrReuse(user, "monthly", null, "KZT"));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Active-subscription gate
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    void fixedPlanRejectedWhenUserHasActivePaidAccess() {
+        plan("monthly", PlanType.FIXED, 30);
+        price("monthly", "UZS", "150000");
+        paidAccessBeyondRenewal = true;
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.createOrReuse(user, "monthly", null, "UZS"));
+        assertEquals(HttpStatus.CONFLICT, ex.getStatus());
+        assertTrue(orders.isEmpty(), "no order created when an active paid subscription gates the request");
+    }
+
+    @Test
+    void payByDaysAllowedWhenUserHasActivePaidAccess() {
+        plan("pay_as_you_go", PlanType.PER_DAY, null);
+        price("pay_as_you_go", "UZS", "1000");
+        paidAccessBeyondRenewal = true; // pay-by-days is exempt — a paid, active user may still top up days.
+
+        assertEquals(8 * DAY, durationOf(service.createOrReuse(user, "pay_as_you_go", new BigDecimal("7900"), "UZS")));
     }
 
     // ---------------------------------------------------------------------------------------
@@ -408,11 +436,17 @@ class OrderServiceTest {
     }
 
     private EntitlementService entitlementService() {
-        return new EntitlementService(null, null, null, new BillingProperties(Duration.ofDays(7), "UZS", "UZ")) {
+        return new EntitlementService(null, null, null,
+                new BillingProperties(Duration.ofDays(7), "UZS", "UZ", Duration.ofDays(5))) {
             @Override
             public void extend(UUID userId, Duration granted, boolean paid,
                                GrantSource source, UUID orderId, UUID adminId, String reason) {
                 extendCalls.incrementAndGet();
+            }
+
+            @Override
+            public boolean hasPaidAccessBeyondRenewalWindow(User user) {
+                return paidAccessBeyondRenewal;
             }
         };
     }

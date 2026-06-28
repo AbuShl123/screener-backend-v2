@@ -73,6 +73,19 @@ public class OrderService {
         Plan plan = planRepository.findByCode(planCode)
                 .filter(Plan::isActive)
                 .orElseThrow(() -> ApiException.badRequest("Unknown or inactive plan: " + planCode));
+
+        // Gate: a user with a paid subscription that is not yet near expiry may not stack another fixed
+        // plan — there is nothing to renew yet, and a redundant fixed purchase muddies the audit. Once
+        // access is within the configured renewal window (default 5 days) the purchase is allowed, so a
+        // user can renew before lapsing. PER_DAY (pay-by-days) is deliberately exempt by business rule:
+        // a user may top up arbitrary days at any time. Trial and expired users are NOT gated
+        // (hasPaidAccessBeyondRenewalWindow is false for them), so conversion during a trial still
+        // works; admins bypass entitlement and are never gated.
+        if (plan.getType() == PlanType.FIXED && entitlementService.hasPaidAccessBeyondRenewalWindow(user)) {
+            throw ApiException.conflict("You already have an active subscription; "
+                    + "you can renew closer to its expiry, or use pay-by-days to add more time.");
+        }
+
         PlanPrice price = planPriceRepository.findByPlan_IdAndCurrency(plan.getId(), currency)
                 .filter(PlanPrice::isActive)
                 .orElseThrow(() -> ApiException.badRequest("No price for plan " + planCode + " in " + currency));
