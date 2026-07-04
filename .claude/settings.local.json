@@ -59,7 +59,24 @@
       "Bash(./mvnw -Dtest=EntitlementServiceTest test)",
       "Bash(./mvnw -Dtest=OrderServiceTest,EntitlementServiceTest test)",
       "Bash(./mvnw -q test-compile)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "PowerShell(if \\(Test-Path .\\\\mvnw.cmd\\) { Write-Output \"mvnw present\" } else { Write-Output \"no mvnw\" }; \\(Get-Command mvn -ErrorAction SilentlyContinue\\).Source)",
+      "PowerShell(.\\\\mvnw.cmd -q compile 2>&1 | Select-Object -Last 40; Write-Output \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(.\\\\mvnw.cmd -q -o test-compile 2>&1 | Select-Object -Last 50; Write-Output \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(.\\\\mvnw.cmd -q -o test \"-Dtest=AuthServiceTest,EmailServiceTest\" 2>&1 | Select-Object -Last 60; Write-Output \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(.\\\\mvnw.cmd -q -o test 2>&1 | Select-String -Pattern \"Tests run:|BUILD SUCCESS|BUILD FAILURE|ERROR|FAIL\" | Select-Object -Last 40; Write-Output \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(.\\\\mvnw.cmd -q -o test \"-Dtest=AuthServiceTest,EmailServiceTest\" 2>&1 | Select-Object -Last 40; Write-Output \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(.\\\\mvnw.cmd -q -o test-compile 2>&1 | Select-Object -Last 30; Write-Output \"EXIT=$LASTEXITCODE\")",
+      "Bash(env)",
+      "Bash(command -v psql)",
+      "Bash(psql --version)",
+      "Bash(export PGPASSWORD=password)",
+      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT installed_rank, version, description, type, checksum, success FROM flyway_schema_history ORDER BY installed_rank;\")",
+      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='email_verified';\")",
+      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT to_regclass\\('public.email_verification_tokens'\\) AS tokens_table;\")",
+      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT numeric_precision, numeric_scale FROM information_schema.columns WHERE table_name='plan_prices' AND column_name='amount';\")",
+      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"DELETE FROM flyway_schema_history WHERE version='12' AND description='widen money scale';\")",
+      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;\")"
     ]
   }
 }

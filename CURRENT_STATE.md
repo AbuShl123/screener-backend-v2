@@ -36,8 +36,10 @@ src/
 │   │           └── DefaultRuleResponse.java
 │   ├── auth/
 │   │   ├── AuthController.java
-│   │   ├── AuthService.java   ← seeds free trial on register (EntitlementService.startTrial)
+│   │   ├── AuthService.java   ← seeds free trial on register (EntitlementService.startTrial); email-verification gate
 │   │   ├── AuthenticatedUser.java
+│   │   ├── EmailVerificationOutcome.java  ← enum {SUCCESS,EXPIRED,INVALID} → verify response status
+│   │   ├── RegistrationEmailEvent.java    ← record (userId, rawToken, email, firstName); consumed AFTER_COMMIT @Async
 │   │   ├── JwtAuthenticationFilter.java
 │   │   ├── JwtService.java
 │   │   └── dto/
@@ -45,7 +47,15 @@ src/
 │   │       ├── LoginRequest.java
 │   │       ├── RefreshRequest.java
 │   │       ├── RegisterRequest.java
+│   │       ├── RegisterResponse.java          ← (status, email); 202 VERIFICATION_REQUIRED, no tokens
+│   │       ├── VerifyEmailRequest.java         ← (token) — raw token from the SPA verify page
+│   │       ├── VerifyEmailResponse.java        ← (status) — success|expired|invalid, HTTP 200
+│   │       ├── ResendVerificationRequest.java  ← (email)
+│   │       ├── ResendVerificationResponse.java ← generic message (no enumeration/cooldown oracle)
 │   │       └── UserProfileResponse.java
+│   ├── email/
+│   │   ├── EmailService.java              ← thin JavaMailSender (SMTP) seam; sendVerificationEmail
+│   │   └── RegistrationEmailListener.java ← @Async @TransactionalEventListener(AFTER_COMMIT)
 │   ├── billing/
 │   │   ├── Plan.java
 │   │   ├── PlanType.java
@@ -147,9 +157,11 @@ src/
 │   │       └── BinanceWebSocketManager.java
 │   ├── config/
 │   │   ├── AdminProperties.java
+│   │   ├── AsyncConfig.java              ← @EnableAsync + bounded emailExecutor
 │   │   ├── BillingProperties.java
 │   │   ├── BinanceApiProperties.java
 │   │   ├── DisruptorProperties.java
+│   │   ├── EmailProperties.java          ← screener.email.* (sender, token TTL, cooldown, URLs)
 │   │   ├── JwtProperties.java
 │   │   ├── OrderbookProperties.java
 │   │   ├── PaymentProperties.java        ← screener.payment.* (+ nested MulticardProperties)
@@ -178,7 +190,9 @@ src/
 │   ├── user/
 │   │   ├── RefreshToken.java
 │   │   ├── RefreshTokenRepository.java
-│   │   ├── User.java
+│   │   ├── EmailVerificationToken.java        ← mirror of RefreshToken; single-use verify token (hash only)
+│   │   ├── EmailVerificationTokenRepository.java
+│   │   ├── User.java                           ← + emailVerified (grandfathered TRUE; @PrePersist false)
 │   │   ├── UserRepository.java
 │   │   └── UserRole.java
 │   └── ws/
@@ -199,7 +213,9 @@ src/
 │       ├── V8__create_orders.sql              ← orders (version + NUMERIC(38,18) amount)
 │       ├── V9__create_order_status_history.sql    ← append-only transition audit (seq identity)
 │       ├── V10__create_entitlement_ledger.sql ← append-only grant audit
-│       └── V11__payment_concurrency_and_audit.sql ← user_entitlement.version + plan_prices → NUMERIC(38,18)
+│       ├── V11__payment_concurrency_and_audit.sql ← user_entitlement.version + plan_prices → NUMERIC(38,18)
+│       ├── V12__add_email_verified_to_users.sql ← add column + grandfather existing rows TRUE + NOT NULL
+│       └── V13__create_email_verification_tokens.sql ← single-use verify token table (hash only)
 └── test/java/dev/abu/screener_backend/
     ├── ScreenerBackendApplicationTests.java
     ├── analysis/
@@ -209,6 +225,10 @@ src/
     │   ├── UserFeedRegistryTest.java
     │   └── rule/
     │       └── ClassificationRuleServiceTest.java
+    ├── auth/
+    │   └── AuthServiceTest.java
+    ├── email/
+    │   └── EmailServiceTest.java
     ├── billing/
     │   ├── PricingServiceTest.java
     │   ├── PlanAdminServiceTest.java
@@ -253,10 +273,13 @@ Spring Boot entry point. Runs as a servlet/Tomcat application (not Netty) even t
 ### `AuthService`
 `src/main/java/dev/abu/screener_backend/auth/AuthService.java`
 
-`@Service @Transactional`. Register, login, refresh, logout, and user lookup. Stores one refresh token per user (old token invalidated on each new login). Throws `ApiException` with the appropriate HTTP status for all error cases.
+`@Service @Transactional`. Register, login, refresh, logout, email verification, and user lookup. Stores one refresh token per user (old token invalidated on each new login). Throws `ApiException` with the appropriate HTTP status for all error cases.
 
-- `register` — validates fields, checks email uniqueness (409 on conflict), BCrypt-hashes password, issues a token pair
-- `login` — verifies BCrypt hash (401 on mismatch), issues a token pair
+- `register` — validates fields, checks email uniqueness (409 on conflict), BCrypt-hashes password, seeds the trial, then mints a verification token and publishes `RegistrationEmailEvent`. **Returns no token pair** — returns `RegisterResponse("VERIFICATION_REQUIRED", email)` (202). New users are persisted `email_verified = false`.
+- `login` — verifies BCrypt hash (401 on mismatch), then `enabled` (401 "Account disabled"), then the **email-verification gate** (403 "Email not verified" — placed after the 401 checks so verification status is only revealed to a correct-password caller, no enumeration), then issues a token pair
+- `verifyEmail(rawToken)` — SHA-256 hashes the raw link token, looks it up; returns `EmailVerificationOutcome` `INVALID` (missing/unknown/null), `EXPIRED` (past `expires_at`, no flip, row left for resend), or `SUCCESS` (sets `emailVerified = true`, **deletes the row** = single-use). Never throws for miss/expired — a stale/double-clicked link is normal UX
+- `resendVerification(email)` — void, always no-op-safe; skips unknown/already-verified emails and requests inside the `resend-cooldown` window (checked via the newest token's `createdAt`); otherwise regenerates (delete-then-insert) + republishes the event. The controller always returns a generic 202 (no enumeration/cooldown oracle)
+- `issueVerificationToken(User)` (private) — delete-then-insert one active token per user, raw token carried only in the published `RegistrationEmailEvent` (DB stores the SHA-256 hash). Shared by register + resend
 - `refresh` — SHA-256 hashes the incoming token, looks it up in DB, checks expiry, issues a new token pair
 - `logout` — deletes the user's refresh token row; no-op if none exists
 - `me` — `@Transactional(readOnly = true)`; builds `UserProfileResponse` from the user plus derived entitlement (`EntitlementService.currentState`) for a one-call SPA bootstrap
@@ -264,17 +287,19 @@ Spring Boot entry point. Runs as a servlet/Tomcat application (not Netty) even t
 ### `AuthController`
 `src/main/java/dev/abu/screener_backend/auth/AuthController.java`
 
-`@RestController` at `/api/auth`. Five endpoints:
+`@RestController` at `/api/auth`. Seven endpoints:
 
 | Method | Path | Auth | Response |
 |--------|------|------|----------|
-| `POST` | `/api/auth/register` | Public | 201 + `AuthResponse` |
-| `POST` | `/api/auth/login` | Public | 200 + `AuthResponse` |
+| `POST` | `/api/auth/register` | Public | 202 + `RegisterResponse` (no tokens) |
+| `POST` | `/api/auth/login` | Public | 200 + `AuthResponse` (403 if unverified) |
 | `POST` | `/api/auth/refresh` | Public | 200 + `AuthResponse` |
+| `POST` | `/api/auth/verify-email` | Public | 200 + `VerifyEmailResponse(status)` (`success\|expired\|invalid`) |
+| `POST` | `/api/auth/resend-verification` | Public | 202 + generic `ResendVerificationResponse` |
 | `POST` | `/api/auth/logout` | Bearer JWT | 204 |
 | `GET` | `/api/auth/me` | Bearer JWT | 200 + `UserProfileResponse` |
 
-`AuthResponse` carries `accessToken`, `refreshToken` (raw value), and `expiresIn` (seconds). `GET /api/auth/me` returns `UserProfileResponse(id, firstName, lastName, email, role, accessState, accessExpiresAt)` — the last two derived by `EntitlementService` so the SPA gets identity and access state in one call.
+`AuthResponse` carries `accessToken`, `refreshToken` (raw value), and `expiresIn` (seconds). Register now returns `RegisterResponse(status, email)` (202, `status = "VERIFICATION_REQUIRED"`, no tokens) — the SPA shows a "check your inbox" screen with a resend button. **Email-verification uses a Confirm-button flow**: the email link points at the SPA verify page (`${screener.email.verify-page-url}?token=<raw>`), and only the user's Confirm click POSTs the token to `/api/auth/verify-email` — so passive link scanners (Outlook Safe Links, AV prefetch) that merely load the page never consume the single-use token. The POST returns HTTP 200 with a discriminated `VerifyEmailResponse(status)` (`success`/`expired`/`invalid`) — an expired/invalid link is an expected user-facing outcome the SPA renders with a resend affordance, not a thrown error. `GET /api/auth/me` returns `UserProfileResponse(id, firstName, lastName, email, role, accessState, accessExpiresAt)` — the last two derived by `EntitlementService` so the SPA gets identity and access state in one call.
 
 ### `AuthenticatedUser`
 `src/main/java/dev/abu/screener_backend/auth/AuthenticatedUser.java`
@@ -283,12 +308,31 @@ Record: `(userId, email, role)`. Used as the Spring Security principal set by `J
 
 ---
 
+## `email` — Outbound Email
+
+### `EmailService`
+`src/main/java/dev/abu/screener_backend/email/EmailService.java`
+
+`@Service`. The single thin seam over Spring's `JavaMailSender` (SMTP) — the one class to reimplement if we ever move off SMTP to an HTTP transactional-API sender (no vendor-agnostic port is introduced until then). `sendVerificationEmail(toEmail, firstName, rawToken)` composes the link `${screener.email.verify-page-url}?token=<raw>` — the SPA verification page, not a backend endpoint (raw token is already Base64URL, so no encoding) — builds a `SimpleMailMessage`, and sends. Send failures propagate to the listener. `JavaMailSender` is auto-configured by `spring-boot-starter-mail` from `spring.mail.*`.
+
+### `RegistrationEmailListener`
+`src/main/java/dev/abu/screener_backend/email/RegistrationEmailListener.java`
+
+`@Component`. `@Async("emailExecutor") @TransactionalEventListener(phase = AFTER_COMMIT)` on `RegistrationEmailEvent` (published by `AuthService`). AFTER_COMMIT guarantees the token row is committed before the send (no link for a rolled-back row); `@Async` keeps the blocking SMTP round-trip off the Tomcat thread. A send failure is logged WARN and is non-fatal — the user recovers via resend. Same event pattern as `RuleUpdatedEvent` → `UserFeedRegistry`.
+
+---
+
 ## `user` — User Domain
 
 ### `User`
 `src/main/java/dev/abu/screener_backend/user/User.java`
 
-JPA entity mapped to the `users` table. Fields: `id` (UUID), `firstName`, `lastName`, `email` (unique), `passwordHash` (BCrypt), `role` (`UserRole` enum, STRING-mapped), `enabled`, `createdAt`. `@PrePersist` sets `createdAt`, defaults `role` to `USER`, and sets `enabled = true`.
+JPA entity mapped to the `users` table. Fields: `id` (UUID), `firstName`, `lastName`, `email` (unique), `passwordHash` (BCrypt), `role` (`UserRole` enum, STRING-mapped), `enabled`, `emailVerified`, `createdAt`. `@PrePersist` sets `createdAt`, defaults `role` to `USER`, sets `enabled = true`, and sets `emailVerified = false` (grandfathered rows carry `TRUE` from V12 and never run `@PrePersist`).
+
+### `EmailVerificationToken` / `EmailVerificationTokenRepository`
+`src/main/java/dev/abu/screener_backend/user/`
+
+`EmailVerificationToken` is a JPA entity mapped to `email_verification_tokens` — a structural mirror of `RefreshToken`: `id`, eager `@ManyToOne User`, `tokenHash` (SHA-256, unique — raw value never persists), `expiresAt`, `createdAt` (`@PrePersist`). Single-use (deleted on verify); one active token per user (delete-then-insert). `EmailVerificationTokenRepository` (`JpaRepository`): `findByTokenHash` (verify lookup), `@Modifying deleteByUserId` (delete-then-insert), and `findFirstByUser_IdOrderByCreatedAtDesc` (resend-cooldown check).
 
 ### `UserRole`
 `src/main/java/dev/abu/screener_backend/user/UserRole.java`
@@ -654,7 +698,7 @@ This merges the former `PresenceController` (monitoring) and `OrderBookControlle
 ### `ApiException`
 `src/main/java/dev/abu/screener_backend/error/ApiException.java`
 
-`RuntimeException` carrying an `HttpStatus` plus a client-safe message. The single exception type the application layer throws for expected client-facing failures. Static factories: `badRequest`, `notFound`, `conflict`, `unauthorized`.
+`RuntimeException` carrying an `HttpStatus` plus a client-safe message. The single exception type the application layer throws for expected client-facing failures. Static factories: `badRequest`, `notFound`, `conflict`, `unauthorized`, `forbidden` (403 — used by the login email-verification gate).
 
 ### `ApiError`
 `src/main/java/dev/abu/screener_backend/error/ApiError.java`
@@ -807,10 +851,16 @@ Java record bound from `screener.jwt.*`: `secret` (base64-encoded), `accessToken
 Java record bound from `screener.admin.*`: `emails` (comma-separated list, supplied via `SCREENER_ADMIN_EMAILS`, empty in the repo). Emails promoted to `ADMIN` on startup.
 
 ### `BillingProperties`
-Java record bound from `screener.billing.*`: `trialDuration` (default `P7D`), `defaultCurrency` (default `UZS`), `defaultCountry` (default `UZ`). No per-day price here — that lives in `plan_prices`. All three records are registered via `WebClientConfig`'s `@EnableConfigurationProperties`.
+Java record bound from `screener.billing.*`: `trialDuration` (default `P7D`), `defaultCurrency` (default `UZS`), `defaultCountry` (default `UZ`). No per-day price here — that lives in `plan_prices`. All records are registered via `WebClientConfig`'s `@EnableConfigurationProperties`.
+
+### `EmailProperties`
+Java record bound from `screener.email.*`: `fromAddress`, `fromName`, `verificationTokenExpiry` (Duration, default `PT24H`), `resendCooldown` (Duration, default `PT1M`), `verifyPageUrl` (the SPA verification page the email link points at, carrying `?token=<raw>`; its Confirm button POSTs to `/api/auth/verify-email`). Registered via `WebClientConfig`'s `@EnableConfigurationProperties`. SMTP transport itself is `spring.mail.*` (Boot auto-config).
+
+### `AsyncConfig`
+`@Configuration @EnableAsync`. Provides a small dedicated `emailExecutor` (`ThreadPoolTaskExecutor`, core 1 / max 2 / queue 100) so blocking SMTP sends never borrow the common pool or stall Tomcat/Disruptor threads.
 
 ### `SecurityConfig`
-`@Configuration`. Spring Security filter chain. Stateless (`STATELESS` session policy, CSRF disabled). Public paths: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/ws`. `/api/monitoring/**` and `/api/admin/**` are ADMIN-only; all other paths require Bearer JWT (catch-all `anyRequest().authenticated()` — covers `/api/billing/**`). `JwtAuthenticationFilter` instantiated directly here to prevent double-registration. Declares the `BCryptPasswordEncoder` bean. CORS configured for localhost and production origins.
+`@Configuration`. Spring Security filter chain. Stateless (`STATELESS` session policy, CSRF disabled). Public paths: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/ws`. `/api/monitoring/**` and `/api/admin/**` are ADMIN-only; all other paths require Bearer JWT (catch-all `anyRequest().authenticated()` — covers `/api/billing/**`). `JwtAuthenticationFilter` instantiated directly here to prevent double-registration. Declares the `BCryptPasswordEncoder` bean. CORS configured for localhost and production origins.
 
 ---
 
@@ -839,7 +889,13 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 ## Tests
 
 ### `ScreenerBackendApplicationTests`
-`@SpringBootTest` smoke test. Verifies the Spring context initializes without errors.
+`@SpringBootTest` smoke test. Verifies the Spring context initializes without errors (requires a reachable DataSource — needs DB env vars set).
+
+### `AuthServiceTest`
+Plain JUnit unit test (real `JwtService`/`BCryptPasswordEncoder`, reflective proxy repos, event-collecting publisher). Verifies register persists an unverified user, seeds the trial, issues **no** refresh token, and publishes exactly one `RegistrationEmailEvent` (storing only the token hash); login `403`s for unverified but `401`s on bad password / disabled *before* the verification check (enumeration guard); verify flips + single-uses the token (`SUCCESS`/`EXPIRED`/`INVALID`, second use → `INVALID`); resend respects the cooldown and never publishes for unknown/verified/cooldown, but re-mints past the cooldown.
+
+### `EmailServiceTest`
+Plain JUnit unit test with a reflective proxy `JavaMailSender` capturing the sent `SimpleMailMessage`. Verifies the recipient and that the body carries the verification link composed from `verify-page-url` + the raw token.
 
 ### `UserClassificationRulesTest`
 Plain JUnit unit test. Verifies `UserClassificationRules.configuredKeys()` mirrors the `byKey` map and `ruleFor(key)` returns the leaf for configured keys / `null` otherwise.

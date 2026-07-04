@@ -20,6 +20,15 @@ spring:
       ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:}
     open-in-view: false
 
+  mail:
+    host: "${MAIL_HOST:}"
+    port: "${MAIL_PORT:587}"
+    username: "${MAIL_USERNAME:}"
+    password: "${MAIL_PASSWORD:}"
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
   flyway:
     enabled: ${SPRING_FLYWAY_ENABLED:}
     locations: classpath:db/migration
@@ -108,3 +117,13 @@ screener:
     secret: "${JWT_SECRET:}"
     access-token-expiry: PT3H
     refresh-token-expiry: P7D
+
+  email:
+    from-address: "${MAIL_FROM:noreply@tc-screener.com}"
+    from-name: "TC Screener"
+    verification-token-expiry: PT24H
+    resend-cooldown: PT1M
+    # SPA email-verification page. The email link points here carrying ?token=<raw>; the page shows a
+    # Confirm button that POSTs the token to /api/auth/verify-email. Loading the page consumes nothing,
+    # so passive link scanners can't burn the single-use token before the human clicks Confirm.
+    verify-page-url: "${EMAIL_VERIFY_PAGE_URL:}"

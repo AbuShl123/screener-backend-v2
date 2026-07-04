@@ -20,16 +20,29 @@ Each price level is evaluated on two dimensions:
 
 ### The Four Tiers
 
-| Tier | Significance |
-|------|-------------|
-| **Tier 1** | Highest significance — very close to the spread, very high notional |
-| **Tier 2** | High significance — near spread, high notional |
-| **Tier 3** | Moderate significance |
-| **Tier 4** | Lower but still notable — further from spread or lower notional |
-| *(Tier 0)* | Invisible — does not meet any tier's thresholds; not sent to the client |
+A tier is defined by **two thresholds a level must clear simultaneously**: a **minimum
+notional** (size) and a **maximum distance** (proximity to mid-price). The key — and
+counter-intuitive — property is the *direction* in which those thresholds move as the tier
+number rises: **both** grow together.
 
-When a price level's notional value **and** distance both satisfy a tier's thresholds, it is
-assigned that tier. If a level qualifies for multiple tiers, it gets the **highest** matching one.
+| Tier | Min notional (size) | Max distance (proximity) | What it captures |
+|------|---------------------|--------------------------|------------------|
+| **Tier 1** | lowest | tightest — closest to the spread | Near-spread pressure: a level hugging the current price qualifies even at modest size |
+| **Tier 2** | higher | wider | Sizable orders a bit further out |
+| **Tier 3** | higher still | wider still | Large orders / walls further from price |
+| **Tier 4** | highest | widest | Only astronomically large walls, allowed farthest from price |
+| *(Tier 0)* | — | — | Invisible — clears no tier; not sent to the client |
+
+**Do not read this as "Tier 1 = most important, Tier 4 = least important."** The notional
+requirement **and** the allowed distance window both *increase* with the tier number. The
+intuition: the **closer** an order sits to the current price, the **less size** it needs to
+matter (Tier 1); the **farther** away it sits, the **more enormous** it must be to still be
+worth showing (Tier 4). Distance erodes relevance unless sheer size overrules it.
+
+A level is assigned a tier only when its notional **and** distance both satisfy that tier's
+thresholds. If it qualifies for several tiers, it takes the **highest-numbered** match — so a
+$100M order sitting right at the spread resolves to **Tier 4** (the "big wall"
+classification), not Tier 1.
 
 ---
 
@@ -37,7 +50,7 @@ assigned that tier. If a level qualifies for multiple tiers, it gets the **highe
 
 The backend ships with a global default rule used for all tickers that the user has **not**
 customised. It has two sub-tables. The live values can always be fetched from
-`GET /api/rule/default` (see below).
+`GET /api/rules/default` (see below).
 
 **Standard tickers** (default thresholds):
 
@@ -94,8 +107,8 @@ Requests without a valid token receive `401 Unauthorized`.
 
 | Purpose | Base path |
 |---------|-----------|
-| Default rule info | `/api/rule` |
-| User's custom rules | `/api/screener/rules` |
+| Default rule info | `/api/rules` |
+| User's custom rules | `/api/rules` |
 
 ---
 
@@ -103,7 +116,7 @@ Requests without a valid token receive `401 Unauthorized`.
 
 ---
 
-### `GET /api/rule/default`
+### `GET /api/rules/default`
 
 Returns the **server's default classification rule** — the two threshold tables and the list of
 symbols that use the high-liquidity table. No authentication required. Use this to display the
@@ -143,7 +156,7 @@ default thresholds in the UI so the user understands what they are overriding.
 
 ---
 
-### `GET /api/screener/rules`
+### `GET /api/rules`
 
 Returns **all custom rules** the authenticated user has configured, grouped by `(symbol, market)`.
 
@@ -187,7 +200,7 @@ Returns an **empty array** `[]` if the user has no custom rules configured.
 
 ---
 
-### `GET /api/screener/rules/{symbol}/{market}`
+### `GET /api/rules/{symbol}/{market}`
 
 Returns the custom rule for **one specific ticker**, or `404` if none is configured.
 
@@ -213,7 +226,7 @@ applies — this is not an error state, just an absence of an override.
 
 ---
 
-### `PUT /api/screener/rules`
+### `PUT /api/rules`
 
 **Creates or replaces** custom rules for one or more tickers. This is a **bulk upsert**: one call
 can apply the same rule to many tickers, or apply different rules to different tickers.
@@ -286,7 +299,7 @@ assignments:
 
 ---
 
-### `DELETE /api/screener/rules`
+### `DELETE /api/rules`
 
 **Removes** the user's custom rule for one or more tickers, resetting them to the default rule.
 Deleting a rule for a ticker that has no custom rule is a **no-op** (returns `200`, not `404`).
@@ -354,7 +367,7 @@ All `4xx` errors return a JSON body:
 {
   "message": "maxDistance must be in (0, 0.1]",
   "status": 400,
-  "path": "/api/screener/rules"
+  "path": "/api/rules"
 }
 ```
 
@@ -362,7 +375,7 @@ All `4xx` errors return a JSON body:
 |--------|---------|
 | `400 Bad Request` | Validation failure — `message` contains a human-readable description |
 | `401 Unauthorized` | Missing or invalid JWT |
-| `404 Not Found` | Only from `GET /api/screener/rules/{symbol}/{market}` when no rule exists |
+| `404 Not Found` | Only from `GET /api/rules/{symbol}/{market}` when no rule exists |
 
 ---
 
@@ -377,8 +390,8 @@ All `4xx` errors return a JSON body:
 - **`maxDistance` is a fraction**: `0.05` = 5%. Display as a percentage in the UI and divide by
   100 on submit.
 - **Tier array order in the request does not matter**: the backend sorts internally.
-- **Active ticker list**: `GET /api/screener/tickers` returns currently active tickers — use it
+- **Active ticker list**: `GET /api/tickers` returns currently active tickers — use it
   to validate `(symbol, market)` combinations before submission.
-- **Showing default thresholds**: call `GET /api/rule/default` once on load and display the
+- **Showing default thresholds**: call `GET /api/rules/default` once on load and display the
   relevant table (normal or high-liquidity) alongside the custom-rule form so the user can see
   what they are overriding.
