@@ -54,6 +54,12 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-mail</artifactId>
 		</dependency>
+		<!-- Thymeleaf — HTML email templating (auto-escaping + shared fragments for transactional mail).
+		     Autoconfigures a SpringTemplateEngine resolving classpath:/templates/. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-thymeleaf</artifactId>
+		</dependency>
 		<!-- LMAX Disruptor — lock-free ring buffer for the market data event pipeline -->
 		<dependency>
 			<groupId>com.lmax</groupId>

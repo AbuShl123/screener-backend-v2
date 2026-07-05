@@ -76,7 +76,10 @@
       "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT to_regclass\\('public.email_verification_tokens'\\) AS tokens_table;\")",
       "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT numeric_precision, numeric_scale FROM information_schema.columns WHERE table_name='plan_prices' AND column_name='amount';\")",
       "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"DELETE FROM flyway_schema_history WHERE version='12' AND description='widen money scale';\")",
-      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;\")"
+      "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;\")",
+      "Bash(mvn -q -Dtest=EmailServiceTest test)",
+      "Bash(mvn -q -Dtest=EmailServiceTest#debugDumpStructure test)",
+      "Bash(mvn -q -Dtest=DefaultClassificationRuleTest,ScreenerBackendApplicationTests test)"
     ]
   }
 }

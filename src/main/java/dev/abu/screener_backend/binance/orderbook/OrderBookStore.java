@@ -26,6 +26,9 @@ public class OrderBookStore {
 
     private final ConcurrentHashMap<String, OrderBook> books = new ConcurrentHashMap<>();
 
+    private int lastLoggedSpot = -1;
+    private int lastLoggedFutures = -1;
+
     public OrderBook getOrCreate(String symbol, Market market) {
         return books.computeIfAbsent(
                 key(symbol, market),
@@ -49,7 +52,11 @@ public class OrderBookStore {
                 else futures++;
             }
         }
-        log.info("sync count: spot={} fut={}", spot, futures);
+        if (spot != lastLoggedSpot || futures != lastLoggedFutures) {
+            log.info("sync count: spot={} fut={}", spot, futures);
+            lastLoggedSpot = spot;
+            lastLoggedFutures = futures;
+        }
     }
 
     private static String key(String symbol, Market market) {
