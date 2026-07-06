@@ -20,30 +20,35 @@ spring:
       ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:}
     open-in-view: false
 
+  mail:
+    host: "${MAIL_HOST:}"
+    port: "${MAIL_PORT:587}"
+    username: "${MAIL_USERNAME:}"
+    password: "${MAIL_PASSWORD:}"
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
   flyway:
     enabled: ${SPRING_FLYWAY_ENABLED:}
     locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 4
 
 screener:
   admin:
-    # Comma-separated emails promoted to ADMIN on startup. Empty in the repo on purpose —
-    # the real list is supplied via the SCREENER_ADMIN_EMAILS environment variable in the
-    # deployment environment, so admin identities are never committed.
     emails: "${SCREENER_ADMIN_EMAILS:}"
 
   binance:
     spot-base-url: https://api.binance.com
     futures-base-url: https://fapi.binance.com
-    # Binance exchangeInfo responses exceed 16 MB; the default 256 KB WebClient codec
-    # buffer throws DataBufferLimitException without this setting.
     codec-buffer-size-mb: 18
-    # Requests are held until the next wall-clock minute once usage reaches these levels.
     # Binance hard limits: spot 6 000, futures 2 400.
     spot-weight-threshold: 5800
     futures-weight-threshold: 2200
 
   ticker:
-    # ISO-8601 duration. fixedDelayString — the next run starts this long AFTER the previous completes.
+    # ISO-8601 duration.
     refresh-interval: PT4H
 
   orderbook:
@@ -55,14 +60,47 @@ screener:
     spot-snapshot-queue-size: 10
     futures-snapshot-queue-size: 10
 
+  disruptor:
+    shard-count: 2
+    ring-buffer-size: 65536
+
   classification:
     # Max (symbol, market) targets allowed in a single rule upsert/delete request — bounds
     # one transaction's size.
     max-targets-per-request: 200
 
-  disruptor:
-    shard-count: 2
-    ring-buffer-size: 65536
+  billing:
+    # Free trial granted on registration (ISO-8601 duration).
+    trial-duration: P7D
+    # Default region for the stub RegionResolver (UZS / Uzbekistan). Real geo/phone resolution
+    # is future work; nothing is persisted yet.
+    default-currency: UZS
+    default-country: UZ
+    # How close to expiry a paid subscription must be before the user may buy another fixed plan
+    # (ISO-8601 duration). A paid sub expiring further out than this is blocked from a redundant
+    # fixed purchase; within this window it may renew. Pay-by-days ignores this.
+    renewal-window: P5D
+
+  payment:
+    # How often the reconciliation sweep resolves stale PENDING orders (ISO-8601 duration).
+    reconciliation-interval: PT1M
+    multicard:
+      # Sandbox by default; production is https://mesh.multicard.uz.
+      base-url: https://dev-mesh.multicard.uz
+      # Secrets supplied via environment variables, never committed.
+      application-id: "${MULTICARD_APP_ID:}"
+      secret: "${MULTICARD_SECRET:}"
+      store-id: "${MULTICARD_STORE_ID:}"
+      callback-url: "${MULTICARD_CALLBACK_URL:}"   # public URL of our callback endpoint
+      return-url: "${MULTICARD_RETURN_URL:}"       # SPA post-payment landing page
+      invoice-ttl: PT30M
+      allowed-ip: 195.158.26.90
+      lang: ru
+      # Fiscalization. Env-overridable; production default true. NOTE: the buildOfd payload is still a
+      # PLACEHOLDER (no real mxik/package_code tax data) — enabling this against a production merchant
+      # agreement sends incomplete fiscal data. A go-to-production dependency. application-local.yml forces
+      # this false (sandbox accepts invoices without ofd).
+      ofd-enabled: ${MULTICARD_OFD_ENABLED:true}
 
   websocket:
     spot-stream-url: wss://stream.binance.com/ws
@@ -79,3 +117,13 @@ screener:
     secret: "${JWT_SECRET:}"
     access-token-expiry: PT3H
     refresh-token-expiry: P7D
+
+  email:
+    from-address: "${MAIL_FROM:noreply@tc-screener.com}"
+    from-name: "TC Screener"
+    verification-token-expiry: PT24H
+    resend-cooldown: PT1M
+    # SPA email-verification page. The email link points here carrying ?token=<raw>; the page shows a
+    # Confirm button that POSTs the token to /api/auth/verify-email. Loading the page consumes nothing,
+    # so passive link scanners can't burn the single-use token before the human clicks Confirm.
+    verify-page-url: "${EMAIL_VERIFY_PAGE_URL:}"

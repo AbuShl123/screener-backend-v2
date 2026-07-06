@@ -36,8 +36,10 @@ src/
 │   │           └── DefaultRuleResponse.java
 │   ├── auth/
 │   │   ├── AuthController.java
-│   │   ├── AuthService.java
+│   │   ├── AuthService.java   ← seeds free trial on register (EntitlementService.startTrial); email-verification gate
 │   │   ├── AuthenticatedUser.java
+│   │   ├── EmailVerificationOutcome.java  ← enum {SUCCESS,EXPIRED,INVALID} → verify response status
+│   │   ├── RegistrationEmailEvent.java    ← record (userId, rawToken, email, firstName); consumed AFTER_COMMIT @Async
 │   │   ├── JwtAuthenticationFilter.java
 │   │   ├── JwtService.java
 │   │   └── dto/
@@ -45,7 +47,83 @@ src/
 │   │       ├── LoginRequest.java
 │   │       ├── RefreshRequest.java
 │   │       ├── RegisterRequest.java
+│   │       ├── RegisterResponse.java          ← (status, email); 202 VERIFICATION_REQUIRED, no tokens
+│   │       ├── VerifyEmailRequest.java         ← (token) — raw token from the SPA verify page
+│   │       ├── VerifyEmailResponse.java        ← (status) — success|expired|invalid, HTTP 200
+│   │       ├── ResendVerificationRequest.java  ← (email)
+│   │       ├── ResendVerificationResponse.java ← generic message (no enumeration/cooldown oracle)
 │   │       └── UserProfileResponse.java
+│   ├── email/
+│   │   ├── EmailService.java              ← thin JavaMailSender (SMTP) seam; sendVerificationEmail
+│   │   └── RegistrationEmailListener.java ← @Async @TransactionalEventListener(AFTER_COMMIT)
+│   ├── billing/
+│   │   ├── Plan.java
+│   │   ├── PlanType.java
+│   │   ├── PlanPrice.java
+│   │   ├── Currency.java                 ← enum {UZS,USD,BTC,ETH}: per-currency decimals + scale validation
+│   │   ├── PlanRepository.java
+│   │   ├── PlanPriceRepository.java
+│   │   ├── RegionResolver.java
+│   │   ├── DefaultRegionResolver.java
+│   │   ├── PricingService.java
+│   │   ├── BillingController.java       ← GET /api/billing/plans
+│   │   ├── PlanAdminService.java        ← ADMIN catalog CRUD
+│   │   ├── PlanAdminController.java     ← /api/admin/billing/** (ADMIN-only)
+│   │   └── dto/
+│   │       ├── PlanDto.java
+│   │       ├── PlanCatalogResponse.java
+│   │       ├── AdminPlanRequest.java
+│   │       ├── AdminPriceRequest.java
+│   │       ├── AdminPlanResponse.java
+│   │       └── AdminPriceResponse.java
+│   ├── entitlement/
+│   │   ├── UserEntitlement.java
+│   │   ├── UserEntitlementRepository.java
+│   │   ├── EntitlementLedger.java       ← append-only grant audit row
+│   │   ├── EntitlementLedgerRepository.java
+│   │   ├── GrantSource.java             ← enum {TRIAL, PURCHASE, ADMIN}
+│   │   ├── AccessState.java
+│   │   ├── EntitlementView.java
+│   │   ├── EntitlementService.java      ← startTrial + extend write the ledger; listAccessHistory reads it
+│   │   ├── EntitlementController.java   ← GET /api/billing/entitlement (+ /entitlement/history)
+│   │   └── dto/
+│   │       ├── EntitlementResponse.java
+│   │       └── EntitlementLedgerEntry.java ← GET /api/billing/entitlement/history (access-grant events)
+│   ├── payment/                          ← orders + provider boundary (Multicard adapter)
+│   │   ├── Order.java
+│   │   ├── OrderStatus.java
+│   │   ├── OrderReason.java
+│   │   ├── OrderSource.java
+│   │   ├── OrderStateMachine.java
+│   │   ├── OrderStatusHistory.java
+│   │   ├── OrderStatusHistoryRepository.java
+│   │   ├── OrderRepository.java
+│   │   ├── OrderService.java
+│   │   ├── OrderController.java          ← /api/billing/orders/**
+│   │   ├── PaymentReconciliationService.java   ← @Scheduled sweep over PENDING orders
+│   │   ├── PaymentProvider.java          ← provider-agnostic boundary (interface)
+│   │   ├── CheckoutSession.java
+│   │   ├── ProviderPayment.java
+│   │   ├── ProviderStatus.java
+│   │   ├── dto/
+│   │   │   ├── CreateOrderRequest.java
+│   │   │   ├── OrderDetailsEntry.java     ← one order view (create + status reads)
+│   │   │   └── OrderHistoryEntry.java     ← GET /api/billing/orders/{id}/history
+│   │   └── multicard/
+│   │       ├── MulticardClient.java
+│   │       ├── MulticardPaymentProvider.java
+│   │       ├── MulticardSignature.java
+│   │       ├── MulticardCallbackController.java   ← public POST /api/payment/multicard/callback
+│   │       ├── MulticardCallbackService.java
+│   │       ├── CallbackOutcome.java
+│   │       ├── MulticardException.java
+│   │       └── dto/
+│   │           ├── MulticardAuthResponse.java
+│   │           ├── MulticardInvoiceRequest.java
+│   │           ├── MulticardInvoiceResponse.java
+│   │           ├── MulticardPaymentResponse.java
+│   │           ├── MulticardCallbackPayload.java
+│   │           └── MulticardError.java
 │   ├── binance/
 │   │   ├── api/
 │   │   │   ├── BinanceApiException.java
@@ -78,10 +156,15 @@ src/
 │   │       ├── BinanceConnectionPool.java
 │   │       └── BinanceWebSocketManager.java
 │   ├── config/
+│   │   ├── AdminProperties.java
+│   │   ├── AsyncConfig.java              ← @EnableAsync + bounded emailExecutor
+│   │   ├── BillingProperties.java
 │   │   ├── BinanceApiProperties.java
 │   │   ├── DisruptorProperties.java
+│   │   ├── EmailProperties.java          ← screener.email.* (sender, token TTL, cooldown, URLs)
 │   │   ├── JwtProperties.java
 │   │   ├── OrderbookProperties.java
+│   │   ├── PaymentProperties.java        ← screener.payment.* (+ nested MulticardProperties)
 │   │   ├── SecurityConfig.java
 │   │   ├── WebClientConfig.java
 │   │   └── WebSocketProperties.java
@@ -107,7 +190,9 @@ src/
 │   ├── user/
 │   │   ├── RefreshToken.java
 │   │   ├── RefreshTokenRepository.java
-│   │   ├── User.java
+│   │   ├── EmailVerificationToken.java        ← mirror of RefreshToken; single-use verify token (hash only)
+│   │   ├── EmailVerificationTokenRepository.java
+│   │   ├── User.java                           ← + emailVerified (grandfathered TRUE; @PrePersist false)
 │   │   ├── UserRepository.java
 │   │   └── UserRole.java
 │   └── ws/
@@ -120,7 +205,17 @@ src/
 │   └── db/migration/
 │       ├── V1__create_users.sql
 │       ├── V2__create_refresh_tokens.sql
-│       └── V3__create_classification_rules.sql
+│       ├── V3__create_classification_rules.sql
+│       ├── V4__update_role_check_constraint.sql
+│       ├── V5__create_plans.sql               ← plans + plan_prices + UZS seed
+│       ├── V6__create_user_entitlement.sql    ← 1:1 access table (manual backfill, see scripts/)
+│       ├── V7__align_constraints_and_indexes.sql  ← cross-env index/FK/constraint alignment
+│       ├── V8__create_orders.sql              ← orders (version + NUMERIC(38,18) amount)
+│       ├── V9__create_order_status_history.sql    ← append-only transition audit (seq identity)
+│       ├── V10__create_entitlement_ledger.sql ← append-only grant audit
+│       ├── V11__payment_concurrency_and_audit.sql ← user_entitlement.version + plan_prices → NUMERIC(38,18)
+│       ├── V12__add_email_verified_to_users.sql ← add column + grandfather existing rows TRUE + NOT NULL
+│       └── V13__create_email_verification_tokens.sql ← single-use verify token table (hash only)
 └── test/java/dev/abu/screener_backend/
     ├── ScreenerBackendApplicationTests.java
     ├── analysis/
@@ -130,6 +225,24 @@ src/
     │   ├── UserFeedRegistryTest.java
     │   └── rule/
     │       └── ClassificationRuleServiceTest.java
+    ├── auth/
+    │   └── AuthServiceTest.java
+    ├── email/
+    │   └── EmailServiceTest.java
+    ├── billing/
+    │   ├── PricingServiceTest.java
+    │   ├── PlanAdminServiceTest.java
+    │   └── CurrencyTest.java
+    ├── entitlement/
+    │   └── EntitlementServiceTest.java
+    └── payment/
+        ├── OrderServiceTest.java
+        ├── OrderStateMachineTest.java
+        ├── PaymentReconciliationServiceTest.java
+        └── multicard/
+            ├── MulticardCallbackServiceTest.java
+            ├── MulticardPaymentProviderTest.java
+            └── MulticardSignatureTest.java
 ```
 
 **Implementation status**: All core features are complete. The full pipeline — Binance WebSocket integration, LMAX Disruptor processing, orderbook sync, order classification, feed broadcasting, and client WebSocket delivery — is implemented and wired together. JWT auth, PostgreSQL user storage, per-user classification rules (persistence, REST CRUD, runtime wiring, two-pass classifier, broadcaster merge), live rule propagation to connected sessions, and Spring Security are all complete.
@@ -160,27 +273,33 @@ Spring Boot entry point. Runs as a servlet/Tomcat application (not Netty) even t
 ### `AuthService`
 `src/main/java/dev/abu/screener_backend/auth/AuthService.java`
 
-`@Service @Transactional`. Register, login, refresh, logout, and user lookup. Stores one refresh token per user (old token invalidated on each new login). Throws `ApiException` with the appropriate HTTP status for all error cases.
+`@Service @Transactional`. Register, login, refresh, logout, email verification, and user lookup. Stores one refresh token per user (old token invalidated on each new login). Throws `ApiException` with the appropriate HTTP status for all error cases.
 
-- `register` — validates fields, checks email uniqueness (409 on conflict), BCrypt-hashes password, issues a token pair
-- `login` — verifies BCrypt hash (401 on mismatch), issues a token pair
+- `register` — validates fields, checks email uniqueness (409 on conflict), BCrypt-hashes password, seeds the trial, then mints a verification token and publishes `RegistrationEmailEvent`. **Returns no token pair** — returns `RegisterResponse("VERIFICATION_REQUIRED", email)` (202). New users are persisted `email_verified = false`.
+- `login` — verifies BCrypt hash (401 on mismatch), then `enabled` (401 "Account disabled"), then the **email-verification gate** (403 "Email not verified" — placed after the 401 checks so verification status is only revealed to a correct-password caller, no enumeration), then issues a token pair
+- `verifyEmail(rawToken)` — SHA-256 hashes the raw link token, looks it up; returns `EmailVerificationOutcome` `INVALID` (missing/unknown/null), `EXPIRED` (past `expires_at`, no flip, row left for resend), or `SUCCESS` (sets `emailVerified = true`, **deletes the row** = single-use). Never throws for miss/expired — a stale/double-clicked link is normal UX
+- `resendVerification(email)` — void, always no-op-safe; skips unknown/already-verified emails and requests inside the `resend-cooldown` window (checked via the newest token's `createdAt`); otherwise regenerates (delete-then-insert) + republishes the event. The controller always returns a generic 202 (no enumeration/cooldown oracle)
+- `issueVerificationToken(User)` (private) — delete-then-insert one active token per user, raw token carried only in the published `RegistrationEmailEvent` (DB stores the SHA-256 hash). Shared by register + resend
 - `refresh` — SHA-256 hashes the incoming token, looks it up in DB, checks expiry, issues a new token pair
 - `logout` — deletes the user's refresh token row; no-op if none exists
+- `me` — `@Transactional(readOnly = true)`; builds `UserProfileResponse` from the user plus derived entitlement (`EntitlementService.currentState`) for a one-call SPA bootstrap
 
 ### `AuthController`
 `src/main/java/dev/abu/screener_backend/auth/AuthController.java`
 
-`@RestController` at `/api/auth`. Five endpoints:
+`@RestController` at `/api/auth`. Seven endpoints:
 
 | Method | Path | Auth | Response |
 |--------|------|------|----------|
-| `POST` | `/api/auth/register` | Public | 201 + `AuthResponse` |
-| `POST` | `/api/auth/login` | Public | 200 + `AuthResponse` |
+| `POST` | `/api/auth/register` | Public | 202 + `RegisterResponse` (no tokens) |
+| `POST` | `/api/auth/login` | Public | 200 + `AuthResponse` (403 if unverified) |
 | `POST` | `/api/auth/refresh` | Public | 200 + `AuthResponse` |
+| `POST` | `/api/auth/verify-email` | Public | 200 + `VerifyEmailResponse(status)` (`success\|expired\|invalid`) |
+| `POST` | `/api/auth/resend-verification` | Public | 202 + generic `ResendVerificationResponse` |
 | `POST` | `/api/auth/logout` | Bearer JWT | 204 |
 | `GET` | `/api/auth/me` | Bearer JWT | 200 + `UserProfileResponse` |
 
-`AuthResponse` carries `accessToken`, `refreshToken` (raw value), and `expiresIn` (seconds).
+`AuthResponse` carries `accessToken`, `refreshToken` (raw value), and `expiresIn` (seconds). Register now returns `RegisterResponse(status, email)` (202, `status = "VERIFICATION_REQUIRED"`, no tokens) — the SPA shows a "check your inbox" screen with a resend button. **Email-verification uses a Confirm-button flow**: the email link points at the SPA verify page (`${screener.email.verify-page-url}?token=<raw>`), and only the user's Confirm click POSTs the token to `/api/auth/verify-email` — so passive link scanners (Outlook Safe Links, AV prefetch) that merely load the page never consume the single-use token. The POST returns HTTP 200 with a discriminated `VerifyEmailResponse(status)` (`success`/`expired`/`invalid`) — an expired/invalid link is an expected user-facing outcome the SPA renders with a resend affordance, not a thrown error. `GET /api/auth/me` returns `UserProfileResponse(id, firstName, lastName, email, role, accessState, accessExpiresAt)` — the last two derived by `EntitlementService` so the SPA gets identity and access state in one call.
 
 ### `AuthenticatedUser`
 `src/main/java/dev/abu/screener_backend/auth/AuthenticatedUser.java`
@@ -189,17 +308,36 @@ Record: `(userId, email, role)`. Used as the Spring Security principal set by `J
 
 ---
 
+## `email` — Outbound Email
+
+### `EmailService`
+`src/main/java/dev/abu/screener_backend/email/EmailService.java`
+
+`@Service`. The single thin seam over Spring's `JavaMailSender` (SMTP) — the one class to reimplement if we ever move off SMTP to an HTTP transactional-API sender (no vendor-agnostic port is introduced until then). `sendVerificationEmail(toEmail, firstName, rawToken)` composes the link `${screener.email.verify-page-url}?token=<raw>` — the SPA verification page, not a backend endpoint (raw token is already Base64URL, so no encoding) — builds a `SimpleMailMessage`, and sends. Send failures propagate to the listener. `JavaMailSender` is auto-configured by `spring-boot-starter-mail` from `spring.mail.*`.
+
+### `RegistrationEmailListener`
+`src/main/java/dev/abu/screener_backend/email/RegistrationEmailListener.java`
+
+`@Component`. `@Async("emailExecutor") @TransactionalEventListener(phase = AFTER_COMMIT)` on `RegistrationEmailEvent` (published by `AuthService`). AFTER_COMMIT guarantees the token row is committed before the send (no link for a rolled-back row); `@Async` keeps the blocking SMTP round-trip off the Tomcat thread. A send failure is logged WARN and is non-fatal — the user recovers via resend. Same event pattern as `RuleUpdatedEvent` → `UserFeedRegistry`.
+
+---
+
 ## `user` — User Domain
 
 ### `User`
 `src/main/java/dev/abu/screener_backend/user/User.java`
 
-JPA entity mapped to the `users` table. Fields: `id` (UUID), `firstName`, `lastName`, `email` (unique), `passwordHash` (BCrypt), `role` (`UserRole` enum, STRING-mapped), `enabled`, `createdAt`. `@PrePersist` sets `createdAt`, defaults `role` to `USER`, and sets `enabled = true`.
+JPA entity mapped to the `users` table. Fields: `id` (UUID), `firstName`, `lastName`, `email` (unique), `passwordHash` (BCrypt), `role` (`UserRole` enum, STRING-mapped), `enabled`, `emailVerified`, `createdAt`. `@PrePersist` sets `createdAt`, defaults `role` to `USER`, sets `enabled = true`, and sets `emailVerified = false` (grandfathered rows carry `TRUE` from V12 and never run `@PrePersist`).
+
+### `EmailVerificationToken` / `EmailVerificationTokenRepository`
+`src/main/java/dev/abu/screener_backend/user/`
+
+`EmailVerificationToken` is a JPA entity mapped to `email_verification_tokens` — a structural mirror of `RefreshToken`: `id`, eager `@ManyToOne User`, `tokenHash` (SHA-256, unique — raw value never persists), `expiresAt`, `createdAt` (`@PrePersist`). Single-use (deleted on verify); one active token per user (delete-then-insert). `EmailVerificationTokenRepository` (`JpaRepository`): `findByTokenHash` (verify lookup), `@Modifying deleteByUserId` (delete-then-insert), and `findFirstByUser_IdOrderByCreatedAtDesc` (resend-cooldown check).
 
 ### `UserRole`
 `src/main/java/dev/abu/screener_backend/user/UserRole.java`
 
-Enum with one value: `USER`. Extend with `ADMIN`, `PREMIUM` as needed.
+Enum: `USER`, `ADMIN`. The entitlement gate short-circuits on `ADMIN`.
 
 ### `RefreshToken`
 `src/main/java/dev/abu/screener_backend/user/RefreshToken.java`
@@ -215,6 +353,114 @@ JPA entity mapped to `refresh_tokens`. Fields: `id`, `user` (eager `@ManyToOne`)
 `src/main/java/dev/abu/screener_backend/user/RefreshTokenRepository.java`
 
 `JpaRepository<RefreshToken, UUID>`. `findByTokenHash` for lookup; `deleteByUserId(UUID)` via `@Modifying @Query` for efficient single-statement delete.
+
+---
+
+## `billing` — Subscription Catalog & Pricing
+
+DB-driven plan catalog (no plan-type enum driving durations). Ships the data foundation, the pricing service, the public catalog endpoint (`GET /api/billing/plans`), and the ADMIN catalog-CRUD (`/api/admin/billing/**`). The `SecurityConfig` `/api/admin/**` ADMIN-only rule is wired in.
+
+### `Plan` / `PlanType`
+`src/main/java/dev/abu/screener_backend/billing/`
+
+`Plan` is a JPA entity mapped to `plans` — a named, pre-priced bundle of access days. Fields: `id` (UUID), `code` (stable unique identifier the frontend keys text/order off; immutable), `displayName` (admin/log label + English fallback only), `type` (`PlanType` enum STRING-mapped), `durationDays` (7/30/365 for `FIXED`, null for `PER_DAY`), `active` (soft-disable; never hard-delete), `createdAt`, `updatedAt`. `PlanType` is `{ FIXED, PER_DAY }` — pay-by-days is a `PER_DAY` plan, not a special entity.
+
+### `PlanPrice`
+`src/main/java/dev/abu/screener_backend/billing/PlanPrice.java`
+
+JPA entity mapped to `plan_prices`. Price of one `(plan, currency)` pair. `amount` is `BigDecimal NUMERIC(19,4)` in **major units** (sum) — for `FIXED` the full-period price, for `PER_DAY` the price of one day. LAZY `@ManyToOne Plan`. Documented exception to the no-`BigDecimal` rule (billing is low-frequency, correctness-critical). Minor-unit (tiyin) conversion is a future provider-boundary concern, never here.
+
+### `PlanRepository` / `PlanPriceRepository`
+`src/main/java/dev/abu/screener_backend/billing/`
+
+`PlanRepository.findByActiveTrueOrderByCode()` for the public catalog; `findAllByOrderByCode()` and `existsByCode(code)` for the admin surface. `PlanPriceRepository.findByPlan_IdInAndCurrencyAndActiveTrue(planIds, currency)` for the per-currency public lookup; `findByPlan_IdIn(planIds)` (all currencies, active + inactive) and `findByPlan_IdAndCurrency(planId, currency)` for the admin views/upsert.
+
+### `RegionResolver` / `DefaultRegionResolver`
+`src/main/java/dev/abu/screener_backend/billing/`
+
+Server-side region (country + billing currency) resolution seam. `RegionResolver.resolve(HttpServletRequest, User)` → `Region(countryCode, currency)`. `DefaultRegionResolver` (`@Component`) is a stub returning the configured default (`UZ` / `UZS`) for everyone, persisting nothing. Real geo/phone resolution is future work.
+
+### `PricingService`
+`src/main/java/dev/abu/screener_backend/billing/PricingService.java`
+
+`@Service`. `catalogFor(currency)` loads active plans + their active price rows in that currency and returns a `PlanCatalogResponse(currency, List<PlanDto>)`. Plans with no active price in the requested currency are omitted (logged at WARN). DTOs: `PlanDto(code, displayName, type, durationDays, amount)` (no per-plan currency — declared once on the response).
+
+### `BillingController`
+`src/main/java/dev/abu/screener_backend/billing/BillingController.java`
+
+`@RestController` at `/api/billing`. `GET /api/billing/plans` (Bearer JWT, via the `anyRequest().authenticated()` catch-all) resolves the caller's billing currency through `RegionResolver` (a UZ/UZS stub today), then returns `pricingService.catalogFor(currency)`. The client never sends a price or currency.
+
+### `PlanAdminService`
+`src/main/java/dev/abu/screener_backend/billing/PlanAdminService.java`
+
+`@Service @Transactional`. ADMIN catalog mutation over `plans`/`plan_prices`. All validation runs before any write — the whole request is rejected with `400` on the first failure (matching `ClassificationRuleService`); a missing plan/price is `404`.
+
+- `listPlans()` — all plans (active + inactive) with all their price rows (every currency), as full `AdminPlanResponse` views
+- `createPlan(req)` — validates `code` non-blank + unique (`409` on conflict), the `FIXED`⇒duration / `PER_DAY`⇒null invariant, positive duration
+- `updatePlan(id, req)` — mutates `displayName`/`durationDays`/`active`; `code` and `type` are immutable (the duration invariant is checked against the existing type)
+- `deletePlan(id)` — **soft-disable** (`active=false`), idempotent, never a hard delete
+- `upsertPrice(planId, req)` — validates `amount >= 0` and 3-letter ISO currency (normalized upper-case); updates the existing `(plan, currency)` row in place or inserts a new one
+- `deletePrice(id)` — soft-disable the price row, idempotent
+
+### `PlanAdminController`
+`src/main/java/dev/abu/screener_backend/billing/PlanAdminController.java`
+
+`@RestController` at `/api/admin/billing`. ADMIN-only via the `SecurityConfig` `/api/admin/**` rule. Returns full admin views (id, active, all currencies, both plan types) — distinct from the public catalog.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/admin/billing/plans` | List all plans (active + inactive) with their price rows |
+| `POST` | `/api/admin/billing/plans` | Create a plan (201) |
+| `PUT` | `/api/admin/billing/plans/{id}` | Update a plan (not `code`/`type`) |
+| `DELETE` | `/api/admin/billing/plans/{id}` | Soft-disable a plan (204) |
+| `PUT` | `/api/admin/billing/plans/{id}/prices` | Upsert a price for `(plan, currency)` |
+| `DELETE` | `/api/admin/billing/prices/{id}` | Soft-disable a price row (204) |
+
+Admin DTOs: `AdminPlanRequest(code, displayName, type, durationDays, active)`, `AdminPriceRequest(currency, amount, active)`, `AdminPlanResponse(id, code, displayName, type, durationDays, active, List<AdminPriceResponse>)`, `AdminPriceResponse(id, currency, amount, active)`.
+
+---
+
+## `entitlement` — Access State
+
+The authoritative "can this user use the screener right now?" domain. Ships the entity, service, derivation, and the read endpoint (`GET /api/billing/entitlement`) plus the `/api/auth/me` mirror. Access-gate enforcement (REST + WS `@OnOpen`) is still deferred to the enforcement plan.
+
+### `UserEntitlement`
+`src/main/java/dev/abu/screener_backend/entitlement/UserEntitlement.java`
+
+JPA entity mapped to `user_entitlement`, 1:1 with `users` via a shared-primary-key `@OneToOne` + `@MapsId` (`user_id` is both PK and FK; setting the `user` association derives `userId`). Holds access facts only: `accessExpiresAt` (the single authoritative field; null = never granted) and `hasPaid` (distinguishes TRIAL from ACTIVE). `updatedAt` touched on persist/update. Account/localization facts live elsewhere (future `user_settings`).
+
+### `UserEntitlementRepository`
+`src/main/java/dev/abu/screener_backend/entitlement/UserEntitlementRepository.java`
+
+`JpaRepository<UserEntitlement, UUID>`. `findByUserId` (equivalent to `findById` since `user_id` is the PK — named for intent).
+
+### `AccessState` / `EntitlementView`
+`src/main/java/dev/abu/screener_backend/entitlement/`
+
+`AccessState` is `{ TRIAL, ACTIVE, EXPIRED, ADMIN }` — derived on read, never stored. `EntitlementView(AccessState state, Instant accessExpiresAt)` is the service's read return type (`ADMIN` reports `accessExpiresAt = null`).
+
+### `EntitlementService`
+`src/main/java/dev/abu/screener_backend/entitlement/EntitlementService.java`
+
+`@Service @Transactional`. The single mutation + read path for access:
+- `startTrial(User)` — seeds `accessExpiresAt = now + trialDuration`, `hasPaid = false`. Called from `AuthService.register` in the same transaction.
+- `extend(userId, Duration, paid)` — stacking grant `accessExpiresAt = max(now, accessExpiresAt) + granted`; sets `hasPaid` when paid. Shared by trial top-ups and future purchases.
+- `currentState(User)` — derives `EntitlementView`; `ADMIN` short-circuits to `(ADMIN, null)`.
+- `hasAccess(User)` — `role == ADMIN || (expiresAt != null && now < expiresAt)`. Provided for the enforcement plan; not wired into any gate yet.
+- `listAccessHistory(userId)` — the user's `entitlement_ledger` rows newest-first as `dto/EntitlementLedgerEntry`; a `PURCHASE` row's `order_id` is resolved to the full `payment.dto.OrderDetailsEntry`, trial/admin rows carry `null` order. Injects `payment.OrderService` **`@Lazy`** to break the bean cycle (`OrderService` depends on this service for grants; this back-edge is read-time only).
+
+### `EntitlementController`
+`src/main/java/dev/abu/screener_backend/entitlement/EntitlementController.java`
+
+`@RestController` at `/api/billing` (Bearer JWT via the catch-all). `GET /api/billing/entitlement` returns `EntitlementResponse(state, accessExpiresAt)` from `EntitlementService.currentState` for cheap UI polling (the same two fields are mirrored on `GET /api/auth/me`). `GET /api/billing/entitlement/history` returns `List<EntitlementLedgerEntry>` from `EntitlementService.listAccessHistory` — the caller's access-grant events (trial/purchase/admin), newest first, each purchase embedding its full `OrderDetailsEntry`. DTOs: `dto/EntitlementResponse(AccessState, Instant)`, `dto/EntitlementLedgerEntry(GrantSource source, long grantedDurationSeconds, Instant previousExpiresAt, Instant newExpiresAt, OrderDetailsEntry order, String reason, Instant createdAt)`.
+
+**Migrations**: `V5__create_plans.sql` (plans + plan_prices + placeholder UZS seed), `V6__create_user_entitlement.sql`. Existing-user backfill is **not** a migration — `scripts/backfill_user_entitlement.sql` is run manually in production (role-split: non-admins get a fresh 7-day trial, admins get `NULL` expiry) so a redeploy can never re-grant trials.
+
+---
+
+## `payment` — Subscription Payments & Multicard Adapter
+
+The subscription-payment module: provider-agnostic `Order`s (create/reuse, pay-by-days math, idempotent grant-on-success, a `@Scheduled` reconciliation sweep, append-only status-history audit) sitting behind a two-method `PaymentProvider` boundary, with the first and only adapter under `multicard/` (UZS, Uzbekistan — `WebClient` client, hosted-checkout invoice, MD5-signed success callback, durable status polling). On a verified payment it calls `EntitlementService.extend(...)`, which now also writes the new `entitlement_ledger` grant audit; the `billing.Currency` enum is the source of truth for per-currency decimal precision. **This is only a generic summary** — the full reference (flow, state machine, edge cases, config, tests) lives in `.claude/docs/payment-gateway-multicard.md`.
 
 ---
 
@@ -452,7 +698,7 @@ This merges the former `PresenceController` (monitoring) and `OrderBookControlle
 ### `ApiException`
 `src/main/java/dev/abu/screener_backend/error/ApiException.java`
 
-`RuntimeException` carrying an `HttpStatus` plus a client-safe message. The single exception type the application layer throws for expected client-facing failures. Static factories: `badRequest`, `notFound`, `conflict`, `unauthorized`.
+`RuntimeException` carrying an `HttpStatus` plus a client-safe message. The single exception type the application layer throws for expected client-facing failures. Static factories: `badRequest`, `notFound`, `conflict`, `unauthorized`, `forbidden` (403 — used by the login email-verification gate).
 
 ### `ApiError`
 `src/main/java/dev/abu/screener_backend/error/ApiError.java`
@@ -601,8 +847,20 @@ Java record bound from `screener.websocket.*`: stream URLs, connection counts, m
 ### `JwtProperties`
 Java record bound from `screener.jwt.*`: `secret` (base64-encoded), `accessTokenExpiry` (default 3h), `refreshTokenExpiry` (default 7d).
 
+### `AdminProperties`
+Java record bound from `screener.admin.*`: `emails` (comma-separated list, supplied via `SCREENER_ADMIN_EMAILS`, empty in the repo). Emails promoted to `ADMIN` on startup.
+
+### `BillingProperties`
+Java record bound from `screener.billing.*`: `trialDuration` (default `P7D`), `defaultCurrency` (default `UZS`), `defaultCountry` (default `UZ`). No per-day price here — that lives in `plan_prices`. All records are registered via `WebClientConfig`'s `@EnableConfigurationProperties`.
+
+### `EmailProperties`
+Java record bound from `screener.email.*`: `fromAddress`, `fromName`, `verificationTokenExpiry` (Duration, default `PT24H`), `resendCooldown` (Duration, default `PT1M`), `verifyPageUrl` (the SPA verification page the email link points at, carrying `?token=<raw>`; its Confirm button POSTs to `/api/auth/verify-email`). Registered via `WebClientConfig`'s `@EnableConfigurationProperties`. SMTP transport itself is `spring.mail.*` (Boot auto-config).
+
+### `AsyncConfig`
+`@Configuration @EnableAsync`. Provides a small dedicated `emailExecutor` (`ThreadPoolTaskExecutor`, core 1 / max 2 / queue 100) so blocking SMTP sends never borrow the common pool or stall Tomcat/Disruptor threads.
+
 ### `SecurityConfig`
-`@Configuration`. Spring Security filter chain. Stateless (`STATELESS` session policy, CSRF disabled). Public paths: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/ws`. All other paths require Bearer JWT. `JwtAuthenticationFilter` instantiated directly here to prevent double-registration. Declares the `BCryptPasswordEncoder` bean. CORS configured for localhost and production origins.
+`@Configuration`. Spring Security filter chain. Stateless (`STATELESS` session policy, CSRF disabled). Public paths: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/ws`. `/api/monitoring/**` and `/api/admin/**` are ADMIN-only; all other paths require Bearer JWT (catch-all `anyRequest().authenticated()` — covers `/api/billing/**`). `JwtAuthenticationFilter` instantiated directly here to prevent double-registration. Declares the `BCryptPasswordEncoder` bean. CORS configured for localhost and production origins.
 
 ---
 
@@ -631,7 +889,13 @@ Spring `ApplicationEvent` published after each successful ticker registry refres
 ## Tests
 
 ### `ScreenerBackendApplicationTests`
-`@SpringBootTest` smoke test. Verifies the Spring context initializes without errors.
+`@SpringBootTest` smoke test. Verifies the Spring context initializes without errors (requires a reachable DataSource — needs DB env vars set).
+
+### `AuthServiceTest`
+Plain JUnit unit test (real `JwtService`/`BCryptPasswordEncoder`, reflective proxy repos, event-collecting publisher). Verifies register persists an unverified user, seeds the trial, issues **no** refresh token, and publishes exactly one `RegistrationEmailEvent` (storing only the token hash); login `403`s for unverified but `401`s on bad password / disabled *before* the verification check (enumeration guard); verify flips + single-uses the token (`SUCCESS`/`EXPIRED`/`INVALID`, second use → `INVALID`); resend respects the cooldown and never publishes for unknown/verified/cooldown, but re-mints past the cooldown.
+
+### `EmailServiceTest`
+Plain JUnit unit test with a reflective proxy `JavaMailSender` capturing the sent `SimpleMailMessage`. Verifies the recipient and that the body carries the verification link composed from `verify-page-url` + the raw token.
 
 ### `UserClassificationRulesTest`
 Plain JUnit unit test. Verifies `UserClassificationRules.configuredKeys()` mirrors the `byKey` map and `ruleFor(key)` returns the leaf for configured keys / `null` otherwise.
@@ -645,6 +909,15 @@ Plain JUnit unit test of the session/context lifecycle and live rule propagation
 ### `ClassificationRuleServiceTest`
 Plain JUnit unit test with reflective proxy repository stubs. Verifies `RuleUpdatedEvent` is published exactly once after `upsertRules` and `deleteRules`, and never on validation failure.
 
+### `PricingServiceTest`
+Plain JUnit unit test (reflective proxy repos). Verifies the resolved currency is echoed on the response, `BigDecimal` amounts survive exactly, plans without an active price in the requested currency are omitted, and an empty catalog when no active plans.
+
+### `PlanAdminServiceTest`
+Plain JUnit unit test with stateful in-memory reflective proxy repos. Verifies code-uniqueness conflict, the `FIXED`⇒duration / `PER_DAY`⇒null invariant, soft-delete (`active=false`, idempotent, `404` when absent), price upsert (create-then-update the same `(plan, currency)` row with currency normalization), negative-amount/bad-currency rejection, and `updatePlan` immutability of `code`/`type`.
+
+### `EntitlementServiceTest`
+Plain JUnit unit test with a stateful in-memory reflective proxy repo. Verifies trial seeding (7-day unpaid), stacking from a future vs a past expiry, the ADMIN short-circuit (`ADMIN`/null), the derived `{TRIAL, ACTIVE, EXPIRED}` states, and `hasAccess` for admin/valid/expired users.
+
 ---
 
 ## What Is Not Yet Implemented
@@ -652,9 +925,11 @@ Plain JUnit unit test with reflective proxy repository stubs. Verifies `RuleUpda
 | Feature | Notes |
 |---------|-------|
 | Klines streams | Candlestick data integration for additional analysis signals |
-| Payment gateway | Integration with a payment provider (e.g. Stripe) for subscription billing and lifecycle events |
-| User subscription model | Per-plan limits (max tracked tickers, max custom rules) persisted on the `User` entity and enforced at the service layer |
-| User roles and privileges | Expand `UserRole` to `USER` (free), `PREMIUM` (paid), and `ADMIN`; enforce role-based access on REST and WebSocket endpoints |
+| Access-gate enforcement | Wiring `EntitlementService.hasAccess` into REST endpoints and WS `@OnOpen`; mid-session WS expiry (enforcement plan) |
+| Auto-renewal / saved cards | Recurring charges, saved-instrument concept, renewal sweep, grace period — out of scope by business decision (see payment doc §15) |
+| Full webhooks & production fiscalization | Per-status (SHA-1) Multicard webhooks and real `ofd` tax payload (`mxik`/`package_code`) — the payment adapter is shaped for these but they are deferred |
+| Account settings / localization | Real geo/IP/phone `RegionResolver`, `user_settings` table (currency/country/locale), multi-currency seed (KZT/RUB/crypto) |
+| User roles and privileges | `USER`/`ADMIN` exist; `PREMIUM` (paid) tier and per-plan limits (max tracked tickers, max custom rules) not yet enforced |
 | Distributed deployment | Ticker partitioning across multiple JVM instances |
 | Primitive orderbook store | Replace `TreeMap<Double, PriceLevelEntry>` with a memory-efficient structure |
 | Snapshot optimization | Caching, pre-warming, or higher-weight API access to reduce startup sync time |

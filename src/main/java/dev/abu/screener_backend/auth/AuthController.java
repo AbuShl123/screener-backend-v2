@@ -1,7 +1,6 @@
 package dev.abu.screener_backend.auth;
 
 import dev.abu.screener_backend.auth.dto.*;
-import dev.abu.screener_backend.user.User;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -17,9 +16,32 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    @ResponseStatus(HttpStatus.CREATED)
-    public AuthResponse register(@RequestBody RegisterRequest req) {
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public RegisterResponse register(@RequestBody RegisterRequest req) {
         return authService.register(req);
+    }
+
+    /**
+     * Called by the SPA verification page when the user clicks Confirm (no JWT). Consumes the
+     * single-use token and returns the outcome as {@code success|expired|invalid} so the page can show
+     * the result (with a resend affordance on failure). This is a POST — not the passive GET on the
+     * email link — so link scanners that merely load the page never consume the token.
+     */
+    @PostMapping("/verify-email")
+    public VerifyEmailResponse verifyEmail(@RequestBody VerifyEmailRequest req) {
+        return new VerifyEmailResponse(authService.verifyEmail(req.token()).status());
+    }
+
+    /**
+     * Re-sends a verification link. Always 202 with a generic body regardless of whether the email
+     * exists / is already verified / is on cooldown — no account enumeration, no cooldown oracle.
+     */
+    @PostMapping("/resend-verification")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ResendVerificationResponse resendVerification(@RequestBody ResendVerificationRequest req) {
+        authService.resendVerification(req.email());
+        return new ResendVerificationResponse(
+                "If an unverified account exists for that email, a new verification link has been sent.");
     }
 
     @PostMapping("/login")
@@ -42,10 +64,6 @@ public class AuthController {
     @GetMapping("/me")
     public UserProfileResponse me(Authentication authentication) {
         AuthenticatedUser principal = (AuthenticatedUser) authentication.getPrincipal();
-        User user = authService.getUser(principal.userId());
-        return new UserProfileResponse(
-                user.getId(), user.getFirstName(), user.getLastName(),
-                user.getEmail(), user.getRole().name()
-        );
+        return authService.me(principal.userId());
     }
 }

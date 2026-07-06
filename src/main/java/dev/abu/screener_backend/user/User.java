@@ -38,6 +38,9 @@ public class User {
     @Column(nullable = false)
     private boolean enabled;
 
+    @Column(name = "email_verified", nullable = false)
+    private boolean emailVerified;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -46,5 +49,8 @@ public class User {
         createdAt = Instant.now();
         if (role == null) role = UserRole.USER;
         enabled = true;
+        // Every freshly registered user starts unverified; grandfathered rows carry TRUE from V12 and
+        // never run @PrePersist.
+        emailVerified = false;
     }
 }

@@ -44,7 +44,7 @@ public class DefaultClassificationRule implements ClassificationRule {
             if (notional >= 10_000_000  && distance <= 0.05)   return 4;
             if (notional >= 1_000_000   && distance <= 0.02)   return 3;
             if (notional >= 500_000     && distance <= 0.01)   return 2;
-            if (notional >= 300_000     && distance <= 0.005)  return 1;
+            if (notional >= 200_000     && distance <= 0.005)  return 1;
         }
         return 0;
     }

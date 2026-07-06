@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
+  <title>Confirm your email address</title>
+  <!--[if mso]>
+  <style>
+    * { font-family: Arial, Helvetica, sans-serif !important; }
+  </style>
+  <![endif]-->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; padding: 0; width: 100% !important; background-color: #EAEEF3; }
+    table { border-collapse: collapse; }
+    img { border: 0; line-height: 100%; outline: none; text-decoration: none; }
+    a { text-decoration: none; }
+    .sans { font-family: 'IBM Plex Sans', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: 'IBM Plex Mono', 'SFMono-Regular', Menlo, Consolas, monospace; }
+    @media only screen and (max-width: 600px) {
+      .container { width: 100% !important; }
+      .px { padding-left: 24px !important; padding-right: 24px !important; }
+    }
+  </style>
+</head>
+<body style="margin:0; padding:0; background-color:#EAEEF3;">
+
+  <!-- Preheader (hidden) -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:#EAEEF3; font-size:1px; line-height:1px;">
+    Confirm your email to activate your TC Screener account — the link expires in 24 hours.
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#EAEEF3;">
+    <tr>
+      <td align="center" style="padding:48px 20px;">
+
+        <!-- Card -->
+        <table role="presentation" class="container" width="560" cellpadding="0" cellspacing="0" style="width:560px; max-width:560px; background-color:#FFFFFF; border:1px solid #E1E6EE; border-radius:14px;">
+
+          <!-- Header -->
+          <tr>
+            <td class="px" style="padding:26px 40px; border-bottom:1px solid #EEF1F6;">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="vertical-align:middle;">
+                    <span style="display:inline-block; width:11px; height:11px; background-color:#1A6FD4; transform:rotate(45deg);">&nbsp;</span>
+                  </td>
+                  <td style="vertical-align:middle; padding-left:11px;">
+                    <span class="mono" style="font-weight:600; font-size:14px; letter-spacing:0.22em; color:#0D1219;">TC SCREENER</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td class="px sans" style="padding:40px 40px 36px 40px;">
+
+              <div class="mono" style="font-weight:500; font-size:11px; letter-spacing:0.15em; color:#8A93A3; text-transform:uppercase; margin-bottom:16px;">Email verification</div>
+
+              <h1 style="margin:0 0 22px 0; font-weight:600; font-size:26px; line-height:1.25; letter-spacing:-0.01em; color:#0D1219;">Confirm your email address</h1>
+
+              <p th:text="'Hi ' + ${firstName} + ','" style="margin:0 0 16px 0; font-size:15px; line-height:1.4; font-weight:500; color:#0D1219;">Hi there,</p>
+
+              <p style="margin:0 0 28px 0; font-size:15px; line-height:1.65; color:#47515F;">Thanks for creating a TC Screener account. Confirm your email address to activate your account and start screening the market in real time.</p>
+
+              <!-- CTA button (bulletproof) -->
+              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 22px 0;">
+                <tr>
+                  <td align="center" bgcolor="#1A6FD4" style="border-radius:8px;">
+                    <a th:href="${confirmUrl}" target="_blank" style="display:inline-block; background-color:#1A6FD4; color:#FFFFFF; font-family:'IBM Plex Sans',Helvetica,Arial,sans-serif; font-weight:600; font-size:15px; line-height:1; padding:15px 30px; border-radius:8px;">Confirm email address</a>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin:0; font-size:13px; line-height:1.6; color:#7A8595;">This link expires in <span class="mono" th:text="${expiryHours} + ' hours'" style="color:#47515F;">24 hours</span>. If it expires, request a new one from the app.</p>
+
+              <!-- Fallback link -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px; background-color:#F5F7FA; border:1px solid #E9EDF3; border-radius:10px;">
+                <tr>
+                  <td style="padding:16px 18px;">
+                    <div style="font-size:13px; line-height:1.5; color:#7A8595; margin-bottom:8px;">Button not working? Paste this link into your browser:</div>
+                    <a th:href="${confirmUrl}" th:text="${confirmUrl}" target="_blank" class="mono" style="font-size:12px; line-height:1.6; color:#1A6FD4; word-break:break-all;">https://tc-screener.com/verify?token=example</a>
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <!-- Security note -->
+          <tr>
+            <td class="px sans" style="padding:22px 40px; border-top:1px solid #EEF1F6;">
+              <p style="margin:0; font-size:13px; line-height:1.6; color:#7A8595;">If you didn't create this account, you can safely ignore this email — no account will be activated.</p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Footer -->
+        <table role="presentation" class="container" width="560" cellpadding="0" cellspacing="0" style="width:560px; max-width:560px; margin-top:22px;">
+          <tr>
+            <td align="center" class="mono" style="font-size:11px; letter-spacing:0.06em; color:#97A0AE; line-height:1.7;">Real-time crypto market screener · 500+ tickers · sub-second latency</td>
+          </tr>
+          <tr>
+            <td align="center" class="mono" style="font-size:11px; letter-spacing:0.04em; color:#AEB6C2; line-height:1.7; padding-top:4px;">Automated message, please don't reply · © 2026 TC Screener</td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

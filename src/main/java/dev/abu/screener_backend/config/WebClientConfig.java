@@ -27,8 +27,25 @@ import org.springframework.web.reactive.function.client.WebClient;
  * in {@code application.yml} forces servlet mode so the application remains on Spring MVC.
  */
 @Configuration
-@EnableConfigurationProperties({BinanceApiProperties.class, WebSocketProperties.class, DisruptorProperties.class, OrderbookProperties.class, JwtProperties.class, AdminProperties.class})
+@EnableConfigurationProperties({BinanceApiProperties.class, WebSocketProperties.class, DisruptorProperties.class, OrderbookProperties.class, JwtProperties.class, AdminProperties.class, BillingProperties.class, PaymentProperties.class, EmailProperties.class})
 public class WebClientConfig {
+
+    /**
+     * WebClient for the Multicard payment gateway REST API. Unlike the Binance clients it has no
+     * weight filter — Multicard is low-frequency. The default codec buffer is sufficient (responses
+     * are small JSON envelopes).
+     *
+     * @param props payment properties (Multicard base URL)
+     * @return Multicard WebClient bean
+     */
+    @Bean("multicardWebClient")
+    public WebClient multicardWebClient(PaymentProperties props) {
+        return WebClient.builder()
+                .baseUrl(props.multicard().baseUrl())
+                .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .build();
+    }
 
     /**
      * WebClient pre-configured for the Binance Spot REST API.

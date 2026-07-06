@@ -47,6 +47,19 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webflux</artifactId>
 		</dependency>
+		<!-- Spring Mail — pulls the mail AUTOCONFIGURATION module (JavaMailSender). Same Spring Boot 4.0
+		     module-split lesson as Flyway: the starter is required, a bare jakarta.mail dependency would
+		     leave JavaMailSender un-auto-configured. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-mail</artifactId>
+		</dependency>
+		<!-- Thymeleaf — HTML email templating (auto-escaping + shared fragments for transactional mail).
+		     Autoconfigures a SpringTemplateEngine resolving classpath:/templates/. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-thymeleaf</artifactId>
+		</dependency>
 		<!-- LMAX Disruptor — lock-free ring buffer for the market data event pipeline -->
 		<dependency>
 			<groupId>com.lmax</groupId>
@@ -76,7 +89,16 @@
 			<scope>runtime</scope>
 		</dependency>
 
-		<!-- Flyway — database schema migrations -->
+		<!-- Flyway — database schema migrations.
+		     spring-boot-starter-flyway pulls in the spring-boot-flyway AUTOCONFIGURATION module.
+		     In Spring Boot 4.0 the per-technology autoconfigurations were split out of
+		     spring-boot-autoconfigure into dedicated modules, so flyway-core alone is the library
+		     WITHOUT Spring's integration — FlywayAutoConfiguration/FlywayProperties are absent and
+		     migrations never run. The starter is required. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-core</artifactId>
