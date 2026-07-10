@@ -1,11 +1,13 @@
 package dev.abu.screener_backend.billing;
 
+import dev.abu.screener_backend.error.ApiException;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -65,5 +67,23 @@ public class PlanPrice {
     @PreUpdate
     private void preUpdate() {
         updatedAt = Instant.now();
+    }
+
+    /**
+     * {@code ceil(amountMoney / this.amount)} — the pay-by-days day count this per-day price buys.
+     * {@code amountMoney} must be positive and within this row's currency's allowed decimal places;
+     * staying within scale also keeps the Multicard adapter's {@code movePointRight(decimals)
+     * .longValueExact()} conversion exact, so an over-scale amount is rejected here with a clean 400
+     * rather than failing deep in invoice creation.
+     */
+    public long daysFor(BigDecimal amountMoney) {
+        if (amountMoney == null || amountMoney.signum() <= 0) {
+            throw ApiException.badRequest("amount must be a positive number for pay-by-days");
+        }
+        Currency.of(currency).requireScale(amountMoney);
+        if (amount.signum() <= 0) {
+            throw ApiException.badRequest("per-day price is not configured");
+        }
+        return amountMoney.divide(amount, 0, RoundingMode.CEILING).longValueExact();
     }
 }

@@ -99,8 +99,8 @@ public class TickerService {
                 result.values().stream().filter(Ticker::hasSpot).count());
 
 //        return result.entrySet().stream().limit(3).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-//        return result.entrySet().stream().filter((k) -> k.getKey().equalsIgnoreCase("BTCUSDT"))
-//                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        return result;
+        return result.entrySet().stream().filter((k) -> k.getKey().equalsIgnoreCase("XRPUSDT"))
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+//        return result;
     }
 }

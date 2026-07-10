@@ -16,7 +16,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -154,7 +153,7 @@ public class OrderService {
             String currency,
             Instant now
     ) {
-        long days = computeDays(plan, price, amountMoney, currency);
+        long days = computeDays(plan, price, amountMoney);
         BigDecimal grantAmount = plan.getType() == PlanType.FIXED ? price.getAmount() : amountMoney;
 
         Order order = new Order();
@@ -184,25 +183,15 @@ public class OrderService {
     }
 
     /**
-     * {@code days = FIXED ? duration_days : ceil(amount / pricePerDay)}. The pay-by-days {@code amount}
-     * is in major units (sum) and must be positive and within the currency's allowed decimal places
-     * (UZS 2, BTC 8, ETH 18). Staying within the currency's scale also keeps the Multicard adapter's
-     * {@code movePointRight(decimals).longValueExact()} conversion exact, so an over-scale amount is
-     * rejected up front with a clean 400 rather than failing deep in invoice creation.
+     * {@code days = FIXED ? duration_days : ceil(amount / pricePerDay)}. The pay-by-days math (amount
+     * validation + ceiling division) lives on {@link PlanPrice#daysFor} so it's shared with the public
+     * pay-as-you-go days estimate ({@code BillingController}), which computes it without an order.
      */
-    private static long computeDays(Plan plan, PlanPrice price, BigDecimal amountMoney, String currency) {
+    private static long computeDays(Plan plan, PlanPrice price, BigDecimal amountMoney) {
         if (plan.getType() == PlanType.FIXED) {
             return plan.getDurationDays();
         }
-        if (amountMoney == null || amountMoney.signum() <= 0) {
-            throw ApiException.badRequest("amount must be a positive number for pay-by-days");
-        }
-        Currency.of(currency).requireScale(amountMoney);
-        BigDecimal pricePerDay = price.getAmount();
-        if (pricePerDay.signum() <= 0) {
-            throw ApiException.badRequest("per-day price is not configured");
-        }
-        return amountMoney.divide(pricePerDay, 0, RoundingMode.CEILING).longValueExact();
+        return price.daysFor(amountMoney);
     }
 
     // ---------------------------------------------------------------------------------------

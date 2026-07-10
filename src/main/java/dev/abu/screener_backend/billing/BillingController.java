@@ -1,15 +1,16 @@
 package dev.abu.screener_backend.billing;
 
-import dev.abu.screener_backend.auth.AuthenticatedUser;
-import dev.abu.screener_backend.auth.AuthService;
 import dev.abu.screener_backend.billing.RegionResolver.Region;
+import dev.abu.screener_backend.billing.dto.PayAsYouGoDaysResponse;
 import dev.abu.screener_backend.billing.dto.PlanCatalogResponse;
-import dev.abu.screener_backend.user.User;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.math.BigDecimal;
+
 
 /**
  * Public subscription catalog. Mounted under {@code /api/billing}; covered by the
@@ -20,26 +21,31 @@ import org.springframework.web.bind.annotation.RestController;
  * via {@link RegionResolver} (a UZ/UZS stub today) and returns the authoritative prices for it.
  */
 @RestController
-@RequestMapping("/api/billing")
+@RequestMapping("/api/billing-catalog")
 public class BillingController {
 
     private final PricingService pricingService;
     private final RegionResolver regionResolver;
-    private final AuthService authService;
 
     public BillingController(PricingService pricingService,
-                             RegionResolver regionResolver,
-                             AuthService authService) {
+                             RegionResolver regionResolver) {
         this.pricingService = pricingService;
         this.regionResolver = regionResolver;
-        this.authService = authService;
     }
 
     @GetMapping("/plans")
-    public PlanCatalogResponse plans(Authentication authentication, HttpServletRequest request) {
-        AuthenticatedUser principal = (AuthenticatedUser) authentication.getPrincipal();
-        User user = authService.getUser(principal.userId());
-        Region region = regionResolver.resolve(request, user);
+    public PlanCatalogResponse plans(HttpServletRequest request) {
+        Region region = regionResolver.resolve(request, null);
         return pricingService.catalogFor(region.currency());
+    }
+
+    /**
+     * Truly public (no JWT — see the {@code permitAll} rule in {@code SecurityConfig}): lets a
+     * not-yet-registered visitor estimate how many days their money buys under the single pay-as-you-go
+     * plan before signing up. Only {@code currency} + {@code amount} are accepted; the plan is implicit.
+     */
+    @GetMapping("/pay-as-you-go/days")
+    public PayAsYouGoDaysResponse payAsYouGoDays(@RequestParam String currency, @RequestParam BigDecimal amount) {
+        return new PayAsYouGoDaysResponse(pricingService.payAsYouGoDays(currency, amount));
     }
 }
