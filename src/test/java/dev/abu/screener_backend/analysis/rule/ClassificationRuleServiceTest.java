@@ -72,7 +72,11 @@ class ClassificationRuleServiceTest {
 
     private static BulkRuleRequest validUpsert() {
         return new BulkRuleRequest(List.of(new RuleAssignmentDto(
-                new RuleDto(List.of(new TierDto(1, 100_000, 0.01))),
+                new RuleDto(List.of(
+                        new TierDto(1, 100_000, 0.01),
+                        new TierDto(2, 50_000, 0.02),
+                        new TierDto(3, 25_000, 0.05),
+                        new TierDto(4, 10_000, 0.1))),
                 List.of(new TargetDto("BTCUSDT", Market.FUTURES)))));
     }
 
@@ -103,7 +107,11 @@ class ClassificationRuleServiceTest {
 
         // Unknown symbol — rejected before any write.
         BulkRuleRequest bad = new BulkRuleRequest(List.of(new RuleAssignmentDto(
-                new RuleDto(List.of(new TierDto(1, 100_000, 0.01))),
+                new RuleDto(List.of(
+                        new TierDto(1, 100_000, 0.01),
+                        new TierDto(2, 50_000, 0.02),
+                        new TierDto(3, 25_000, 0.05),
+                        new TierDto(4, 10_000, 0.1))),
                 List.of(new TargetDto("NOPEUSDT", Market.FUTURES)))));
 
         assertThrows(ApiException.class, () -> svc.upsertRules(UUID.randomUUID(), bad));

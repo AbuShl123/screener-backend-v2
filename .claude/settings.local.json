@@ -83,7 +83,8 @@
       "Bash(./mvnw.cmd -q -o compile)",
       "Bash(./mvnw.cmd -o compile)",
       "Bash(./gradlew test *)",
-      "PowerShell(.\\\\mvnw.cmd -q -Dtest=ClassificationRuleServiceTest test 2>&1 | Select-Object -Last 150)"
+      "PowerShell(.\\\\mvnw.cmd -q -Dtest=ClassificationRuleServiceTest test 2>&1 | Select-Object -Last 150)",
+      "Bash(./mvnw.cmd -q -Dtest=DefaultClassificationRuleTest,ThresholdClassificationRuleTest test)"
     ]
   }
 }
