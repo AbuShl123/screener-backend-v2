@@ -35,8 +35,10 @@ whose price row is the per-day price.
 
 - **No auto-renewal / recurring charges.** Nothing renews automatically. When access ends, the user buys
   again from inside the app. No saved cards, no background charging, no grace period.
-- **No cancellation flow, no refunds.** A paid period simply runs to its end. (A refund *detected* from
-  the provider is recorded but never auto-revokes access.)
+- **No paid-subscription cancellation, no refunds.** A *paid* period simply runs to its end. (A refund
+  *detected* from the provider is recorded but never auto-revokes access.) An *unpaid* `PENDING` order
+  **can** be canceled by the user — that endpoint exists (see §11) — but it only voids the pending invoice,
+  it does not touch granted access.
 - **No multi-provider / multi-currency selection wiring.** Multicard only; audience Uzbekistan; all live
   prices in UZS. (The data model is multi-currency-ready — see §9 — but only UZS is seeded/resolved.)
 - **No access-gate enforcement yet.** `EntitlementService.hasAccess(...)` exists but is **not** wired
@@ -81,7 +83,7 @@ billing/                         (catalog + pricing + currency — pre-existing,
   PlanRepository, PlanPriceRepository
   Currency                        NEW (E10): enum {UZS(2),USD(2),BTC(8),ETH(18)} — decimals source of truth
   RegionResolver/DefaultRegionResolver   currency seam (UZ/UZS stub)
-  PricingService, BillingController      GET /api/billing/plans
+  PricingService, BillingController      GET /api/billing-catalog/plans (+ /pay-as-you-go/days) — PUBLIC
   PlanAdminService, PlanAdminController  ADMIN /api/admin/billing/**
 
 entitlement/                     (access state — pre-existing, extended for the ledger)
@@ -100,8 +102,8 @@ payment/                         (NEW: orders + provider boundary)
   OrderStateMachine               legal transitions + writes order_status_history
   OrderStatusHistory, OrderStatusHistoryRepository   append-only audit (+ monotonic seq)
   OrderRepository                 incl. findByIdForUpdate (pessimistic lock)
-  OrderService                    create/reuse + pay-by-days + the idempotent markPaidAndGrant
-  OrderController                 /api/billing/orders/**
+  OrderService                    create/reuse + pay-by-days + cancelCurrentOrder + the idempotent markPaidAndGrant
+  OrderController                 /api/billing/orders/** (incl. POST /current/cancel)
   PaymentReconciliationService    @Scheduled sweep over PENDING orders
   PaymentProvider                 the provider-agnostic boundary (interface)
   CheckoutSession, ProviderPayment, ProviderStatus   boundary value types
@@ -409,6 +411,7 @@ CREATED ──► PENDING ──► PAID ──► REVERTED
 | `POST` | `/api/billing/orders` | `{ "planCode": "monthly" }` or `{ "planCode": "pay_as_you_go", "amount": "790000" }` | `OrderDetailsEntry` (the created order, with a usable `checkoutUrl`) |
 | `GET`  | `/api/billing/orders` | — | order history, newest first, capped at 100 |
 | `GET`  | `/api/billing/orders/current` | — | latest open / most-recent order (UI polls this) |
+| `POST` | `/api/billing/orders/current/cancel` | — | cancel the current order if `PENDING` → `CANCELED` (else **409**); returns the updated `OrderDetailsEntry` |
 | `GET`  | `/api/billing/orders/{id}` | — | that order's detail |
 | `GET`  | `/api/billing/orders/{id}/history` | — | that order's full status-transition audit, newest first |
 
@@ -448,6 +451,17 @@ CREATED ──► PENDING ──► PAID ──► REVERTED
   endpoint is **owner-only** (404 if the order isn't the caller's), like `/{id}`.
 - A lost one-open-order create race surfaces as a retryable **409**; the SPA retries and reuses the
   now-committed open order.
+- **User cancel of the current order** — `POST /api/billing/orders/current/cancel` →
+  `OrderService.cancelCurrentOrder(userId)`. Resolves the current order the same way `current` does (the
+  open order, else the most recent), and requires it to be `PENDING`; any other status is a **409** (a
+  paid order has nothing to cancel, a terminal one no live invoice). It reloads under
+  `findByIdForUpdate` and re-checks `PENDING` before transitioning `PENDING → CANCELED`
+  (`OrderReason.USER_CANCELED`, `OrderSource.API`), then cancels the Multicard invoice **best-effort**
+  via `provider.cancelCheckout` — mirroring `supersede`, the local `CANCELED` is committed even if the
+  provider `DELETE /payment/invoice/{uuid}` fails. Consistent with the E6 rescue: if the user in fact
+  paid moments before cancelling, the `DELETE` 400s (already completed), we swallow it, and the
+  authoritative success callback later rescues `CANCELED → PAID`. No new state-machine edge was needed —
+  `PENDING → CANCELED` was already legal (it is also the `supersede` target).
 
 ### Access-history endpoint — `GET /api/billing/entitlement/history` (Bearer JWT)
 
@@ -520,6 +534,8 @@ Sandbox test credentials live in `application-local.yml` for local runs.
 | **Trial/expired user, or admin, buys a fixed plan** | Allowed — none are gated (trial converts, expired re-buys, admin bypasses entitlement). Pay-by-days is always exempt. |
 | **Lost-tab re-pay, same plan** | One-open-order lookup returns the existing `PENDING`; reuse its `checkoutUrl` (no grant — sweep/callback flips to PAID within a cycle, E1). |
 | **Re-pay, different plan** | Locked `supersede`: cancel old invoice best-effort, mark old `CANCELED`/`SUPERSEDED`, create fresh. |
+| **User cancels the current `PENDING` order** | `POST /orders/current/cancel`: locked re-check, `PENDING → CANCELED`/`USER_CANCELED`, cancel invoice best-effort. Non-`PENDING` current order → **409**. |
+| **User cancels just after paying (race)** | Cancel marks `CANCELED`, `DELETE` invoice 400s (already completed, swallowed); the success callback later rescues `CANCELED → PAID` (E6). |
 | **Race expired the order, then a real success callback arrives** | Callback rescues `EXPIRED/FAILED/CANCELED → PAID` (E6). Sweep does not. |
 | **Refund / `revert`** | Detected only via sweep. Recorded `REVERTED`; access **not** revoked. |
 | **Amount mismatch** | Callback → `200 {success:false}` (refund), order left `PENDING`. Sweep → `FAILED`/`AMOUNT_MISMATCH`. |

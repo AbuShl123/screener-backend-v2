@@ -13,9 +13,9 @@ import java.math.BigDecimal;
 
 
 /**
- * Public subscription catalog. Mounted under {@code /api/billing}; covered by the
- * {@code .anyRequest().authenticated()} catch-all in {@code SecurityConfig}, so every call requires a
- * Bearer JWT.
+ * Public subscription catalog. Mounted under {@code /api/billing-catalog}, which is registered
+ * {@code permitAll} in {@code SecurityConfig} — every endpoint here is reachable <strong>without</strong>
+ * a JWT, so a not-yet-registered visitor can browse pricing and estimate pay-as-you-go days.
  *
  * <p>The client never sends a price or currency — the server resolves the caller's billing currency
  * via {@link RegionResolver} (a UZ/UZS stub today) and returns the authoritative prices for it.

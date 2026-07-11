@@ -145,6 +145,54 @@ public class OrderService {
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Cancel  (POST /api/billing/orders/current/cancel)
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * User-initiated cancel of the current order's unpaid invoice. Finds the user's current order (the
+     * open one, else the most recent — the same view {@code /orders/current} exposes) and, only if it is
+     * still {@code PENDING}, transitions it to {@code CANCELED} and cancels the Multicard invoice
+     * best-effort. Any other status is a {@code 409}: a paid order has nothing to cancel, and an
+     * already-terminal order (expired/failed/canceled) has no live invoice.
+     *
+     * <p>The provider cancel is best-effort (mirrors {@link #supersede}): if the user in fact paid on the
+     * hosted page just before cancelling, Multicard's DELETE 400s (already completed), we swallow it, and
+     * the authoritative success callback later rescues {@code CANCELED → PAID} (E6). The local CANCELED is
+     * never blocked on the provider call.
+     */
+    public OrderDetailsEntry cancelCurrentOrder(UUID userId) {
+        Order current = orderRepository.findFirstByUser_IdAndStatusIn(userId, OPEN)
+                .orElseGet(() -> orderRepository
+                        .findByUser_IdOrderByCreatedAtDesc(userId, PageRequest.of(0, 1))
+                        .stream().findFirst().orElse(null));
+        if (current == null) {
+            throw ApiException.notFound("No orders for user");
+        }
+        if (current.getStatus() != OrderStatus.PENDING) {
+            throw ApiException.conflict("Current order is not pending; there is no active invoice to cancel.");
+        }
+
+        // Reload under a pessimistic lock and re-check: a concurrent success callback or sweep may have
+        // moved it out of PENDING between the read above and now. @Version backs the rare stale re-check.
+        Order order = orderRepository.findByIdForUpdate(current.getId())
+                .orElseThrow(() -> ApiException.notFound("Order not found: " + current.getId()));
+        if (order.getStatus() != OrderStatus.PENDING) {
+            throw ApiException.conflict("Current order is not pending; there is no active invoice to cancel.");
+        }
+
+        String providerUuid = order.getProviderUuid();
+        stateMachine.transition(order, OrderStatus.CANCELED, OrderSource.API, OrderReason.USER_CANCELED, null);
+        if (providerUuid != null) {
+            try {
+                provider.cancelCheckout(providerUuid);
+            } catch (RuntimeException e) {
+                log.warn("Failed to cancel invoice {} on user cancel: {}", providerUuid, e.getMessage());
+            }
+        }
+        return toDetails(order);
+    }
+
     private OrderDetailsEntry createNew(
             User user,
             Plan plan,

@@ -79,7 +79,11 @@
       "Bash(psql -h localhost -p 5432 -U postgres -d screener_new -c \"SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;\")",
       "Bash(mvn -q -Dtest=EmailServiceTest test)",
       "Bash(mvn -q -Dtest=EmailServiceTest#debugDumpStructure test)",
-      "Bash(mvn -q -Dtest=DefaultClassificationRuleTest,ScreenerBackendApplicationTests test)"
+      "Bash(mvn -q -Dtest=DefaultClassificationRuleTest,ScreenerBackendApplicationTests test)",
+      "Bash(./mvnw.cmd -q -o compile)",
+      "Bash(./mvnw.cmd -o compile)",
+      "Bash(./gradlew test *)",
+      "PowerShell(.\\\\mvnw.cmd -q -Dtest=ClassificationRuleServiceTest test 2>&1 | Select-Object -Last 150)"
     ]
   }
 }

@@ -39,14 +39,16 @@ REST endpoint or the WebSocket `@OnOpen`. Practically, for the frontend:
 
 ## 2. Relevant API surface
 
-All Bearer-JWT unless noted. Full details in the backend doc §11.
+All Bearer-JWT **unless the Auth column says PUBLIC**. Full details in the backend doc §11 and the
+endpoint-level reference [`monetization-api.md`](./monetization-api.md).
 
-| Method | Path | Purpose (frontend use) |
-|--------|------|------------------------|
-| `GET`  | `/api/billing/entitlement` | Access state + `accessExpiresAt` + `hasPaid`. **Boot-time gate + renewal nudge.** |
-| `GET`  | `/api/billing/entitlement/history` | Access ledger (trial + purchase grants, stacking moves). Account page. |
-| `GET`  | `/api/billing/plans` | Catalog: 4 plan codes + prices (UZS). Paywall. |
-| `POST` | `/api/billing/orders` | Create order `{ planCode, amount? }` → `OrderDetailsEntry` with `checkoutUrl`. |
+| Method | Path | Auth | Purpose (frontend use) |
+|--------|------|------|------------------------|
+| `GET`  | `/api/billing/entitlement` | Bearer | Access state + `accessExpiresAt` + `hasPaid`. **Boot-time gate + renewal nudge.** |
+| `GET`  | `/api/billing/entitlement/history` | Bearer | Access ledger (trial + purchase grants, stacking moves). Account page. |
+| `GET`  | `/api/billing-catalog/plans` | **PUBLIC** | Catalog: 4 plan codes + prices (UZS). Paywall. |
+| `GET`  | `/api/billing-catalog/pay-as-you-go/days?currency=&amount=` | **PUBLIC** | Authoritative `ceil(amount/pricePerDay)` day estimate → `{ days }`. |
+| `POST` | `/api/billing/orders` | Bearer | Create order `{ planCode, amount? }` → `OrderDetailsEntry` with `checkoutUrl`. |
 | `GET`  | `/api/billing/orders/current` | Latest open / most-recent order. **The endpoint the SPA polls.** |
 | `GET`  | `/api/billing/orders` | Order history, newest first (cap 100). |
 | `GET`  | `/api/billing/orders/{id}` | One order's detail. |
@@ -79,7 +81,7 @@ checkoutUrl, providerUuid, expiresAt, paidAt, createdAt`.
    │  GET /api/billing/entitlement   →  state = EXPIRED, hasPaid = false
    ▼
 [Paywall / Subscribe page]           ← the app is locked behind this
-   │  GET /api/billing/plans  → weekly / monthly / yearly / pay_as_you_go (+ UZS prices)
+   │  GET /api/billing-catalog/plans  → weekly / monthly / yearly / pay_as_you_go (+ UZS prices)
    │  user picks a plan (or enters an amount for pay-as-you-go)
    ▼
    │  POST /api/billing/orders { planCode, amount? }
@@ -105,9 +107,10 @@ checkoutUrl, providerUuid, expiresAt, paidAt, createdAt`.
 The user types an arbitrary sum; the UI should show a **live day estimate** as they type
 (`≈ 790 days`). The formula is `days = ceil(amount / pricePerDay)`.
 
-- This is computable client-side **if** `GET /api/billing/plans` exposes the per-day price for
-  `pay_as_you_go` (its price row *is* the per-day price).
-- A server-side quote endpoint would make the rounding authoritative — see [§4.1](#41-quote--preview-endpoint-nice-to-have).
+- This is computable client-side from `GET /api/billing-catalog/plans`, which exposes the per-day price
+  for `pay_as_you_go` (its price row *is* the per-day price).
+- For an authoritative count, `GET /api/billing-catalog/pay-as-you-go/days?currency=&amount=` (PUBLIC)
+  returns the server-side `ceil` — confirm the estimate with it on blur / before submit (see §4.1).
 - Validate before `POST`: positive, and ≤ 2 decimals for UZS. Backend also returns `400` for
   non-positive / over-scale — map that to an inline field error, not a page.
 
@@ -146,22 +149,28 @@ future, but **allows** renewal once access falls within the **renewal window** (
 
 Ordered by UX impact. Everything the core flow *needs* already exists; these are improvements.
 
-### 4.1 Quote / preview endpoint (nice-to-have)
+### 4.1 Quote / preview endpoint — IMPLEMENTED (pay-as-you-go)
 
-`POST /api/billing/orders/quote { planCode, amount }` → `{ days, amount, currency }`.
+`GET /api/billing-catalog/pay-as-you-go/days?currency=UZS&amount=790000` → `{ "days": 158 }` (PUBLIC).
 
-Pay-as-you-go day count is derivable client-side (`ceil(amount / pricePerDay)`), but a server quote makes
-the rounding (`ceil`) and per-currency scale validation **authoritative**, so the "you'll get N days"
-preview is guaranteed identical to what the order actually grants. Without it, the client re-implements
-the math and can drift from the server.
+The pay-as-you-go day count is derivable client-side (`ceil(amount / pricePerDay)`), but this endpoint
+makes the rounding (`ceil`) and per-currency scale validation **authoritative**, so the "you'll get N
+days" preview is guaranteed identical to what the order actually grants. Use the catalog per-day price for
+instant keystroke feedback, then confirm with this endpoint before submit. A general FIXED-plan quote is
+unnecessary (those prices come straight from the catalog).
 
-### 4.2 Cancel / abandon current order (genuinely useful — biggest gap)
+### 4.2 Cancel / abandon current order — IMPLEMENTED
 
-`POST /api/billing/orders/current/cancel` (or `DELETE /api/billing/orders/{id}`).
+`POST /api/billing/orders/current/cancel` → the updated `OrderDetailsEntry` (`status: "CANCELED"`,
+`reason: "USER_CANCELED"`); **409** if the current order isn't `PENDING`. No body. See
+[`monetization-api.md` §4.3/§5.3](./monetization-api.md).
 
-The provider adapter already has `cancelCheckout`, but there's **no user-facing endpoint**. Today a
-"changed my mind" user must either wait out the 30-min TTL or pick a *different* plan to trigger
-`supersede`. An explicit cancel would make **"Start over"** instant and clean — directly improves N2/N3.
+This closes what was the biggest gap: a "changed my mind" user no longer has to wait out the 30-min TTL or
+pick a *different* plan to trigger `supersede`. Wire a **"Cancel payment" / "Start over"** button on the
+polling and resume screens (N2/N3) straight to this endpoint; on `200` clear the pending UI, on `409`
+refetch `current`/`entitlement` and reconcile. The invoice cancel is best-effort, so after a cancel still
+trust `entitlement` for the true access state — a payment that landed just before the click can still be
+granted by the success callback.
 
 ### 4.3 Receipt URL exposure (minor)
 
@@ -186,7 +195,7 @@ polling for now.
 
 ### Core purchase flow
 1. **Paywall / Subscribe page** — the locked-app gate and primary conversion surface. Renders 4 plan
-   cards (weekly / monthly / yearly / pay-as-you-go) from `GET /plans`. Pay-as-you-go card has an amount
+   cards (weekly / monthly / yearly / pay-as-you-go) from `GET /api/billing-catalog/plans`. Pay-as-you-go card has an amount
    input with a **live "≈ N days"** estimate. Reflects the N1 "already active" state by disabling fixed
    plans and the N3 renewal nudge. Design this one well.
 2. **"Redirecting to payment" interstitial** — brief, between `POST /orders` and the `checkoutUrl`
@@ -215,8 +224,8 @@ polling for now.
 ## 6. Implementation checklist (quick reference)
 
 - [ ] Gate the app on `GET /api/billing/entitlement` at boot and on window focus.
-- [ ] Paywall reads `GET /api/billing/plans`; disable fixed plans when active-beyond-window; keep
-      pay-as-you-go always enabled.
+- [ ] Paywall reads `GET /api/billing-catalog/plans` (public); disable fixed plans when
+      active-beyond-window; keep pay-as-you-go always enabled.
 - [ ] Pay-as-you-go: string amount, positive, ≤ 2 dp (UZS), live day estimate.
 - [ ] `POST /orders` → redirect to `checkoutUrl`; auto-retry once on a `409` race (N8).
 - [ ] Handle `409` active-beyond-window (N1) as an informational state, not an error.

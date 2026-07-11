@@ -11,6 +11,7 @@ package dev.abu.screener_backend.payment;
 public enum OrderReason {
 
     SUPERSEDED("Replaced by a new order for a different plan."),
+    USER_CANCELED("Canceled by the user before payment."),
     INVOICE_EXPIRED("Invoice TTL elapsed; no payment received."),
     AMOUNT_MISMATCH("Payment amount did not match the order amount."),
     UNKNOWN_ORDER("Callback referenced a provider uuid with no matching order."),

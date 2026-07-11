@@ -127,8 +127,8 @@ public class EntitlementService {
     }
 
     /**
-     * Whether the user may use the screener right now. Provided for the enforcement plan to consume;
-     * not wired into any gate yet.
+     * Whether the user may use the screener right now. Enforced at connect time by the WebSocket
+     * {@code @OnOpen} gate and by every authenticated {@code /api/rules} endpoint.
      */
     @Transactional(readOnly = true)
     public boolean hasAccess(User user) {

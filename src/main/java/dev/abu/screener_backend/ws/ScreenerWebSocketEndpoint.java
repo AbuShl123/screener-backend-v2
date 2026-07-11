@@ -1,9 +1,12 @@
 package dev.abu.screener_backend.ws;
 
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
+import dev.abu.screener_backend.auth.AuthService;
 import dev.abu.screener_backend.auth.AuthenticatedUser;
 import dev.abu.screener_backend.auth.JwtService;
+import dev.abu.screener_backend.entitlement.EntitlementService;
 import dev.abu.screener_backend.feed.OrderBookBroadcaster;
+import dev.abu.screener_backend.user.User;
 import jakarta.websocket.*;
 import jakarta.websocket.server.ServerEndpoint;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +30,12 @@ public class ScreenerWebSocketEndpoint {
     @Autowired
     private UserFeedRegistry userFeedRegistry;
 
+    @Autowired
+    private AuthService authService;
+
+    @Autowired
+    private EntitlementService entitlementService;
+
     @OnOpen
     public void onOpen(Session session) {
         List<String> tokens = session.getRequestParameterMap().get("token");
@@ -37,6 +46,11 @@ public class ScreenerWebSocketEndpoint {
         AuthenticatedUser user = jwtService.validateAndExtract(tokens.get(0));
         if (user == null) {
             closeUnauthorized(session, "Invalid or expired token");
+            return;
+        }
+        User fullUser = authService.getUser(user.userId());
+        if (!entitlementService.hasAccess(fullUser)) {
+            closeUnauthorized(session, "Subscription required");
             return;
         }
 
