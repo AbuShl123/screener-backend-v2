@@ -59,7 +59,7 @@ customised. It has two sub-tables. The live values can always be fetched from
 | 4    | $10,000,000       | 5.0% (`0.05`)         |
 | 3    | $1,000,000        | 2.0% (`0.02`)         |
 | 2    | $500,000          | 1.0% (`0.01`)         |
-| 1    | $300,000          | 0.5% (`0.005`)        |
+| 1    | $200,000          | 0.5% (`0.005`)        |
 
 **High-liquidity tickers** (BTCUSDT, ETHUSDT, SOLUSDT — deeper books, so tighter thresholds):
 
@@ -80,26 +80,59 @@ Tickers without a custom rule always use the default.
 A user can define their own thresholds for any `(symbol, market)` combination. Key points:
 
 - The custom rule **replaces** the default for that ticker — it is not merged with it.
-- Each custom rule defines between **1 and 4 tiers**, and they must be **contiguous starting at
-  tier 1** (e.g. tiers 1+2+3 are valid; tiers 1+3 are not valid — tier 2 cannot be skipped).
+- Each custom rule must define **all four tiers, 1 through 4** — partial tier sets (e.g. only
+  tiers 1+2, or tiers 1+2+3) are rejected. There is no way to override just some tiers and fall
+  back to the default for the rest.
 - `(symbol, market)` is the unit of granularity: a user can have different thresholds for
   `BTCUSDT SPOT` vs `BTCUSDT FUTURES`.
 - The same rule body can be applied to multiple tickers in one request.
-- Live effect: custom rules take effect the next time the user connects via WebSocket. Editing a
-  rule while connected requires a reconnect to take effect.
+- **Live effect**: rule edits apply immediately to any already-connected WebSocket session — no
+  reconnect needed. Writing a rule (`PUT`/`DELETE`) rebuilds the affected user's classification
+  context server-side, retargets every open session for that user, and pushes a fresh snapshot on
+  the next broadcaster tick (≤100ms later).
 
 ---
 
 ## Authentication
 
-All endpoints require a valid **Bearer JWT** in the `Authorization` header:
+All `/api/rules/**` endpoints require a valid **Bearer JWT** in the `Authorization` header —
+including `GET /api/rules/default`, which is not in the security allowlist despite returning
+non-personalized data:
 
 ```
 Authorization: Bearer <access_token>
 ```
 
 The user's identity is always derived from the JWT — the request body never contains a user ID.
-Requests without a valid token receive `401 Unauthorized`.
+
+**Missing or invalid token**: Spring Security rejects the request before it reaches the
+controller, returning an **empty-body `403 Forbidden`** — not `401`, and not the JSON error shape
+described below. Treat any `403` with no body as "not authenticated" and prompt a re-login /
+token refresh.
+
+---
+
+## Access Requirement (Active Subscription)
+
+`GET /api/rules`, `GET /api/rules/{symbol}/{market}`, `PUT /api/rules`, and `DELETE /api/rules`
+additionally require the caller to currently have access (an unexpired free trial **or** a paid
+subscription — see the monetization API docs for `AccessState`). This is checked *after*
+authentication succeeds, so it's a distinct failure mode from the empty `403` above:
+
+```json
+{
+  "message": "Active subscription required",
+  "status": 403,
+  "path": "/api/rules"
+}
+```
+
+This is a normal, JSON-bodied `403` (unlike the empty-body auth failure) — distinguish the two by
+checking for a response body. `ADMIN`-role users always bypass this check.
+
+`GET /api/rules/default` is **not** gated by this check — any authenticated user can view the
+default thresholds regardless of subscription state, so the UI can render the "what you'd be
+overriding" table even for a lapsed user browsing the paywall.
 
 ---
 
@@ -119,8 +152,10 @@ Requests without a valid token receive `401 Unauthorized`.
 ### `GET /api/rules/default`
 
 Returns the **server's default classification rule** — the two threshold tables and the list of
-symbols that use the high-liquidity table. No authentication required. Use this to display the
-default thresholds in the UI so the user understands what they are overriding.
+symbols that use the high-liquidity table. Requires a valid JWT (see [Authentication](#authentication))
+but **not** an active subscription (see [Access Requirement](#access-requirement-active-subscription)) —
+any logged-in user can view this, including a lapsed one. Use this to display the default
+thresholds in the UI so the user understands what they are overriding.
 
 **Request**: No body, no query parameters.
 
@@ -132,7 +167,7 @@ default thresholds in the UI so the user understands what they are overriding.
     { "tier": 4, "minNotional": 10000000, "maxDistance": 0.05   },
     { "tier": 3, "minNotional": 1000000,  "maxDistance": 0.02   },
     { "tier": 2, "minNotional": 500000,   "maxDistance": 0.01   },
-    { "tier": 1, "minNotional": 300000,   "maxDistance": 0.005  }
+    { "tier": 1, "minNotional": 200000,   "maxDistance": 0.005  }
   ],
   "highLiquiditySymbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
   "highLiquidityTiers": [
@@ -180,8 +215,10 @@ Returns **all custom rules** the authenticated user has configured, grouped by `
     "symbol": "SOLUSDT",
     "market": "SPOT",
     "tiers": [
-      { "tier": 2, "minNotional": 300000, "maxDistance": 0.02 },
-      { "tier": 1, "minNotional": 100000, "maxDistance": 0.01 }
+      { "tier": 4, "minNotional": 4000000, "maxDistance": 0.03 },
+      { "tier": 3, "minNotional": 800000,  "maxDistance": 0.02 },
+      { "tier": 2, "minNotional": 300000,  "maxDistance": 0.015 },
+      { "tier": 1, "minNotional": 100000,  "maxDistance": 0.01 }
     ]
   }
 ]
@@ -216,6 +253,8 @@ Returns the custom rule for **one specific ticker**, or `404` if none is configu
   "market": "FUTURES",
   "tiers": [
     { "tier": 4, "minNotional": 5000000, "maxDistance": 0.04  },
+    { "tier": 3, "minNotional": 1000000, "maxDistance": 0.02  },
+    { "tier": 2, "minNotional": 500000,  "maxDistance": 0.01  },
     { "tier": 1, "minNotional": 200000,  "maxDistance": 0.005 }
   ]
 }
@@ -233,8 +272,8 @@ can apply the same rule to many tickers, or apply different rules to different t
 
 **Semantics**: for each `(symbol, market)` target, the existing rule (if any) is **completely
 replaced** by the new tier set. This is not a patch — the entire tier set is overwritten
-atomically. Sending two tiers for a target that previously had four tiers results in exactly two
-tiers afterwards.
+atomically. Every request must supply all four tiers (1 through 4); there is no way to update a
+subset of tiers and leave the rest untouched.
 
 **Request `Content-Type: application/json`**:
 
@@ -270,8 +309,10 @@ assignments:
     {
       "rule": {
         "tiers": [
-          { "tier": 2, "minNotional": 500000, "maxDistance": 0.02 },
-          { "tier": 1, "minNotional": 100000, "maxDistance": 0.01 }
+          { "tier": 4, "minNotional": 5000000, "maxDistance": 0.04 },
+          { "tier": 3, "minNotional": 1000000, "maxDistance": 0.03 },
+          { "tier": 2, "minNotional": 500000,  "maxDistance": 0.02 },
+          { "tier": 1, "minNotional": 100000,  "maxDistance": 0.01 }
         ]
       },
       "targets": [
@@ -281,6 +322,7 @@ assignments:
     {
       "rule": {
         "tiers": [
+          { "tier": 4, "minNotional": 500000, "maxDistance": 0.04 },
           { "tier": 3, "minNotional": 200000, "maxDistance": 0.03 },
           { "tier": 2, "minNotional": 80000,  "maxDistance": 0.02 },
           { "tier": 1, "minNotional": 30000,  "maxDistance": 0.01 }
@@ -331,7 +373,7 @@ is rejected with `400 Bad Request` and a human-readable message. No partial appl
 |-------|---------------------|
 | `tier` in range | `tier` not in `[1, 4]` |
 | No duplicate tiers within a rule | Two entries with the same `tier` number in one assignment |
-| Tiers contiguous starting at 1 | Missing a tier — e.g. tiers `{1, 3}` (tier 2 skipped). Rule: `maxTier == numberOfTiers` |
+| All four tiers present | Any of tiers `1, 2, 3, 4` is missing — e.g. `{1, 2, 3}` or `{1, 2}` are both rejected. Rule: exactly 4 distinct tiers, 1 through 4 |
 | `minNotional` non-negative | `minNotional < 0` |
 | `maxDistance` positive and within price filter | `maxDistance ≤ 0` or `maxDistance > 0.1` |
 | Rule has at least one tier | `tiers` is empty or missing |
@@ -340,9 +382,10 @@ is rejected with `400 Bad Request` and a human-readable message. No partial appl
 > the mid-price. Any threshold above `0.1` could never match any level, so the backend rejects
 > it upfront instead of storing a rule that silently does nothing.
 
-> **Why must tiers be contiguous starting at 1?** Gaps (e.g. having tier 1 and tier 3 but not
-> tier 2) would leave tier 2 unresolvable. The user must define every tier from 1 up to their
-> desired maximum.
+> **Why must every rule define all four tiers?** A partial tier set (e.g. only tiers 1 and 2)
+> would leave tiers 3 and 4 unresolvable for that ticker — orders that should be classified at
+> those tiers would silently fall through. Requiring full coverage means a custom rule always
+> produces an unambiguous classification, the same guarantee the default rule provides.
 
 ### Per-Target Checks
 
@@ -374,15 +417,20 @@ All `4xx` errors return a JSON body:
 | Status | Meaning |
 |--------|---------|
 | `400 Bad Request` | Validation failure — `message` contains a human-readable description |
-| `401 Unauthorized` | Missing or invalid JWT |
+| `403 Forbidden` (empty body) | Missing or invalid JWT — rejected by Spring Security before reaching the controller, so there is no JSON body |
+| `403 Forbidden` (JSON body, `"Active subscription required"`) | Valid JWT, but no active trial/paid access — all endpoints except `GET /api/rules/default` |
 | `404 Not Found` | Only from `GET /api/rules/{symbol}/{market}` when no rule exists |
 
 ---
 
 ## Practical Notes for the Frontend
 
-- **Live effect**: custom rules take effect the next time the user connects via WebSocket. Editing
-  a rule while connected requires a page reload / reconnect.
+- **Live effect**: rule edits apply to already-connected sessions immediately — no page reload or
+  reconnect needed. The user should see their feed retarget within ~100ms of a successful
+  `PUT`/`DELETE`.
+- **Every `/api/rules/**` call needs a JWT**, including `GET /api/rules/default`. A `403` with no
+  body means "not authenticated"; a `403` with a JSON body means "authenticated but access has
+  lapsed" — handle these two differently (re-login vs. show paywall).
 - **Symbols are always uppercase**: normalise user input before sending.
 - **Markets**: only `"SPOT"` and `"FUTURES"` are valid — no other values accepted.
 - **`minNotional` is USD**: collect and send as a plain number (`5000000` for $5M). No formatting

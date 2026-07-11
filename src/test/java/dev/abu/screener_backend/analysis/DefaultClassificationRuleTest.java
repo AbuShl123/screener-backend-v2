@@ -32,8 +32,8 @@ class DefaultClassificationRuleTest {
         assertEquals(3, rule.computeTier(1_000_000, 0.02, false));
         // tier 2: notional >= 500_000 && distance <= 0.01
         assertEquals(2, rule.computeTier(500_000, 0.01, false));
-        // tier 1: notional >= 300_000 && distance <= 0.005
-        assertEquals(1, rule.computeTier(300_000, 0.005, false));
+        // tier 1: notional >= 200_000 && distance <= 0.005
+        assertEquals(1, rule.computeTier(200_000, 0.005, false));
     }
 
     @Test
@@ -41,7 +41,7 @@ class DefaultClassificationRuleTest {
         // just below tier-4 notional but still meets tier-3 (distance within tier-3's 0.02 window) → tier 3
         assertEquals(3, rule.computeTier(9_999_999, 0.02, false));
         // just below tier-1 notional → 0
-        assertEquals(0, rule.computeTier(299_999, 0.005, false));
+        assertEquals(0, rule.computeTier(199_999, 0.005, false));
     }
 
     @Test

@@ -17,5 +17,6 @@ public record UserProfileResponse(
         String email,
         String role,
         AccessState accessState,
-        Instant accessExpiresAt
+        Instant accessExpiresAt,
+        Instant registeredAt
 ) {}

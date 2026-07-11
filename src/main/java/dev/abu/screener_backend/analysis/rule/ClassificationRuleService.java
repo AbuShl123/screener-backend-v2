@@ -229,7 +229,6 @@ public class ClassificationRuleService {
         List<TierDto> tiers = rule.tiers();
 
         boolean[] seen = new boolean[5]; // indices 1..4
-        int maxTier = 0;
         for (TierDto tier : tiers) {
             int t = tier.tier();
             if (t < 1 || t > 4) {
@@ -239,7 +238,6 @@ public class ClassificationRuleService {
                 throw badRequest("duplicate tier: " + t);
             }
             seen[t] = true;
-            maxTier = Math.max(maxTier, t);
 
             if (tier.minNotional() < 0) {
                 throw badRequest("minNotional must be >= 0: got " + tier.minNotional());
@@ -250,11 +248,10 @@ public class ClassificationRuleService {
             }
         }
 
-        // Full tier-list validation: the provided tiers must form a contiguous set starting at 1.
-        // {1,2,4} is rejected because tier 3 is missing.
-        if (maxTier != tiers.size()) {
-            throw badRequest("tiers must be contiguous starting at 1 (no gaps); "
-                    + "got " + tiers.size() + " tiers with max tier " + maxTier);
+        // Full tier-list validation: the request must cover every tier 1 through 4 — partial
+        // tier sets (e.g. {1,2}) are rejected.
+        if (tiers.size() != 4) {
+            throw badRequest("tiers must cover the full range 1-4; got " + tiers.size() + " tiers");
         }
     }
 

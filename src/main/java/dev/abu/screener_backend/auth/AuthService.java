@@ -194,7 +194,7 @@ public class AuthService {
         return new UserProfileResponse(
                 user.getId(), user.getFirstName(), user.getLastName(),
                 user.getEmail(), user.getRole().name(),
-                view.state(), view.accessExpiresAt()
+                view.state(), view.accessExpiresAt(), user.getCreatedAt()
         );
     }
 

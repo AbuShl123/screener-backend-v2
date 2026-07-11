@@ -2,6 +2,7 @@ package dev.abu.screener_backend.billing;
 
 import dev.abu.screener_backend.billing.dto.PlanCatalogResponse;
 import dev.abu.screener_backend.billing.dto.PlanDto;
+import dev.abu.screener_backend.error.ApiException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +22,9 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class PricingService {
+
+    /** The single non-fixed (pay-by-days) plan's stable code. */
+    private static final String PAY_AS_YOU_GO_CODE = "pay_as_you_go";
 
     private final PlanRepository planRepository;
     private final PlanPriceRepository planPriceRepository;
@@ -54,5 +58,21 @@ public class PricingService {
                     plan.getDurationDays(), cur.forDisplay(amount)));
         }
         return new PlanCatalogResponse(currency, dtos);
+    }
+
+    /**
+     * How many days {@code amount} buys under the pay-as-you-go plan in {@code currency}, without
+     * creating an order. Mirrors {@code OrderService}'s pay-by-days math via {@link PlanPrice#daysFor}.
+     */
+    @Transactional(readOnly = true)
+    public long payAsYouGoDays(String currency, BigDecimal amount) {
+        Currency cur = Currency.of(currency);
+        Plan plan = planRepository.findByCode(PAY_AS_YOU_GO_CODE)
+                .filter(Plan::isActive)
+                .orElseThrow(() -> ApiException.badRequest("Pay-as-you-go plan is not available"));
+        PlanPrice price = planPriceRepository.findByPlan_IdAndCurrency(plan.getId(), cur.name())
+                .filter(PlanPrice::isActive)
+                .orElseThrow(() -> ApiException.badRequest("No price for pay-as-you-go plan in " + cur.name()));
+        return price.daysFor(amount);
     }
 }

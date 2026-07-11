@@ -74,6 +74,16 @@ public class OrderController {
         return orderService.currentOrder(principal(authentication).userId());
     }
 
+    /**
+     * Cancels the caller's current order's unpaid invoice. Succeeds only when that order is {@code PENDING}
+     * (→ {@code CANCELED}); any other status is a {@code 409} — a paid or already-terminal order has no
+     * live invoice to cancel. Returns the updated order view.
+     */
+    @PostMapping("/current/cancel")
+    public OrderDetailsEntry cancelCurrent(Authentication authentication) {
+        return orderService.cancelCurrentOrder(principal(authentication).userId());
+    }
+
     @GetMapping("/{id}")
     public OrderDetailsEntry one(Authentication authentication, @PathVariable UUID id) {
         return orderService.getOrder(principal(authentication).userId(), id);
