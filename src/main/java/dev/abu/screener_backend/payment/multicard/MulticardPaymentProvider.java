@@ -64,10 +64,11 @@ public class MulticardPaymentProvider implements PaymentProvider {
                     mapStatus(data.status()),
                     data.ps(),
                     data.totalAmount(),
+                    data.receiptUrl(),
                     data.psResponseMsg());
         } catch (MulticardException e) {
             if (NOT_FOUND_CODE.equals(e.getCode())) {
-                return new ProviderPayment(ProviderStatus.NOT_FOUND, null, null, e.getMessage());
+                return new ProviderPayment(ProviderStatus.NOT_FOUND, null, null, null, e.getMessage());
             }
             throw e;
         }

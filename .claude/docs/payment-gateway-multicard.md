@@ -130,6 +130,7 @@ db/migration/
   V9__create_order_status_history.sql      (history in final shape: seq identity + (order_id, seq DESC) index)
   V10__create_entitlement_ledger.sql
   V11__payment_concurrency_and_audit.sql   (pre-existing tables only: user_entitlement.version + plan_prices → NUMERIC(38,18))
+  V14__add_receipt_url_to_orders.sql       (orders.receipt_url TEXT — bank-receipt link captured at grant)
 ```
 
 ---
@@ -434,7 +435,8 @@ CREATED ──► PENDING ──► PAID ──► REVERTED
   **`PER_DAY` (pay-by-days) is exempt** by business rule — a user may top up arbitrary days at any time,
   even mid-subscription.
 - **One order view, `OrderDetailsEntry(orderId, status, planCode, amount, accessDurationSeconds,
-  currency, provider, reason, reasonDetail, checkoutUrl, providerUuid, expiresAt, paidAt, createdAt)`** —
+  currency, provider, reason, reasonDetail, checkoutUrl, providerUuid, receiptUrl, expiresAt, paidAt,
+  createdAt)`** —
   returned on **both** create and status reads (a freshly created order and a polled order carry the same
   facts; the separate `CreateOrderResponse` was dropped — its only extra field, `alreadyPaid`, was always
   `false`). `reason`/`reasonDetail` come from the latest `order_status_history` row (by `seq DESC`). The
@@ -445,7 +447,11 @@ CREATED ──► PENDING ──► PAID ──► REVERTED
   server-resolved (today always `UZS` / `multicard`) and recorded for the future multi-currency /
   multi-provider world. `checkoutUrl` lets the SPA redirect on create and **recover the hosted-payment
   link** from `current`/`{id}` if it lost the `POST` response; `providerUuid` (the Multicard transaction
-  uuid) is exposed for support/debugging.
+  uuid) is exposed for support/debugging. `receiptUrl` is Multicard's bank-receipt link, captured once at
+  grant time — `markPaidAndGrant` snapshots it from the success callback (`MulticardCallbackPayload.receiptUrl`)
+  or the durable `GET /payment/{uuid}` (`ProviderPayment.receiptUrl`) — and stored on the order, so the
+  history endpoints surface it with no per-read provider call. It is non-null only on a `PAID` order (and
+  even then optional; the SPA renders it as a "view receipt" link, not a file download).
 - History read DTO `OrderHistoryEntry(fromStatus, toStatus, reason, reasonDetail, source, createdAt,
   seq)` — one row per transition from `order_status_history`, ordered by `seq DESC`. The `/{id}/history`
   endpoint is **owner-only** (404 if the order isn't the caller's), like `/{id}`.

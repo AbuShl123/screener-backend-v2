@@ -65,7 +65,7 @@ public class MulticardCallbackService {
         }
 
         try {
-            orderService.markPaidAndGrant(order.getId(), payload.ps(), OrderSource.CALLBACK);
+            orderService.markPaidAndGrant(order.getId(), payload.ps(), payload.receiptUrl(), OrderSource.CALLBACK);
         } catch (RuntimeException e) {
             // Transient (DB/lock) error → 500 so Multicard freezes funds and retries; the sweep is the backstop.
             log.error("Grant failed for order {} (transient); signalling retry", order.getId(), e);

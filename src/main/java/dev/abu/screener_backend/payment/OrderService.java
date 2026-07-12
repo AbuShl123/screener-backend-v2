@@ -257,7 +257,7 @@ public class OrderService {
      * a terminal order (it only ever scans {@code PENDING}; a terminal status at lock time is a rare race
      * and we leave it). A {@code REVERTED} order never grants — refunded money never resurrects.
      */
-    public void markPaidAndGrant(UUID orderId, String ps, OrderSource source) {
+    public void markPaidAndGrant(UUID orderId, String ps, String receiptUrl, OrderSource source) {
         Order order = orderRepository.findByIdForUpdate(orderId)
                 .orElseThrow(() -> ApiException.notFound("Order not found: " + orderId));
         OrderStatus status = order.getStatus();
@@ -274,6 +274,7 @@ public class OrderService {
             return;
         }
         order.setPs(ps);
+        order.setReceiptUrl(receiptUrl);
         order.setPaidAt(Instant.now());
         OrderReason grantReason = source == OrderSource.CALLBACK ? OrderReason.CALLBACK_GRANT : OrderReason.RECONCILED_GRANT;
         stateMachine.transition(order, OrderStatus.PAID, source, grantReason, null);
@@ -386,7 +387,7 @@ public class OrderService {
         return new OrderDetailsEntry(order.getId(), order.getStatus(),
                 order.getPlan().getCode(), amount, order.getGrantedDurationSeconds(),
                 order.getCurrency(), order.getPaymentProvider(), reason, detail,
-                order.getCheckoutUrl(), order.getProviderUuid(),
+                order.getCheckoutUrl(), order.getProviderUuid(), order.getReceiptUrl(),
                 order.getExpiresAt(), order.getPaidAt(), order.getCreatedAt());
     }
 

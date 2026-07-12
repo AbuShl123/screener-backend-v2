@@ -71,6 +71,10 @@ public class Order {
     @Column(name = "checkout_url", columnDefinition = "text")
     private String checkoutUrl;
 
+    /** Bank receipt link, captured at grant time (from the callback or the durable fetch). Set only when PAID. */
+    @Column(name = "receipt_url", columnDefinition = "text")
+    private String receiptUrl;
+
     /** now + invoice ttl (30m). After this, an unpaid order is expired by the sweep. */
     @Column(name = "expires_at")
     private Instant expiresAt;

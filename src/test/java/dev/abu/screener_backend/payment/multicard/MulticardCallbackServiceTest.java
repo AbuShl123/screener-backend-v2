@@ -127,7 +127,7 @@ class MulticardCallbackServiceTest {
     private OrderService orderService() {
         return new OrderService(null, null, null, null, null, null, null, props()) {
             @Override
-            public void markPaidAndGrant(UUID orderId, String ps, OrderSource source) {
+            public void markPaidAndGrant(UUID orderId, String ps, String receiptUrl, OrderSource source) {
                 if (grantThrows) {
                     throw new RuntimeException("transient db error");
                 }

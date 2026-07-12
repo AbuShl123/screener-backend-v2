@@ -239,10 +239,11 @@ class OrderServiceTest {
         price("monthly", "UZS", "150000");
         Order order = seedOpenOrder(monthly, "https://x", Instant.now().plusSeconds(600));
 
-        service.markPaidAndGrant(order.getId(), "uzcard", OrderSource.CALLBACK);
-        service.markPaidAndGrant(order.getId(), "uzcard", OrderSource.CALLBACK);
+        service.markPaidAndGrant(order.getId(), "uzcard", "https://receipt/1", OrderSource.CALLBACK);
+        service.markPaidAndGrant(order.getId(), "uzcard", "https://receipt/1", OrderSource.CALLBACK);
 
         assertEquals(OrderStatus.PAID, orders.get(order.getId()).getStatus());
+        assertEquals("https://receipt/1", orders.get(order.getId()).getReceiptUrl(), "receipt link captured at grant");
         assertEquals(1, extendCalls.get(), "entitlement extended exactly once for one payment");
     }
 
@@ -252,7 +253,7 @@ class OrderServiceTest {
         Order order = seedOpenOrder(monthly, "https://x", Instant.now().plusSeconds(600));
         order.setStatus(OrderStatus.EXPIRED); // a race expired it before the genuine callback arrived
 
-        service.markPaidAndGrant(order.getId(), "uzcard", OrderSource.CALLBACK);
+        service.markPaidAndGrant(order.getId(), "uzcard", "https://receipt/1", OrderSource.CALLBACK);
 
         assertEquals(OrderStatus.PAID, orders.get(order.getId()).getStatus(), "callback rescues a terminal order");
         assertEquals(OrderReason.CALLBACK_GRANT, latestReason(order.getId()));
@@ -265,7 +266,7 @@ class OrderServiceTest {
         Order order = seedOpenOrder(monthly, "https://x", Instant.now().plusSeconds(600));
         order.setStatus(OrderStatus.EXPIRED);
 
-        service.markPaidAndGrant(order.getId(), "uzcard", OrderSource.RECONCILIATION);
+        service.markPaidAndGrant(order.getId(), "uzcard", "https://receipt/1", OrderSource.RECONCILIATION);
 
         assertEquals(OrderStatus.EXPIRED, orders.get(order.getId()).getStatus(), "sweep must not resurrect a terminal order");
         assertEquals(0, extendCalls.get());
@@ -277,7 +278,7 @@ class OrderServiceTest {
         Order order = seedOpenOrder(monthly, "https://x", Instant.now().plusSeconds(600));
         order.setStatus(OrderStatus.REVERTED); // refunded
 
-        service.markPaidAndGrant(order.getId(), "uzcard", OrderSource.CALLBACK);
+        service.markPaidAndGrant(order.getId(), "uzcard", "https://receipt/1", OrderSource.CALLBACK);
 
         assertEquals(OrderStatus.REVERTED, orders.get(order.getId()).getStatus(), "refunded money never resurrects");
         assertEquals(0, extendCalls.get());
@@ -430,7 +431,7 @@ class OrderServiceTest {
         return new PaymentProvider() {
             @Override public String id() { return "multicard"; }
             @Override public CheckoutSession createCheckout(Order order) { return new CheckoutSession("pu-1", "https://checkout"); }
-            @Override public ProviderPayment fetchPayment(String providerUuid) { fetchCalls.incrementAndGet(); return new ProviderPayment(ProviderStatus.PENDING, "uzcard", 100L, null); }
+            @Override public ProviderPayment fetchPayment(String providerUuid) { fetchCalls.incrementAndGet(); return new ProviderPayment(ProviderStatus.PENDING, "uzcard", 100L, null, null); }
             @Override public void cancelCheckout(String providerUuid) { cancelCalls.add(providerUuid); }
         };
     }

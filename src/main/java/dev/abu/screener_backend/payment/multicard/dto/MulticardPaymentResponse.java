@@ -17,6 +17,7 @@ public record MulticardPaymentResponse(Boolean success, Data data, MulticardErro
             String status,
             String ps,
             @JsonProperty("total_amount") Long totalAmount,
+            @JsonProperty("receipt_url") String receiptUrl,
             @JsonProperty("ps_response_msg") String psResponseMsg
     ) {}
 }

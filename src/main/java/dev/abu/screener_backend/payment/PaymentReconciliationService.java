@@ -94,7 +94,7 @@ public class PaymentReconciliationService {
                     "reconciliation: provider=" + actualTiyin + " expected=" + expectedTiyin);
             return;
         }
-        orderService.markPaidAndGrant(order.getId(), payment.ps(), OrderSource.RECONCILIATION);
+        orderService.markPaidAndGrant(order.getId(), payment.ps(), payment.receiptUrl(), OrderSource.RECONCILIATION);
     }
 
     private static boolean isStale(Order order, Instant now) {

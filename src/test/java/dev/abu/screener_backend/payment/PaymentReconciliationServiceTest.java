@@ -104,7 +104,7 @@ class PaymentReconciliationServiceTest {
                 if ("BOOM".equals(providerUuid)) {
                     throw new RuntimeException("provider unreachable");
                 }
-                return new ProviderPayment(intendedByUuid.get(providerUuid), "uzcard", 100L, "err-detail");
+                return new ProviderPayment(intendedByUuid.get(providerUuid), "uzcard", 100L, "https://receipt", "err-detail");
             }
         };
         new PaymentReconciliationService(orderRepo(pending), provider, orderService()).reconcile();
@@ -133,7 +133,7 @@ class PaymentReconciliationServiceTest {
 
     private OrderService orderService() {
         return new OrderService(null, null, null, null, null, null, null, props()) {
-            @Override public void markPaidAndGrant(UUID orderId, String ps, OrderSource source) { action.put(orderId, "GRANT"); }
+            @Override public void markPaidAndGrant(UUID orderId, String ps, String receiptUrl, OrderSource source) { action.put(orderId, "GRANT"); }
             @Override public void markFailed(UUID orderId, String detail) { action.put(orderId, "FAILED"); }
             @Override public void markAmountMismatch(UUID orderId, String detail) { action.put(orderId, "MISMATCH"); }
             @Override public void markReverted(UUID orderId) { action.put(orderId, "REVERTED"); }

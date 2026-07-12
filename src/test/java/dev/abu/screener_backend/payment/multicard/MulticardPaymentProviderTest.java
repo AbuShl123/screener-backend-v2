@@ -65,7 +65,9 @@ class MulticardPaymentProviderTest {
 
     @Test
     void statusMappingCoversAllCases() {
-        assertEquals(ProviderStatus.SUCCESS, fetchWithStatus("success").status());
+        ProviderPayment success = fetchWithStatus("success");
+        assertEquals(ProviderStatus.SUCCESS, success.status());
+        assertEquals("https://receipt/x", success.receiptUrl(), "receipt link carried through the durable fetch");
         assertEquals(ProviderStatus.ERROR, fetchWithStatus("error").status());
         assertEquals(ProviderStatus.REVERT, fetchWithStatus("revert").status());
         assertEquals(ProviderStatus.PENDING, fetchWithStatus("draft").status());
@@ -94,7 +96,7 @@ class MulticardPaymentProviderTest {
         MulticardClient client = new MulticardClient(null, props(false)) {
             @Override
             public MulticardPaymentResponse.Data getPayment(String uuid) {
-                return new MulticardPaymentResponse.Data(uuid, status, "uzcard", 500_000L, null);
+                return new MulticardPaymentResponse.Data(uuid, status, "uzcard", 500_000L, "https://receipt/x", null);
             }
         };
         return new MulticardPaymentProvider(client, props(false)).fetchPayment("u");

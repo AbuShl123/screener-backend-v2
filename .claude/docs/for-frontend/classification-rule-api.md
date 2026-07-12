@@ -142,6 +142,61 @@ overriding" table even for a lapsed user browsing the paywall.
 |---------|-----------|
 | Default rule info | `/api/rules` |
 | User's custom rules | `/api/rules` |
+| Active ticker list | `/api/tickers` |
+
+---
+
+## Fetching the Active Ticker List
+
+Before a user can set a rule for a `(symbol, market)` pair, the frontend needs to show them which
+tickers actually exist. `GET /api/tickers` returns the full set of tickers the backend is
+currently tracking — this is also the source of truth used to validate `PUT`/`DELETE` targets
+server-side (see [Per-Target Checks](#per-target-checks)), so anything not in this list will be
+rejected by the rules endpoints.
+
+### `GET /api/tickers`
+
+Requires a valid JWT (see [Authentication](#authentication)) but **not** an active subscription —
+any logged-in user can list tickers, same treatment as `GET /api/rules/default`.
+
+**Request**: No body, no query parameters.
+
+**Response `200 OK`**:
+
+```json
+{
+  "total": 3,
+  "spotCount": 2,
+  "futuresCount": 3,
+  "tickers": [
+    { "symbol": "BTCUSDT", "hasFutures": true, "hasSpot": true },
+    { "symbol": "DOGEUSDT", "hasFutures": true, "hasSpot": false },
+    { "symbol": "ETHUSDT", "hasFutures": true, "hasSpot": true }
+  ]
+}
+```
+
+**Field meanings**:
+- `total` — total number of tracked tickers
+- `spotCount` — number of tickers that also have an active spot market (`hasSpot: true`)
+- `futuresCount` — number of tickers with an active futures contract (currently equals `total`,
+  since every tracked ticker requires an active futures contract to be included at all)
+- `tickers` — alphabetically sorted by `symbol`
+- `tickers[].symbol` — uppercase trading pair, e.g. `"BTCUSDT"`
+- `tickers[].hasFutures` — `true` if a `FUTURES` market exists for this symbol. In practice this is
+  always `true` — the backend only tracks tickers that have an active USDT-quoted, PERPETUAL,
+  `TRADING`-status futures contract
+- `tickers[].hasSpot` — `true` if a `SPOT` market **also** exists for this symbol. Spot-only
+  tickers (no futures) are never tracked, so this is the flag that actually varies
+
+**Using this to drive the rule form**:
+- Only offer `market: "FUTURES"` for a ticker if `hasFutures` is `true` (always, in practice).
+- Only offer `market: "SPOT"` for a ticker if `hasSpot` is `true` — submitting `SPOT` for a
+  futures-only ticker fails the "market matches the symbol" check on `PUT /api/rules` (see
+  [Per-Target Checks](#per-target-checks)) with a `400`.
+- This list changes over time as tickers are listed/delisted (the backend refreshes it every
+  3–4 hours). Re-fetch periodically, or at minimum on every fresh page load, rather than caching
+  it indefinitely.
 
 ---
 
@@ -438,8 +493,9 @@ All `4xx` errors return a JSON body:
 - **`maxDistance` is a fraction**: `0.05` = 5%. Display as a percentage in the UI and divide by
   100 on submit.
 - **Tier array order in the request does not matter**: the backend sorts internally.
-- **Active ticker list**: `GET /api/tickers` returns currently active tickers — use it
-  to validate `(symbol, market)` combinations before submission.
+- **Active ticker list**: `GET /api/tickers` returns currently active tickers, each flagged with
+  `hasSpot`/`hasFutures` — use it to populate the ticker picker and validate `(symbol, market)`
+  combinations before submission (see [Fetching the Active Ticker List](#fetching-the-active-ticker-list)).
 - **Showing default thresholds**: call `GET /api/rules/default` once on load and display the
   relevant table (normal or high-liquidity) alongside the custom-rule form so the user can see
   what they are overriding.

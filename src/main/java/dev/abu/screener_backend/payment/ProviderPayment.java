@@ -6,6 +6,7 @@ package dev.abu.screener_backend.payment;
  * @param status      provider-neutral status
  * @param ps          payment service (uzcard/humo/payme/…), may be {@code null}
  * @param amountTiyin the amount the provider reports, in minor units; may be {@code null} if unknown
+ * @param receiptUrl  bank receipt link (present on a successful payment), may be {@code null}
  * @param error       raw provider error text for the audit trail, may be {@code null}
  */
-public record ProviderPayment(ProviderStatus status, String ps, Long amountTiyin, String error) {}
+public record ProviderPayment(ProviderStatus status, String ps, Long amountTiyin, String receiptUrl, String error) {}

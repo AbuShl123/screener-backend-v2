@@ -84,7 +84,11 @@
       "Bash(./mvnw.cmd -o compile)",
       "Bash(./gradlew test *)",
       "PowerShell(.\\\\mvnw.cmd -q -Dtest=ClassificationRuleServiceTest test 2>&1 | Select-Object -Last 150)",
-      "Bash(./mvnw.cmd -q -Dtest=DefaultClassificationRuleTest,ThresholdClassificationRuleTest test)"
+      "Bash(./mvnw.cmd -q -Dtest=DefaultClassificationRuleTest,ThresholdClassificationRuleTest test)",
+      "Bash(./mvnw -q -o test -Dtest='OrderServiceTest,PaymentReconciliationServiceTest,MulticardCallbackServiceTest,MulticardPaymentProviderTest,MulticardSignatureTest')",
+      "Bash(./mvnw -o test -Dtest='OrderServiceTest,PaymentReconciliationServiceTest,MulticardCallbackServiceTest,MulticardPaymentProviderTest,MulticardSignatureTest')",
+      "Bash(./mvnw -o -q test-compile)",
+      "Bash(./mvnw -o test-compile)"
     ]
   }
 }
