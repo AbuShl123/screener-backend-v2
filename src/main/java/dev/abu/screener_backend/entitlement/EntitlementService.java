@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.entitlement;
 
 import dev.abu.screener_backend.config.BillingProperties;
+import dev.abu.screener_backend.entitlement.dto.AdminGiftResult;
 import dev.abu.screener_backend.entitlement.dto.EntitlementLedgerEntry;
 import dev.abu.screener_backend.error.ApiException;
 import dev.abu.screener_backend.payment.OrderService;
@@ -13,6 +14,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.UUID;
 
@@ -106,6 +110,46 @@ public class EntitlementService {
     }
 
     /**
+     * Admin gift: pushes each listed user's {@code accessExpiresAt} forward by {@code granted}, writing
+     * one {@code ADMIN} {@link EntitlementLedger} row per user (stamped with {@code adminId}) so the
+     * grant is auditable. Every id is validated to exist up front, so the whole batch is atomic — a
+     * single unknown user id rejects the request with {@code 404} and grants nobody (the surrounding
+     * transaction also rolls back any partial application). Duplicate ids are de-duplicated so a user is
+     * gifted at most once. The gift is <strong>unpaid</strong> (it never sets {@code hasPaid}): a gifted
+     * user reports as {@code TRIAL} and remains free to buy a paid plan.
+     *
+     * @param userIds users to gift (de-duplicated; must all exist)
+     * @param granted access to add on top of each user's remaining time (must be positive)
+     * @param adminId the acting admin, recorded on every ledger row
+     * @param reason  optional free-form note stored on every ledger row
+     * @return one result per gifted user, in request order, with the new expiry
+     */
+    public List<AdminGiftResult> giftAccess(Collection<UUID> userIds, Duration granted, UUID adminId, String reason) {
+        if (userIds == null || userIds.isEmpty()) {
+            throw ApiException.badRequest("userIds required");
+        }
+        if (granted == null || granted.isZero() || granted.isNegative()) {
+            throw ApiException.badRequest("addPeriodDays must be > 0");
+        }
+        // De-duplicate, preserving order, so a repeated id is gifted once.
+        List<UUID> ids = new ArrayList<>(new LinkedHashSet<>(userIds));
+        // Validate every id up front so the batch is all-or-nothing and the error lists every miss.
+        List<UUID> missing = ids.stream()
+                .filter(id -> repository.findByUserId(id).isEmpty())
+                .toList();
+        if (!missing.isEmpty()) {
+            throw ApiException.notFound("Unknown user id(s): " + missing);
+        }
+        List<AdminGiftResult> results = new ArrayList<>(ids.size());
+        for (UUID id : ids) {
+            extend(id, granted, false, GrantSource.ADMIN, null, adminId, reason);
+            Instant newExpiry = repository.findByUserId(id).orElseThrow().getAccessExpiresAt();
+            results.add(new AdminGiftResult(id, newExpiry));
+        }
+        return results;
+    }
+
+    /**
      * Derives the current access state for the frontend. Admins short-circuit to
      * {@code ADMIN}/{@code null}; non-admins are evaluated against their stored facts.
      */
@@ -114,16 +158,29 @@ public class EntitlementService {
         if (user.getRole() == UserRole.ADMIN) {
             return new EntitlementView(AccessState.ADMIN, null);
         }
-        Instant now = Instant.now();
         return repository.findByUserId(user.getId())
-                .map(e -> {
-                    Instant expiresAt = e.getAccessExpiresAt();
-                    if (expiresAt == null || !now.isBefore(expiresAt)) {
-                        return new EntitlementView(AccessState.EXPIRED, expiresAt);
-                    }
-                    return new EntitlementView(e.isHasPaid() ? AccessState.ACTIVE : AccessState.TRIAL, expiresAt);
-                })
+                .map(e -> new EntitlementView(
+                        deriveState(user.getRole(), e.getAccessExpiresAt(), e.isHasPaid()),
+                        e.getAccessExpiresAt()))
                 .orElse(new EntitlementView(AccessState.EXPIRED, null));
+    }
+
+    /**
+     * Pure derivation of the presentation-only {@link AccessState} from a user's role and stored access
+     * facts — the single place the {@code ADMIN}/{@code EXPIRED}/{@code ACTIVE}/{@code TRIAL} rule lives,
+     * so read paths that already hold the facts (e.g. the admin user listing) don't re-implement it.
+     * Admins short-circuit to {@code ADMIN}; a null or past expiry is {@code EXPIRED}; otherwise
+     * {@code hasPaid} distinguishes {@code ACTIVE} from {@code TRIAL}.
+     */
+    public static AccessState deriveState(UserRole role, Instant accessExpiresAt, boolean hasPaid) {
+        if (role == UserRole.ADMIN) {
+            return AccessState.ADMIN;
+        }
+        Instant now = Instant.now();
+        if (accessExpiresAt == null || !now.isBefore(accessExpiresAt)) {
+            return AccessState.EXPIRED;
+        }
+        return hasPaid ? AccessState.ACTIVE : AccessState.TRIAL;
     }
 
     /**

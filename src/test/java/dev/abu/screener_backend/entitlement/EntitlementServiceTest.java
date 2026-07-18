@@ -1,6 +1,8 @@
 package dev.abu.screener_backend.entitlement;
 
 import dev.abu.screener_backend.config.BillingProperties;
+import dev.abu.screener_backend.entitlement.dto.AdminGiftResult;
+import dev.abu.screener_backend.error.ApiException;
 import dev.abu.screener_backend.user.User;
 import dev.abu.screener_backend.user.UserRole;
 import org.junit.jupiter.api.Test;
@@ -18,6 +20,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -205,6 +208,85 @@ class EntitlementServiceTest {
 
         // No entitlement row at all → allowed.
         assertEquals(false, service.hasPaidAccessBeyondRenewalWindow(user(UserRole.USER)));
+    }
+
+    @Test
+    void giftAccessStacksExtendsEachUserAndWritesUnpaidAdminLedgerRows() {
+        User a = user(UserRole.USER);
+        User b = user(UserRole.USER);
+        Instant aFuture = Instant.now().plus(Duration.ofDays(4));
+        Instant bPast = Instant.now().minus(Duration.ofDays(2));
+        seed(a.getId(), aFuture, false);
+        seed(b.getId(), bPast, true);
+        UUID adminId = UUID.randomUUID();
+        Instant before = Instant.now();
+
+        List<AdminGiftResult> results = service.giftAccess(
+                List.of(a.getId(), b.getId()), Duration.ofDays(30), adminId, "promo");
+
+        // a stacks on its remaining future time; b (expired) starts from now.
+        assertEquals(aFuture.plus(Duration.ofDays(30)), store.get(a.getId()).getAccessExpiresAt());
+        Instant bResult = store.get(b.getId()).getAccessExpiresAt();
+        assertTrue(bResult.isAfter(before.plus(Duration.ofDays(30)).minusSeconds(5)));
+        assertTrue(bResult.isBefore(before.plus(Duration.ofDays(30)).plusSeconds(5)));
+
+        // The gift is unpaid — b's prior hasPaid stays, a stays a trial (unpaid gift, not a purchase).
+        assertEquals(false, store.get(a.getId()).isHasPaid());
+        assertEquals(AccessState.TRIAL, service.currentState(a).state());
+
+        // Results mirror the request order and carry the new expiries.
+        assertEquals(2, results.size());
+        assertEquals(a.getId(), results.get(0).userId());
+        assertEquals(aFuture.plus(Duration.ofDays(30)), results.get(0).newExpiresAt());
+
+        // One ADMIN ledger row per user, stamped with the acting admin, no order id.
+        assertEquals(2, ledger.size());
+        assertTrue(ledger.stream().allMatch(r -> r.getSource() == GrantSource.ADMIN));
+        assertTrue(ledger.stream().allMatch(r -> adminId.equals(r.getAdminId())));
+        assertTrue(ledger.stream().allMatch(r -> r.getOrderId() == null));
+        assertTrue(ledger.stream().allMatch(r -> "promo".equals(r.getReason())));
+    }
+
+    @Test
+    void giftAccessDeduplicatesRepeatedIds() {
+        User a = user(UserRole.USER);
+        Instant future = Instant.now().plus(Duration.ofDays(3));
+        seed(a.getId(), future, false);
+
+        List<AdminGiftResult> results = service.giftAccess(
+                List.of(a.getId(), a.getId()), Duration.ofDays(10), UUID.randomUUID(), null);
+
+        // Gifted once despite the duplicate: single stack, single ledger row.
+        assertEquals(1, results.size());
+        assertEquals(future.plus(Duration.ofDays(10)), store.get(a.getId()).getAccessExpiresAt());
+        assertEquals(1, ledger.size());
+    }
+
+    @Test
+    void giftAccessRejectsUnknownIdBeforeGrantingAnyone() {
+        User a = user(UserRole.USER);
+        Instant original = Instant.now().plus(Duration.ofDays(3));
+        seed(a.getId(), original, false);
+        UUID unknown = UUID.randomUUID();
+
+        assertThrows(ApiException.class, () -> service.giftAccess(
+                List.of(a.getId(), unknown), Duration.ofDays(10), UUID.randomUUID(), null));
+
+        // All-or-nothing: the valid user is untouched and no ledger row was written.
+        assertEquals(original, store.get(a.getId()).getAccessExpiresAt());
+        assertTrue(ledger.isEmpty());
+    }
+
+    @Test
+    void giftAccessRejectsNonPositivePeriodAndEmptyList() {
+        User a = user(UserRole.USER);
+        seed(a.getId(), Instant.now().plus(Duration.ofDays(3)), false);
+
+        assertThrows(ApiException.class, () -> service.giftAccess(
+                List.of(a.getId()), Duration.ZERO, UUID.randomUUID(), null));
+        assertThrows(ApiException.class, () -> service.giftAccess(
+                List.of(), Duration.ofDays(10), UUID.randomUUID(), null));
+        assertTrue(ledger.isEmpty());
     }
 
     @Test
