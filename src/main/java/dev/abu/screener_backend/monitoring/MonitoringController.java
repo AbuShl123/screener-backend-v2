@@ -7,13 +7,16 @@ import dev.abu.screener_backend.binance.orderbook.OrderBookState;
 import dev.abu.screener_backend.binance.orderbook.OrderBookStore;
 import dev.abu.screener_backend.binance.orderbook.PriceLevelEntry;
 import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.monitoring.dto.UsageReportResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
 import java.util.TreeMap;
@@ -26,12 +29,13 @@ import java.util.TreeMap;
  * <ul>
  *   <li>{@code GET /api/monitoring/presence} — live WebSocket presence (who is connected right now)</li>
  *   <li>{@code GET /api/monitoring/orderbook} — the current state of a single local orderbook</li>
+ *   <li>{@code GET /api/monitoring/usage} — persisted connection activity aggregated into time-slices</li>
  * </ul>
  *
- * <p>All endpoints are instantaneous, in-memory reads with no persistence and no history. They are
- * intended for development and operational verification. Future work (per the project plan) will add
- * persisted usage metrics — e.g. active-connection counts over time and last-access timestamps —
- * alongside these live views.
+ * <p>{@code /presence} and {@code /orderbook} are instantaneous, in-memory reads with no persistence
+ * and no history. {@code /usage} is the persisted counterpart — it aggregates the append-only
+ * {@code connection_events} log (written on each successful, entitled WebSocket open) into
+ * distinct-user counts per time-slice over a date range.
  *
  * <p>ADMIN-only: {@code /api/monitoring/**} is gated by {@code hasRole("ADMIN")} in
  * {@code SecurityConfig}. A Bearer JWT carrying the {@code ROLE_ADMIN} authority is required; any
@@ -44,6 +48,7 @@ public class MonitoringController {
 
     private final UserFeedRegistry userFeedRegistry;
     private final OrderBookStore store;
+    private final ConnectionUsageService connectionUsageService;
 
     /**
      * Returns the set of currently-connected users with their open session counts.
@@ -62,6 +67,27 @@ public class MonitoringController {
                 .sorted(Comparator.comparingInt(UserPresence::sessions).reversed())
                 .toList();
         return new PresenceResponse(sorted.size(), totalSessions, sorted);
+    }
+
+    /**
+     * Persisted usage report — aggregates {@code connection_events} into distinct-user counts per
+     * time-slice over an inclusive date range. Distinct from live {@code /presence}: this reads history.
+     *
+     * <p>Example: {@code GET /api/monitoring/usage?start=2026-07-18&end=2026-07-18&slice=PT30M&zone=Asia/Tashkent}.
+     * A bare {@code GET /api/monitoring/usage} reports today (in {@code zone}) in 30-minute slices.
+     *
+     * @param start inclusive calendar date in {@code zone}; omitted → today in {@code zone}
+     * @param end   inclusive calendar date in {@code zone}; omitted → today in {@code zone}
+     * @param slice ISO-8601 slice duration ({@code >= PT1M}), e.g. {@code PT30M}, {@code PT1H}, {@code P7D}
+     * @param zone  IANA zone id — places slice boundaries at local :00/:30/midnight and labels the output
+     */
+    @GetMapping("/usage")
+    public UsageReportResponse getUsage(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
+            @RequestParam(defaultValue = "PT30M") String slice,
+            @RequestParam(defaultValue = "Asia/Tashkent") String zone) {
+        return connectionUsageService.report(start, end, slice, zone);
     }
 
     /**

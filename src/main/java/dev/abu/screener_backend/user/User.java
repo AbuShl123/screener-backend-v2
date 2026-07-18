@@ -44,6 +44,10 @@ public class User {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    /** Bumped on every successful, entitled WebSocket open. NULL = never seen under usage tracking. */
+    @Column(name = "last_seen_at")
+    private Instant lastSeenAt;
+
     @PrePersist
     private void prePersist() {
         createdAt = Instant.now();

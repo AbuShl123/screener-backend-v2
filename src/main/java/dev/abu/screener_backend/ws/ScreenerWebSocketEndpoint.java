@@ -6,6 +6,7 @@ import dev.abu.screener_backend.auth.AuthenticatedUser;
 import dev.abu.screener_backend.auth.JwtService;
 import dev.abu.screener_backend.entitlement.EntitlementService;
 import dev.abu.screener_backend.feed.OrderBookBroadcaster;
+import dev.abu.screener_backend.monitoring.ConnectionActivityService;
 import dev.abu.screener_backend.user.User;
 import jakarta.websocket.*;
 import jakarta.websocket.server.ServerEndpoint;
@@ -36,6 +37,9 @@ public class ScreenerWebSocketEndpoint {
     @Autowired
     private EntitlementService entitlementService;
 
+    @Autowired
+    private ConnectionActivityService connectionActivityService;
+
     @OnOpen
     public void onOpen(Session session) {
         List<String> tokens = session.getRequestParameterMap().get("token");
@@ -61,6 +65,13 @@ public class ScreenerWebSocketEndpoint {
         userFeedRegistry.onUserConnect(user.userId(), userSession);
         userSession.startSendLoop();
         broadcaster.addSession(userSession);
+        // Persisted usage analytics — recorded strictly after JWT + entitlement passed, so blocked
+        // attempts are never counted. Wrapped so an analytics DB hiccup never tears down a live session.
+        try {
+            connectionActivityService.recordConnection(user.userId());
+        } catch (Exception e) {
+            log.warn("Failed to record connection activity for user {}: {}", user.userId(), e.getMessage());
+        }
         log.debug("WebSocket opened: {} user={} custom={}",
                 session.getId(), user.userId(), userSession.getContext() != null);
     }

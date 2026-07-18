@@ -68,6 +68,7 @@ public class UserAdminService {
         AccessState state = EntitlementService.deriveState(u.getRole(), expiresAt, hasPaid);
         return new AdminUserView(
                 u.getId(), u.getFirstName(), u.getLastName(), u.getEmail(), u.getRole().name(),
-                u.isEmailVerified(), u.isEnabled(), u.getCreatedAt(), state, expiresAt, hasPaid);
+                u.isEmailVerified(), u.isEnabled(), u.getCreatedAt(), state, expiresAt, hasPaid,
+                u.getLastSeenAt());
     }
 }

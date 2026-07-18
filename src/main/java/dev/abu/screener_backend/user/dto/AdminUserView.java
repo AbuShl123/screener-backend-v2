@@ -13,6 +13,7 @@ import java.util.UUID;
  * @param accessState    derived {@code TRIAL/ACTIVE/EXPIRED/ADMIN} (never stored)
  * @param accessExpiresAt current access expiry, or {@code null} for admins / never-granted
  * @param hasPaid        whether the user has ever paid (distinguishes a paid {@code ACTIVE} from a gift/trial)
+ * @param lastSeenAt     last successful, entitled WebSocket open, or {@code null} if never seen
  */
 public record AdminUserView(
         UUID id,
@@ -25,5 +26,6 @@ public record AdminUserView(
         Instant createdAt,
         AccessState accessState,
         Instant accessExpiresAt,
-        boolean hasPaid
+        boolean hasPaid,
+        Instant lastSeenAt
 ) {}
