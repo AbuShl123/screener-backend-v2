@@ -74,18 +74,20 @@ public class MonitoringController {
      * time-slice over an inclusive date range. Distinct from live {@code /presence}: this reads history.
      *
      * <p>Example: {@code GET /api/monitoring/usage?start=2026-07-18&end=2026-07-18&slice=PT30M&zone=Asia/Tashkent}.
-     * A bare {@code GET /api/monitoring/usage} reports today (in {@code zone}) in 30-minute slices.
+     * A bare {@code GET /api/monitoring/usage} reports today (in {@code zone}) in 1-hour slices.
      *
      * @param start inclusive calendar date in {@code zone}; omitted → today in {@code zone}
      * @param end   inclusive calendar date in {@code zone}; omitted → today in {@code zone}
-     * @param slice ISO-8601 slice duration ({@code >= PT1M}), e.g. {@code PT30M}, {@code PT1H}, {@code P7D}
+     * @param slice ISO-8601 slice duration ({@code >= PT1M}), e.g. {@code PT30M}, {@code PT1H}, {@code P7D};
+     *              or the calendar literals {@code P1M} / {@code P1Y} for true calendar-month / -year
+     *              buckets (months and years aren't fixed-length, so a duration can't express them)
      * @param zone  IANA zone id — places slice boundaries at local :00/:30/midnight and labels the output
      */
     @GetMapping("/usage")
     public UsageReportResponse getUsage(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
-            @RequestParam(defaultValue = "PT30M") String slice,
+            @RequestParam(defaultValue = "PT1H") String slice,
             @RequestParam(defaultValue = "Asia/Tashkent") String zone) {
         return connectionUsageService.report(start, end, slice, zone);
     }

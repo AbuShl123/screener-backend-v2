@@ -31,7 +31,7 @@ class ConnectionUsageServiceTest {
                 ConnectionEventRepository.class.getClassLoader(),
                 new Class<?>[]{ConnectionEventRepository.class},
                 (proxy, method, args) -> switch (method.getName()) {
-                    case "aggregateBySlice" -> rows.get();
+                    case "aggregateBySlice", "aggregateByCalendarUnit" -> rows.get();
                     default -> throw new UnsupportedOperationException(method.getName());
                 });
         return new ConnectionUsageService(repo);
@@ -39,6 +39,16 @@ class ConnectionUsageServiceTest {
 
     private static Object[] row(long bucketIndex, long unique) {
         return new Object[]{bucketIndex, unique};
+    }
+
+    /** Mirrors what the JDBC driver actually returns for the {@code timestamptz} bucket_start column. */
+    private static Object[] calendarRow(java.time.OffsetDateTime bucketStart, long unique) {
+        return new Object[]{bucketStart.toInstant(), unique};
+    }
+
+    /** Some driver versions map the same column to {@link java.sql.Timestamp} instead of {@link java.time.Instant}. */
+    private static Object[] calendarRowAsSqlTimestamp(java.time.OffsetDateTime bucketStart, long unique) {
+        return new Object[]{java.sql.Timestamp.from(bucketStart.toInstant()), unique};
     }
 
     @Test
@@ -129,5 +139,60 @@ class ConnectionUsageServiceTest {
     void rejectsInvalidZone() {
         ConnectionUsageService service = serviceReturning(List::of);
         assertThrows(ApiException.class, () -> service.report(null, null, "PT30M", "Mars/Olympus"));
+    }
+
+    @Test
+    void p1mSlicesByCalendarMonthNotFixedDuration() {
+        // Jan (31d), Feb (28d, non-leap 2026) — a fixed-duration slice couldn't represent either
+        // correctly, but calendar-month buckets should span each month's actual local boundaries.
+        ConnectionUsageService service = serviceReturning(() -> List.of(
+                calendarRow(OffsetDateTime.parse("2026-01-01T00:00+05:00"), 10),
+                calendarRow(OffsetDateTime.parse("2026-02-01T00:00+05:00"), 7)));
+
+        UsageReportResponse r = service.report(
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 2, 28), "P1M", TASHKENT);
+
+        assertEquals("P1M", r.slice());
+        assertEquals(2, r.sliceCount());
+        assertEquals(17, r.totalConnections());
+
+        UsageSlice jan = r.slices().get(0);
+        assertEquals(OffsetDateTime.parse("2026-01-01T00:00+05:00"), jan.start());
+        assertEquals(OffsetDateTime.parse("2026-02-01T00:00+05:00"), jan.end());   // 31-day month
+        assertEquals(10, jan.uniqueConnections());
+
+        UsageSlice feb = r.slices().get(1);
+        assertEquals(OffsetDateTime.parse("2026-02-01T00:00+05:00"), feb.start());
+        assertEquals(OffsetDateTime.parse("2026-03-01T00:00+05:00"), feb.end());   // 28-day month
+        assertEquals(7, feb.uniqueConnections());
+    }
+
+    @Test
+    void p1ySlicesByCalendarYear() {
+        ConnectionUsageService service = serviceReturning(() -> List.<Object[]>of(
+                calendarRow(OffsetDateTime.parse("2026-01-01T00:00+05:00"), 42)));
+
+        UsageReportResponse r = service.report(
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 12, 31), "P1Y", TASHKENT);
+
+        assertEquals("P1Y", r.slice());
+        UsageSlice year = r.slices().get(0);
+        assertEquals(OffsetDateTime.parse("2026-01-01T00:00+05:00"), year.start());
+        assertEquals(OffsetDateTime.parse("2027-01-01T00:00+05:00"), year.end());
+        assertEquals(42, year.uniqueConnections());
+    }
+
+    @Test
+    void p1mAcceptsSqlTimestampRowsToo() {
+        // Regression: some driver versions map the timestamptz column to java.sql.Timestamp rather
+        // than java.time.Instant — both must be accepted without a ClassCastException.
+        ConnectionUsageService service = serviceReturning(() -> List.<Object[]>of(
+                calendarRowAsSqlTimestamp(OffsetDateTime.parse("2026-01-01T00:00+05:00"), 5)));
+
+        UsageReportResponse r = service.report(
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 31), "P1M", TASHKENT);
+
+        assertEquals(OffsetDateTime.parse("2026-01-01T00:00+05:00"), r.slices().get(0).start());
+        assertEquals(5, r.slices().get(0).uniqueConnections());
     }
 }

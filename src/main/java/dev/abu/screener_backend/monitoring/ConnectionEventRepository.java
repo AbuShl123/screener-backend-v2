@@ -36,4 +36,32 @@ public interface ConnectionEventRepository extends JpaRepository<ConnectionEvent
             @Param("windowEnd") Instant windowEnd,
             @Param("windowStartEpoch") long windowStartEpoch,
             @Param("sliceSeconds") long sliceSeconds);
+
+    /**
+     * Aggregates connects into calendar-unit slices ({@code month} or {@code year}), counting distinct
+     * users per slice — used for {@code slice=P1M}/{@code P1Y}, which have no fixed length and so can't
+     * be expressed as the fixed-width buckets {@link #aggregateBySlice} produces (a month is 28-31 days).
+     *
+     * <p>{@code connected_at AT TIME ZONE :zoneId} converts the {@code timestamptz} to a local naive
+     * timestamp in the caller's zone; {@code date_trunc} floors it to the start of the calendar unit;
+     * the outer {@code AT TIME ZONE :zoneId} reinterprets that naive local timestamp back into a
+     * {@code timestamptz}, so the returned bucket start is an unambiguous instant even though the
+     * bucketing itself follows local calendar boundaries. Only non-empty buckets come back, ordered.
+     *
+     * @return rows of {@code [bucketStart (timestamptz), uniqueConnections (bigint)]}, ordered by bucket
+     */
+    @Query(value = """
+            SELECT (date_trunc(:unit, connected_at AT TIME ZONE :zoneId) AT TIME ZONE :zoneId)
+                       AS bucket_start,
+                   COUNT(DISTINCT user_id) AS unique_connections
+            FROM connection_events
+            WHERE connected_at >= :windowStart AND connected_at < :windowEnd
+            GROUP BY bucket_start
+            ORDER BY bucket_start
+            """, nativeQuery = true)
+    List<Object[]> aggregateByCalendarUnit(
+            @Param("windowStart") Instant windowStart,
+            @Param("windowEnd") Instant windowEnd,
+            @Param("unit") String unit,
+            @Param("zoneId") String zoneId);
 }

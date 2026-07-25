@@ -105,7 +105,7 @@ screener:
   websocket:
     spot-stream-url: wss://stream.binance.com/ws
     futures-stream-url: wss://fstream.binance.com/ws
-    connection-count-spot: 1
+    connection-count-spot: 2
     connection-count-futures: 3
     subscribe-chunk-size: 400
     reconnect-initial-delay-ms: 100
