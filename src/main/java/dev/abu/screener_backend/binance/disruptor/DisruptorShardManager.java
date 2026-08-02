@@ -8,7 +8,9 @@ import dev.abu.screener_backend.analysis.DefaultClassificationRule;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.binance.orderbook.OrderBookProcessor;
+import dev.abu.screener_backend.binance.orderbook.ShardStatsPublisher;
 import dev.abu.screener_backend.config.DisruptorProperties;
+import dev.abu.screener_backend.config.MonitoringProperties;
 import dev.abu.screener_backend.feed.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -22,9 +24,11 @@ import org.springframework.stereotype.Component;
 public class DisruptorShardManager {
 
     private final DisruptorProperties      props;
+    private final MonitoringProperties     monitoringProps;
     private final OrderBookProcessor       orderBookProcessor;
     private final OrderBookFeedStore       feedStore;
     private final DefaultClassificationRule defaultRule;
+    private final ShardStatsPublisher      statsPublisher;
 
     private Disruptor<DepthEvent>[]  disruptors;
     private RingBuffer<DepthEvent>[] ringBuffers;
@@ -34,6 +38,7 @@ public class DisruptorShardManager {
     @SuppressWarnings("unchecked")
     public void start() {
         int shardCount = props.shardCount();
+        long publishIntervalMs = monitoringProps.orderbook().publishIntervalMs();
         disruptors  = new Disruptor[shardCount];
         ringBuffers = new RingBuffer[shardCount];
         classifiers = new OrderBookClassifier[shardCount];
@@ -48,7 +53,8 @@ public class DisruptorShardManager {
                     new BlockingWaitStrategy()
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule);
-            disruptor.handleEventsWith(new DepthEventHandler(i, orderBookProcessor, classifiers[i]));
+            disruptor.handleEventsWith(new DepthEventHandler(
+                    i, orderBookProcessor, classifiers[i], statsPublisher, publishIntervalMs));
 
             ringBuffers[i] = disruptor.start();
             disruptors[i]  = disruptor;

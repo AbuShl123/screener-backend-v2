@@ -29,6 +29,14 @@ spring:
       mail.smtp.auth: true
       mail.smtp.starttls.enable: true
 
+  task:
+    scheduling:
+      # Spring's default is a SINGLE thread shared by every @Scheduled method — the stats collector,
+      # the ticker refresh, payment reconciliation and the CSV recorder. One slow disk write would
+      # then delay payment reconciliation and the collector's sampling. Give them room.
+      pool:
+        size: 4
+
   flyway:
     enabled: ${SPRING_FLYWAY_ENABLED:}
     locations: classpath:db/migration
@@ -63,6 +71,48 @@ screener:
   disruptor:
     shard-count: 2
     ring-buffer-size: 65536
+
+  monitoring:
+    orderbook:
+      # How often each shard's consumer republishes its books' stats snapshot (hot-path cadence).
+      publish-interval-ms: 1000
+      # How often the collector samples published stats to derive rates.
+      # Also the resolution of `idleMs` — keep it well below stale-threshold-ms.
+      sample-interval-ms: 5000
+      # How often a point is appended to the fleet trend ring. Decoupled from sample-interval-ms:
+      # rates need a 5 s sample, an overnight trend does not, and the ring's JSON payload is what
+      # gets expensive at long retention (2 880 points ≈ 600 KB; at 5 s it would be ~4 MB).
+      history-interval-ms: 30000
+      # EWMA half-life for the smoothed per-book update rate.
+      rate-half-life-ms: 30000
+      # Fleet history ring length in points. Retention = history-size × history-interval-ms
+      # (2 880 × 30 s = 24 h). ~550 KB of heap.
+      history-size: 2880
+      # A SYNCED book with no diff for this long counts as stale. The quietest healthy books update
+      # only every ~30 s, so a 30 s threshold flags illiquidity rather than faults — calibrate this
+      # from the observed idleMs distribution (`/orderbook/books?sort=IDLE&order=DESC`).
+      stale-threshold-ms: 120000
+      # 0 = choose bin count by Freedman–Diaconis.
+      default-histogram-bins: 0
+      max-outliers-listed: 10
+      # Periodic CSV capture to local disk. Off by default; turn on for long-horizon capacity runs.
+      # Writes books-<date>.csv (per book per tick), fleet-<date>.csv (totals + heap) and
+      # shards-<date>.csv (per-shard load). All long-format, all pandas-ready.
+      recorder:
+        enabled: ${SCREENER_RECORDER_ENABLED:false}
+        # The bulky file: ~85 bytes per row, so ~85 KB per write at ~1 000 books. At 1 minute that
+        # is ~120 MB/day, and the steady-state disk cost is retention-days × that — ~1.7 GB at 14
+        # days. Sized against the deployment's disk, not its RAM: the write itself is ~0.5 MB of
+        # short-lived garbage per tick on the scheduler pool, never the hot path.
+        books-interval-ms: 60000
+        # One row (~150 bytes) plus one per shard. Cheap, so it runs often — the resolution of the
+        # usedHeapBytes-vs-totalLevels regression comes from here.
+        fleet-interval-ms: 30000
+        directory: ${SCREENER_RECORDER_DIR:/var/lib/screener/monitoring-data}
+        # Delete captured files older than this. 0 disables the sweep — on a small disk, that is how
+        # you eventually fill it.
+        retention-days: 3
+      max-books-returned: 2000
 
   classification:
     # Max (symbol, market) targets allowed in a single rule upsert/delete request — bounds

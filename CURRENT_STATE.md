@@ -179,7 +179,16 @@ src/
 │   │   ├── OrderBookFeedStore.java
 │   │   └── OrderBookUpdate.java
 │   ├── monitoring/
-│   │   └── MonitoringController.java
+│   │   ├── ConnectionActivityService.java
+│   │   ├── ConnectionEvent.java
+│   │   ├── ConnectionEventRepository.java
+│   │   ├── ConnectionUsageService.java
+│   │   ├── DescriptiveStats.java
+│   │   ├── MonitoringController.java
+│   │   ├── OrderBookStatsCollector.java
+│   │   ├── OrderBookStatsPublisher.java
+│   │   ├── OrderBookStatsService.java
+│   │   └── dto/
 │   ├── ticker/
 │   │   ├── Ticker.java
 │   │   ├── TickerController.java
@@ -682,14 +691,30 @@ Record `(UUID userId)`. Published by `ClassificationRuleService` after each succ
 ### `MonitoringController`
 `src/main/java/dev/abu/screener_backend/monitoring/MonitoringController.java`
 
-`@RestController` at `/api/monitoring`, grouping the read-only operational/debug endpoints (intended to become `ADMIN`-only once a role model exists). Two endpoints:
+`@RestController` at `/api/monitoring`, grouping the read-only operational/debug endpoints. ADMIN-only — `/api/monitoring/**` is gated by `hasRole("ADMIN")` in `SecurityConfig`. Endpoints:
 
 - `GET /api/monitoring/presence` — live WebSocket presence read from `UserFeedRegistry.presenceSnapshot()` — `onlineUsers` (distinct connected users), `totalSessions`, and a per-user breakdown (`userId`, `sessions`, `custom`) sorted by session count.
-- `GET /api/monitoring/orderbook?symbol=BTCUSDT&market=FUTURES` — current bids/asks with price, quantity, distance, and lifetime per level, plus the book's sync state and level counts. Reads are best-effort (no synchronization — acceptable for debugging).
+- `GET /api/monitoring/usage` — persisted connection activity from the append-only `connection_events` log, aggregated into distinct-user counts per time-slice over a date range (`start`, `end`, `slice`, `zone`).
+- `GET /api/monitoring/orderbook` — **descriptive statistics over the whole orderbook fleet**: size distribution (mean, median, percentiles, stdDev, MAD, G1 skewness + shape label), Tukey outliers with named offenders, a server-computed histogram, sync-state and staleness counts, and the fleet update rate. Params: `market`, `state` (default `SYNCED`), `bins`, `outliers`.
+- `GET /api/monitoring/orderbook/history` — the fleet-level trend ring (one point per 5 s collector tick, one hour retained). Param: `minutes` (default 60, `0` = whole ring). Split out of `/orderbook` because at its 720-point cap the ring is ~120 KB — roughly fifteen times the rest of that response — while changing only once every 5 s. Always fleet-wide: the collector accumulates it on a schedule, so it honours no `market`/`state` filter.
+- `GET /api/monitoring/orderbook/books` — the per-book table behind those statistics (size, bids, asks, cumulative updates, `updatesPerSecond`, `idleMs`, `resyncs`). Params: `market`, `state`, `symbol`, `sort`, `order`, `limit`.
 
-No DB access, no persistence — instantaneous state only (no history). Requires a Bearer JWT (any authenticated user; no `ADMIN` role exists yet). Future work will add persisted usage metrics (active-connection counts over time, last-access timestamps) alongside these live views.
+The orderbook endpoints **never read a live orderbook**. The books are single-thread-owned by their shard's Disruptor consumer; copying their `TreeMap`s from a Tomcat thread was a genuine data race (the old content-dumping `/orderbook?symbol=…` endpoint did exactly that and has been removed, along with `OrderBook.snapshotBids()` / `snapshotAsks()`). Instead each consumer publishes an immutable `BookStats` record per book on a ~1 s cadence, and readers load that single volatile reference — hence the `sampleAgeMs` and `shardsStale` fields in both responses. See the `monitoring` internals below.
 
-This merges the former `PresenceController` (monitoring) and `OrderBookController` (binance/orderbook).
+### Orderbook statistics internals
+
+| Class | Role |
+|---|---|
+| `binance/orderbook/BookStats` | Immutable published snapshot: symbol, market, state, bid/ask counts, `diffsApplied`, `resyncs`, publish timestamp |
+| `binance/orderbook/ShardStatsPublisher` | Interface declared in `binance/`, implemented in `monitoring/` — keeps the dependency direction clean (`binance/` never imports `monitoring/`) |
+| `monitoring/OrderBookStatsPublisher` | Walks the books owned by one shard and republishes their stats. Runs **on that shard's consumer thread**, triggered from `DepthEventHandler` behind a counter mask (one clock read per 256 events, then a time-based interval check) |
+| `monitoring/OrderBookStatsCollector` | `@Scheduled` sampler (5 s). Differences `diffsApplied` into an EWMA `updatesPerSecond`, derives `idleMs` (resolution = sample interval, which is why it isn't called `lastUpdateAgeMs`), counts stale books and resync churn, and appends to a bounded 1-hour fleet history ring |
+| `monitoring/OrderBookStatsService` | Request-time assembly on the Tomcat thread: ~1 000 sizes into a `double[]`, one sort, a few linear passes |
+| `monitoring/DescriptiveStats` | Pure statistics — R-7 percentiles, Bessel variance, MAD, adjusted Fisher–Pearson G1 skewness, Tukey fences, Freedman–Diaconis binning with a Sturges fallback |
+
+Hot-path footprint of the whole feature: **one `long` increment per applied diff** plus one per resync, both on thread-confined non-volatile fields. No allocation, no volatile write, no clock read per message.
+
+Two interpretation caveats are documented on the response record itself: `overall` pools spot and futures (a bimodal sample, on which mean/median/skewness mislead — trust `byMarket`), and book size is censored on both ends by the 1 000-level snapshot cap and the mid-price filter sweep.
 
 ---
 

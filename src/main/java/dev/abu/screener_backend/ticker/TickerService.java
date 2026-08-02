@@ -101,6 +101,6 @@ public class TickerService {
 //        return result.entrySet().stream().limit(3).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 //        return result.entrySet().stream().filter((k) -> k.getKey().equalsIgnoreCase("BTCUSDT"))
 //                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        return Map.of();
+        return result;
     }
 }

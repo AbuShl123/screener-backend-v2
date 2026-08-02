@@ -7,6 +7,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -41,6 +43,17 @@ public class OrderBookStore {
 
     public int size() {
         return books.size();
+    }
+
+    /**
+     * Unmodifiable live view of every registered orderbook.
+     *
+     * <p>Iteration is weakly consistent ({@link ConcurrentHashMap}) and safe from any thread, but the
+     * {@link OrderBook} instances it yields are <b>not</b>: off the owning consumer thread the only
+     * legal read is {@link OrderBook#getStats()}.
+     */
+    public Collection<OrderBook> books() {
+        return Collections.unmodifiableCollection(books.values());
     }
 
     @Scheduled(fixedDelayString = "${screener.orderbook.sync-log-rate-ms:30000}")

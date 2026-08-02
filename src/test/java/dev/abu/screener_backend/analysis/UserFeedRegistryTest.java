@@ -34,7 +34,7 @@ class UserFeedRegistryTest {
         int pushCount = 0;
 
         FakeShardManager() {
-            super(null, null, null, null);
+            super(null, null, null, null, null, null);
         }
 
         @Override

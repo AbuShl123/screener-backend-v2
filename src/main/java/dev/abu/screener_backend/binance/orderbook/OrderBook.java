@@ -17,9 +17,13 @@ import java.util.TreeMap;
 /**
  * Local orderbook for a single (symbol, market) pair.
  * <p>
- * All methods except {@link #markSnapshotRequested()} are called
+ * All methods except {@link #markSnapshotRequested()} and {@link #getStats()} are called
  * exclusively by the Disruptor consumer thread assigned to this orderbook's shard.
  * {@code state} is volatile because the SnapshotFetchQueue scheduler thread also writes it.
+ * <p>
+ * The {@code bids} / {@code asks} maps must <b>never</b> be read from another thread — not even
+ * copied. Monitoring goes through {@link #getStats()}, which returns an immutable {@link BookStats}
+ * published by the owning consumer thread.
  */
 @Slf4j
 public class OrderBook {
@@ -50,6 +54,24 @@ public class OrderBook {
 
     private long lastUpdateId;
 
+    /**
+     * Cumulative successful {@link #applyLiveDiff} calls. Written <b>only</b> by this shard's
+     * consumer thread, exactly like {@code bids} / {@code asks} — a plain load-add-store on a
+     * thread-confined object, off the critical dependency chain. Deliberately non-volatile: making
+     * it volatile would put a StoreLoad fence on every diff. Cross-thread readers must go through
+     * {@link #getStats()}, never this field (a non-volatile {@code long} may be read torn, JLS 17.7).
+     */
+    private long diffsApplied;
+
+    /** Cumulative {@link #resync()} calls. Consumer-thread-owned, same discipline as {@link #diffsApplied}. */
+    private int resyncs;
+
+    /**
+     * The published cross-thread view. Written only by the consumer thread (one volatile store per
+     * publish tick), read by any thread.
+     */
+    private volatile BookStats stats;
+
     public OrderBook(String symbol, Market market, double filterThreshold) {
         this.symbol = symbol;
         this.market = market;
@@ -58,6 +80,30 @@ public class OrderBook {
         this.bids = new TreeMap<>(Comparator.reverseOrder());
         this.asks = new TreeMap<>();
         this.diffBuffer = new ArrayDeque<>();
+        this.stats = new BookStats(symbol, market, OrderBookState.PENDING, 0, 0, 0L, 0, 0L);
+    }
+
+    // --- Monitoring ---
+
+    /**
+     * Publish an immutable snapshot of this book's cheap state.
+     *
+     * <p><b>Consumer thread only.</b> Called by {@link ShardStatsPublisher} on a slow cadence
+     * (≈1 s, see {@code screener.monitoring.orderbook.publish-interval-ms}), never per message.
+     *
+     * <p>This is a deliberate, bounded, documented exception to the hot path's "no allocation on the
+     * consumer thread" rule: one small record per book per second (~1 000 allocations/s fleet-wide)
+     * against a 300 k msg/s firehose is noise, and it is what buys every reader a race-free,
+     * mutually-consistent view of a structure that is otherwise single-thread-owned. Do not "fix" it
+     * by reading the {@code TreeMap}s from the reader's thread — that is the data race this replaces.
+     */
+    public void publishStats(long now) {
+        stats = new BookStats(symbol, market, state, bids.size(), asks.size(), diffsApplied, resyncs, now);
+    }
+
+    /** The last published snapshot. Safe to call from any thread. */
+    public BookStats getStats() {
+        return stats;
     }
 
     // --- State transitions called from outside the consumer thread ---
@@ -80,9 +126,9 @@ public class OrderBook {
             case SNAPSHOT_REQUESTED:
                 if (diffBuffer.size() >= MAX_BUFFER_SIZE) {
                     log.warn("[{}/{}] Diff buffer overflow — forcing re-sync", symbol, market);
-                    diffBuffer.clear();
-                    state = OrderBookState.PENDING;
-                    return OrderBookResult.NEEDS_RESYNC;
+                    // Body is identical to resync(); routed through it so the resyncs counter sees
+                    // this path too — an overflowing buffer is exactly the churn monitoring exists for.
+                    return resync();
                 }
                 diffBuffer.addLast(rawJson);
                 return OrderBookResult.OK;
@@ -205,6 +251,7 @@ public class OrderBook {
 
         computeDistance();
         lastUpdateId = u;
+        diffsApplied++;
         return OrderBookResult.OK;
     }
 
@@ -371,17 +418,10 @@ public class OrderBook {
         }
     }
 
-    public TreeMap<Double, PriceLevelEntry> snapshotBids() {
-        return new TreeMap<>(bids);
-    }
-
-    public TreeMap<Double, PriceLevelEntry> snapshotAsks() {
-        return new TreeMap<>(asks);
-    }
-
     private OrderBookResult resync() {
         diffBuffer.clear();
         state = OrderBookState.PENDING;
+        resyncs++;
         return OrderBookResult.NEEDS_RESYNC;
     }
 }
