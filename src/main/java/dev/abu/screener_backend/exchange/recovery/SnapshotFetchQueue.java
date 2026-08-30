@@ -117,7 +117,7 @@ public class SnapshotFetchQueue {
         long seq = rb.next();
         try {
             DepthEvent event = rb.get(seq);
-            event.type         = EventType.SNAPSHOT;
+            event.type         = EventType.REST_MSG;
             event.instrumentId = id;
             event.rawJson      = rawJson;
         } finally {

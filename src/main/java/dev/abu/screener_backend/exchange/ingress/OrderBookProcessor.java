@@ -44,7 +44,7 @@ public class OrderBookProcessor {
             return null;
         }
 
-        OrderBookResult result = (event.type == EventType.SNAPSHOT)
+        OrderBookResult result = (event.type == EventType.REST_MSG)
                 ? slot.book().applySnapshot(event.rawJson)
                 : slot.book().onDiff(event.rawJson);
 

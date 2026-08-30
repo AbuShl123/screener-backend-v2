@@ -17,7 +17,7 @@ public class DisruptorDepthMessageHandler implements RawDepthMessageHandler {
         long seq = rb.next();
         try {
             DepthEvent event = rb.get(seq);
-            event.type         = EventType.DIFF;
+            event.type         = EventType.WS_MSG;
             event.instrumentId = instrumentId;
             event.rawJson      = rawJson;
         } finally {
