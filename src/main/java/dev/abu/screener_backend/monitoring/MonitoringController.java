@@ -2,11 +2,15 @@ package dev.abu.screener_backend.monitoring;
 
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.analysis.UserFeedRegistry.UserPresence;
+import dev.abu.screener_backend.binance.orderbook.BookSlot;
+import dev.abu.screener_backend.binance.orderbook.BookSlotTable;
 import dev.abu.screener_backend.binance.orderbook.OrderBook;
 import dev.abu.screener_backend.binance.orderbook.OrderBookState;
-import dev.abu.screener_backend.binance.orderbook.OrderBookStore;
 import dev.abu.screener_backend.binance.orderbook.PriceLevelEntry;
-import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.exchange.Exchange;
+import dev.abu.screener_backend.exchange.InstrumentRegistry;
+import dev.abu.screener_backend.exchange.Market;
+import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.monitoring.dto.UsageReportResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -47,7 +51,8 @@ import java.util.TreeMap;
 public class MonitoringController {
 
     private final UserFeedRegistry userFeedRegistry;
-    private final OrderBookStore store;
+    private final InstrumentRegistry instrumentRegistry;
+    private final BookSlotTable slots;
     private final ConnectionUsageService connectionUsageService;
 
     /**
@@ -98,7 +103,10 @@ public class MonitoringController {
      * <p>Example: {@code GET /api/monitoring/orderbook?symbol=BTCUSDT&market=FUTURES}
      *
      * <p>Reads are best-effort: bids/asks may be slightly stale if a consumer write
-     * is concurrent, which is acceptable for debugging purposes.
+     * is concurrent, which is acceptable for debugging purposes. Note the pre-existing hazard that
+     * {@code snapshotBids()} copies a {@code TreeMap} a consumer thread may be mutating, so this
+     * endpoint can throw {@code ConcurrentModificationException}; fixing it belongs with a proper
+     * storage accessor seam on {@code OrderBook}, not here.
      *
      * @param symbol ticker symbol (case-insensitive)
      * @param market SPOT or FUTURES
@@ -109,10 +117,14 @@ public class MonitoringController {
             @RequestParam String symbol,
             @RequestParam Market market) {
 
-        OrderBook book = store.get(symbol.toUpperCase(), market);
-        if (book == null) {
+        Venue venue = Venue.of(Exchange.BINANCE, market);
+        BookSlot slot = instrumentRegistry.find(venue, symbol.toUpperCase())
+                .map(i -> slots.get(i.id()))
+                .orElse(null);
+        if (slot == null) {
             return ResponseEntity.notFound().build();
         }
+        OrderBook book = slot.book();
 
         long now = System.currentTimeMillis();
         TreeMap<Double, PriceLevelEntry> bids = book.snapshotBids();

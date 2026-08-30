@@ -1,17 +1,20 @@
 package dev.abu.screener_backend.binance.disruptor;
 
-import dev.abu.screener_backend.binance.websocket.Market;
-
+/**
+ * Mutable ring-buffer slot. Reused forever — never allocate one per message.
+ *
+ * <p>{@code String symbol} + {@code Market market} collapsed into a single {@code int
+ * instrumentId}: the id already encodes the venue, and the consumer resolves the book with one
+ * array index instead of a map lookup on a freshly concatenated key.
+ */
 public class DepthEvent {
     public EventType type;
-    public String    symbol;
-    public Market    market;
+    public int       instrumentId;
     public String    rawJson;
 
     public void clear() {
-        type    = null;
-        symbol  = null;
-        market  = null;
-        rawJson = null;
+        type         = null;
+        instrumentId = -1;
+        rawJson      = null;
     }
 }

@@ -10,18 +10,15 @@ import java.util.concurrent.atomic.AtomicLong;
 // @Component — deactivated in Phase 2; DisruptorDepthMessageHandler is the active bean
 public class LoggingDepthMessageHandler implements RawDepthMessageHandler {
 
-    private final AtomicLong spotCount = new AtomicLong();
-    private final AtomicLong futuresCount = new AtomicLong();
+    private final AtomicLong messageCount = new AtomicLong();
 
     @Override
-    public void handle(String symbol, Market market, String rawJson) {
-        if (market == Market.SPOT) spotCount.incrementAndGet();
-        else futuresCount.incrementAndGet();
+    public void handle(int instrumentId, String rawJson) {
+        messageCount.incrementAndGet();
     }
 
     @Scheduled(fixedDelay = 10_000)
     public void logStats() {
-        log.info("Depth messages received — spot: {}, futures: {}",
-                spotCount.getAndSet(0), futuresCount.getAndSet(0));
+        log.info("Depth messages received: {}", messageCount.getAndSet(0));
     }
 }

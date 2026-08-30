@@ -4,7 +4,10 @@ package dev.abu.screener_backend.binance.websocket;
 public interface RawDepthMessageHandler {
     /**
      * Called from the WebSocket onMessage callback. Must be fast — no blocking, no heavy parsing.
-     * symbol is already interned. rawJson is the full depth update payload as received.
+     *
+     * @param instrumentId already resolved against the connection's {@link SubscriptionIndex};
+     *                     always a valid, published id — the caller drops unresolvable frames
+     * @param rawJson      the full depth update payload as received
      */
-    void handle(String symbol, Market market, String rawJson);
+    void handle(int instrumentId, String rawJson);
 }

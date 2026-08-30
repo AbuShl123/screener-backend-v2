@@ -3,6 +3,7 @@ package dev.abu.screener_backend.analysis;
 import dev.abu.screener_backend.binance.orderbook.OrderBook;
 import dev.abu.screener_backend.binance.orderbook.OrderBookState;
 import dev.abu.screener_backend.binance.orderbook.PriceLevelEntry;
+import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.feed.ClassifiedLevel;
 import dev.abu.screener_backend.feed.FeedEventType;
 import dev.abu.screener_backend.feed.OrderBookFeedStore;
@@ -24,7 +25,7 @@ import java.util.TreeMap;
  * exactly one consumer thread, all per-shard state inside this class is accessed by a single
  * thread. The only cross-thread field is {@link #activeUserContexts}, a {@code volatile} array
  * swapped atomically by the WebSocket connect/disconnect path; it is read once per
- * {@link #process(OrderBook)} call.
+ * {@link #process(Instrument, OrderBook)} call.
  *
  * <h2>Two-pass classification (Phase C)</h2>
  * Each {@code process(ob)} runs the classification state machine once per active context:
@@ -102,15 +103,15 @@ public class OrderBookClassifier {
     }
 
     /// Entry point called by DepthEventHandler after every ring buffer event.
-    public void process(OrderBook ob) {
-        String key = ob.getSymbol() + ":" + ob.getMarket();
-        boolean highLiquidity = defaultRule.isHighLiquidity(ob.getSymbol()); // computed ONCE per book
+    public void process(Instrument inst, OrderBook ob) {
+        String key = inst.feedKey();                                          // precomputed — no concat per message
+        boolean highLiquidity = defaultRule.isHighLiquidity(inst.nativeSymbol()); // computed ONCE per book
 
         // TODO: parallel classification for default and per-user rules
 
         // Pass 1 — default, always.
         SymbolState defaultState = defaultStates.computeIfAbsent(key, k -> new SymbolState());
-        classifyOne(ob, key, defaultState, defaultRule, feedStore, highLiquidity);
+        classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity);
 
         // Pass 2 — per user, only if any context is active.
         UserClassificationContext[] ctxs = activeUserContexts;
@@ -118,7 +119,7 @@ public class OrderBookClassifier {
             if (ctx.rule().configuredKeys().contains(key)) {
                 ThresholdClassificationRule rule = ctx.rule().ruleFor(key);
                 SymbolState state = ctx.states().computeIfAbsent(key, k -> new SymbolState());
-                classifyOne(ob, key, state, rule, ctx.feedStore(), highLiquidity);
+                classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity);
             }
         }
     }
@@ -129,8 +130,8 @@ public class OrderBookClassifier {
      * identical to the pre-Phase-C single-pass {@code process()} body.
      */
     private void classifyOne(
+            Instrument inst,
             OrderBook ob,
-            String key,
             SymbolState state,
             ClassificationRule rule,
             OrderBookFeedStore feedStore,
@@ -138,7 +139,7 @@ public class OrderBookClassifier {
     ) {
         if (ob.getState() != OrderBookState.SYNCED) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
-                submitDropUpdate(feedStore, key, ob);
+                submitDropUpdate(feedStore, inst);
                 state.level = SymbolState.ActivityLevel.LOW;
             }
             return;
@@ -148,7 +149,7 @@ public class OrderBookClassifier {
         TreeMap<Double, PriceLevelEntry> asks = ob.getAsks();
         if (bids.isEmpty() || asks.isEmpty()) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
-                submitDropUpdate(feedStore, key, ob);
+                submitDropUpdate(feedStore, inst);
                 state.level = SymbolState.ActivityLevel.LOW;
             }
             return;
@@ -161,7 +162,7 @@ public class OrderBookClassifier {
         // No visible tiers? Then no need to update working bids/asks in the state
         if (!bidVisible && !askVisible) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
-                submitDropUpdate(feedStore, key, ob);
+                submitDropUpdate(feedStore, inst);
                 state.level = SymbolState.ActivityLevel.LOW;
             }
             return; // LOW book: skip. No ClassifiedLevel allocation
@@ -171,10 +172,10 @@ public class OrderBookClassifier {
         boolean asksChanged = applyNewOrders(state.askScratch, state.workAsks);
 
         if (state.level == SymbolState.ActivityLevel.LOW) {
-            submitAddUpdate(feedStore, key, ob, state);
+            submitAddUpdate(feedStore, inst, state);
             state.level = SymbolState.ActivityLevel.HIGH;
         } else if (bidsChanged || asksChanged) {
-            submitModifyUpdate(feedStore, key, ob, state);
+            submitModifyUpdate(feedStore, inst, state);
         }
     }
 
@@ -299,23 +300,23 @@ public class OrderBookClassifier {
         return changed;
     }
 
-    private void submitDropUpdate(OrderBookFeedStore feedStore, String key, OrderBook ob) {
-        feedStore.submit(key, new OrderBookUpdate(
-                ob.getSymbol(), ob.getMarket(),
+    private void submitDropUpdate(OrderBookFeedStore feedStore, Instrument inst) {
+        feedStore.submit(inst.feedKey(), new OrderBookUpdate(
+                inst.nativeSymbol(), inst.market(),
                 FeedEventType.DROP,
                 null, null));
     }
 
-    private void submitAddUpdate(OrderBookFeedStore feedStore, String key, OrderBook ob, SymbolState state) {
-        feedStore.submit(key, new OrderBookUpdate(
-                ob.getSymbol(), ob.getMarket(),
+    private void submitAddUpdate(OrderBookFeedStore feedStore, Instrument inst, SymbolState state) {
+        feedStore.submit(inst.feedKey(), new OrderBookUpdate(
+                inst.nativeSymbol(), inst.market(),
                 FeedEventType.ADD,
                 state.workBids.clone(), state.workAsks.clone()));
     }
 
-    private void submitModifyUpdate(OrderBookFeedStore feedStore, String key, OrderBook ob, SymbolState state) {
-        feedStore.submit(key, new OrderBookUpdate(
-                ob.getSymbol(), ob.getMarket(),
+    private void submitModifyUpdate(OrderBookFeedStore feedStore, Instrument inst, SymbolState state) {
+        feedStore.submit(inst.feedKey(), new OrderBookUpdate(
+                inst.nativeSymbol(), inst.market(),
                 FeedEventType.UPDATE,
                 state.workBids.clone(), state.workAsks.clone()));
     }

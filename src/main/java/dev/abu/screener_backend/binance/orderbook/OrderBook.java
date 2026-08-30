@@ -1,7 +1,8 @@
 package dev.abu.screener_backend.binance.orderbook;
 
 import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
-import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.exchange.Instrument;
+import dev.abu.screener_backend.exchange.Venue;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.JsonParser;
@@ -15,11 +16,23 @@ import java.util.Comparator;
 import java.util.TreeMap;
 
 /**
- * Local orderbook for a single (symbol, market) pair.
+ * Local orderbook for a single instrument.
  * <p>
  * All methods except {@link #markSnapshotRequested()} are called
  * exclusively by the Disruptor consumer thread assigned to this orderbook's shard.
  * {@code state} is volatile because the SnapshotFetchQueue scheduler thread also writes it.
+ *
+ * <h3>Transitional debt: {@link #venue}</h3>
+ * The {@code venue} field exists here for exactly one reason — selecting the sequence-validation
+ * rule in {@link #applyLiveDiff} ({@code U == lastUpdateId + 1} on spot,
+ * {@code pu == lastUpdateId} on futures). It is a venue branch inside what should be
+ * venue-agnostic storage, and it is scheduled to be replaced by a per-venue sync strategy plus an
+ * opaque per-book sync context, which also takes {@link #lastUpdateId} and {@link #diffBuffer}
+ * with it. Do not add further venue branches here.
+ *
+ * <p>{@link #logName} is <b>not</b> debt: identity is the {@code int} id, and this is a
+ * precomputed log-only string with no hot-path cost. It is what keeps sync warnings readable
+ * without putting {@code String symbol} back on the identity path.
  */
 @Slf4j
 public class OrderBook {
@@ -28,10 +41,15 @@ public class OrderBook {
     private static final JsonFactory JSON_FACTORY = JsonFactory.builder().build();
 
     @Getter
-    final String symbol;
+    final int instrumentId;
 
+    /** Transitional — carries the spot/futures sequence-rule branch only. See the class javadoc. */
     @Getter
-    final Market market;
+    final Venue venue;
+
+    /** Precomputed {@code VENUE/SYMBOL}, used only in log lines. */
+    @Getter
+    final String logName;
 
     @Getter
     volatile OrderBookState state;
@@ -50,9 +68,10 @@ public class OrderBook {
 
     private long lastUpdateId;
 
-    public OrderBook(String symbol, Market market, double filterThreshold) {
-        this.symbol = symbol;
-        this.market = market;
+    public OrderBook(Instrument instrument, double filterThreshold) {
+        this.instrumentId = instrument.id();
+        this.venue = instrument.venue();
+        this.logName = instrument.logName();
         this.filterThreshold = filterThreshold;
         this.state = OrderBookState.PENDING;
         this.bids = new TreeMap<>(Comparator.reverseOrder());
@@ -64,7 +83,7 @@ public class OrderBook {
 
     /** Called by SnapshotFetchQueue scheduler thread. */
     public void markSnapshotRequested() {
-        log.debug("[{}/{}] OrderBook queued for snapshot", symbol, market);
+        log.debug("[{}] OrderBook queued for snapshot", logName);
         this.state = OrderBookState.SNAPSHOT_REQUESTED;
     }
 
@@ -74,12 +93,12 @@ public class OrderBook {
     public OrderBookResult onDiff(String rawJson) {
         switch (state) {
             case PENDING:
-                log.debug("[{}/{}] Diff received: need snapshot", symbol, market);
+                log.debug("[{}] Diff received: need snapshot", logName);
                 return OrderBookResult.NEEDS_SNAPSHOT;
 
             case SNAPSHOT_REQUESTED:
                 if (diffBuffer.size() >= MAX_BUFFER_SIZE) {
-                    log.warn("[{}/{}] Diff buffer overflow — forcing re-sync", symbol, market);
+                    log.warn("[{}] Diff buffer overflow — forcing re-sync", logName);
                     diffBuffer.clear();
                     state = OrderBookState.PENDING;
                     return OrderBookResult.NEEDS_RESYNC;
@@ -107,12 +126,12 @@ public class OrderBook {
             if (snapshotId == -1) {
                 return resync();
             }
-            log.debug("[{}/{}] Snapshot received: snapshotId={}, buffered events={}", symbol, market, snapshotId, diffBuffer.size());
+            log.debug("[{}] Snapshot received: snapshotId={}, buffered events={}", logName, snapshotId, diffBuffer.size());
 
             // Step 1: Discard invalid buffered diffs
             discardInvalidDiffsFromBuffer(snapshotId);
             if (diffBuffer.isEmpty()) {
-                log.warn("[{}/{}] Empty diff buffer after snapshot — re-syncing", symbol, market);
+                log.warn("[{}] Empty diff buffer after snapshot — re-syncing", logName);
                 return resync();
             }
 
@@ -120,7 +139,7 @@ public class OrderBook {
             long u = parseUField(diffBuffer.peekFirst());
             long _U = parseUpperUField(diffBuffer.peekFirst());
             if (snapshotId < _U || snapshotId > u) {
-                log.warn("[{}/{}] no valid sync point (snapshotId={}, u={}, U={}) — re-syncing", symbol, market, snapshotId, u, _U);
+                log.warn("[{}] no valid sync point (snapshotId={}, u={}, U={}) — re-syncing", logName, snapshotId, u, _U);
                 return resync();
             }
 
@@ -150,11 +169,11 @@ public class OrderBook {
             }
 
             state = OrderBookState.SYNCED;
-            log.debug("[{}/{}] OrderBook SYNCED: — {} bid levels, {} ask levels", symbol, market, bids.size(), asks.size());
+            log.debug("[{}] OrderBook SYNCED: — {} bid levels, {} ask levels", logName, bids.size(), asks.size());
             return OrderBookResult.OK;
 
         } catch (IOException e) {
-            log.warn("[{}/{}] Failed to apply snapshot: {}", symbol, market, e.getMessage());
+            log.warn("[{}] Failed to apply snapshot: {}", logName, e.getMessage());
             return resync();
         }
     }
@@ -179,11 +198,11 @@ public class OrderBook {
                         // Binance guarantees U/u/pu always precede b/a in the diff JSON object.
                         if (!sequenceValidated) {
                             sequenceValidated = true;
-                            if (market == Market.SPOT && U != lastUpdateId + 1) {
-                                log.debug("[{}/{}] Sequence gap: expected U={}, got U={}", symbol, market, lastUpdateId + 1, U);
+                            if (venue == Venue.BINANCE_SPOT && U != lastUpdateId + 1) {
+                                log.debug("[{}] Sequence gap: expected U={}, got U={}", logName, lastUpdateId + 1, U);
                                 sequenceOk = false;
-                            } else if (market == Market.FUTURES && pu != lastUpdateId) {
-                                log.debug("[{}/{}] pu gap: expected pu={}, got pu={}", symbol, market, lastUpdateId, pu);
+                            } else if (venue == Venue.BINANCE_FUTURES && pu != lastUpdateId) {
+                                log.debug("[{}] pu gap: expected pu={}, got pu={}", logName, lastUpdateId, pu);
                                 sequenceOk = false;
                             }
                         }
@@ -197,7 +216,7 @@ public class OrderBook {
                 }
             }
         } catch (IOException e) {
-            log.warn("[{}/{}] Failed to parse diff: {}", symbol, market, e.getMessage());
+            log.warn("[{}] Failed to parse diff: {}", logName, e.getMessage());
             return resync();
         }
 
@@ -221,7 +240,7 @@ public class OrderBook {
                 }
             }
         } catch (IOException e) {
-            log.warn("[{}/{}] Failed to parse first buffered diff: {}", symbol, market, e.getMessage());
+            log.warn("[{}] Failed to parse first buffered diff: {}", logName, e.getMessage());
             return OrderBookResult.DROPPED;
         }
         return OrderBookResult.OK;
@@ -242,7 +261,7 @@ public class OrderBook {
                 }
             }
         } catch (IOException e) {
-            log.warn("[{}/{}] Failed to parse snapshot event: {}", symbol, market, e.getMessage());
+            log.warn("[{}] Failed to parse snapshot event: {}", logName, e.getMessage());
             return -1;
         }
         return snapshotId;

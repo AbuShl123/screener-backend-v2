@@ -3,11 +3,12 @@ package dev.abu.screener_backend.analysis.rule;
 import dev.abu.screener_backend.analysis.ThresholdClassificationRule;
 import dev.abu.screener_backend.analysis.UserClassificationRules;
 import dev.abu.screener_backend.analysis.rule.dto.*;
-import dev.abu.screener_backend.binance.websocket.Market;
 import dev.abu.screener_backend.config.OrderbookProperties;
 import dev.abu.screener_backend.error.ApiException;
-import dev.abu.screener_backend.ticker.Ticker;
-import dev.abu.screener_backend.ticker.TickerRegistry;
+import dev.abu.screener_backend.exchange.Exchange;
+import dev.abu.screener_backend.exchange.InstrumentRegistry;
+import dev.abu.screener_backend.exchange.Market;
+import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.user.User;
 import dev.abu.screener_backend.user.UserRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,21 +39,21 @@ public class ClassificationRuleService {
 
     private final ClassificationRuleRepository ruleRepository;
     private final UserRepository userRepository;
-    private final TickerRegistry tickerRegistry;
+    private final InstrumentRegistry instrumentRegistry;
     private final ApplicationEventPublisher eventPublisher;
     private final double maxDistanceUpperBound;
     private final int maxTargetsPerRequest;
 
     public ClassificationRuleService(ClassificationRuleRepository ruleRepository,
                                      UserRepository userRepository,
-                                     TickerRegistry tickerRegistry,
+                                     InstrumentRegistry instrumentRegistry,
                                      ApplicationEventPublisher eventPublisher,
                                      OrderbookProperties orderbookProperties,
                                      @Value("${screener.classification.max-targets-per-request:200}")
                                      int maxTargetsPerRequest) {
         this.ruleRepository = ruleRepository;
         this.userRepository = userRepository;
-        this.tickerRegistry = tickerRegistry;
+        this.instrumentRegistry = instrumentRegistry;
         this.eventPublisher = eventPublisher;
         // maxDistance can never usefully exceed the orderbook's price filter: levels beyond it
         // are already swept, so such a rule could never match. (User picked: tie to live config.)
@@ -262,16 +263,17 @@ public class ClassificationRuleService {
         }
     }
 
+    /**
+     * A rule may only target an instrument the screener actually tracks.
+     *
+     * <p>Since spot and futures are now separate instruments, the old two-step lookup
+     * (find the ticker, then check its {@code hasSpot}/{@code hasFutures} flag) collapses into a
+     * single registry hit on the {@code (venue, symbol)} identity.
+     */
     private void validateTrackedTicker(TargetDto target) {
         String symbol = normalizeSymbol(target.symbol());
-        Ticker ticker = tickerRegistry.find(symbol)
-                .orElseThrow(() -> badRequest("unknown symbol: " + symbol));
-
-        boolean covered = switch (target.market()) {
-            case SPOT -> ticker.hasSpot();
-            case FUTURES -> ticker.hasFutures();
-        };
-        if (!covered) {
+        Venue venue = Venue.of(Exchange.BINANCE, target.market());
+        if (instrumentRegistry.find(venue, symbol).isEmpty()) {
             throw badRequest(symbol + " is not tracked on market " + target.market());
         }
     }

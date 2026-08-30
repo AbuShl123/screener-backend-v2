@@ -4,7 +4,13 @@
 
 This document covers how the screener discovers which Binance symbols to track, connects to
 Binance's WebSocket streams, routes messages through the Disruptor pipeline, and keeps each
-`(symbol, market)` local orderbook in perfect sync with Binance's authoritative state.
+instrument's local orderbook in perfect sync with Binance's authoritative state.
+
+**Identity**: the pipeline is keyed on a dense `int` instrument id, not on `(symbol, market)`.
+An `Instrument` is one tradable pair on one `Venue = (exchange, market)`, so `BTCUSDT` is two
+instruments — `BINANCE_SPOT` and `BINANCE_FUTURES` — with two ids, two slots, two books.
+`(venue, nativeSymbol)` is the durable identity; the id is a process-local array index that is
+never persisted. See section 1.
 
 **Scope boundary**: this document stops at a `SYNCED`, up-to-date `OrderBook` (bids/asks
 `TreeMap`s). How those books are classified into tiers, fed to users, or broadcast over
@@ -19,70 +25,103 @@ full hot-path rules.
 
 ---
 
-## 1. Ticker Discovery and Refresh
+## 1. Instrument Discovery and Registration
 
-Files: `ticker/TickerService.java`, `TickerRegistry.java`, `TickerRefreshScheduler.java`, `Ticker.java`, `TickersRefreshedEvent.java`.
+Files: `exchange/{InstrumentUniverseService,InstrumentRegistry,Instrument,Venue,Market,Exchange,InstrumentUniverseChangedEvent}.java`,
+`ticker/TickerRefreshScheduler.java`; config: `ExchangesProperties`
+(`screener.exchanges.binance.discovery.*`).
 
-`TickerService.refreshTickers()` fetches `GET /api/v3/exchangeInfo` (spot) and
-`GET /fapi/v1/exchangeInfo` (futures) concurrently via `Mono.zip`, blocking up to 30s.
+`InstrumentUniverseService.refresh()` fetches `GET /api/v3/exchangeInfo` (spot) and
+`GET /fapi/v1/exchangeInfo` (futures) concurrently via `Mono.zip`, blocking up to 30s. The zip
+combinator only *filters*; registration runs on the calling (discovery) thread afterwards, which
+is what keeps id assignment single-threaded.
 
-**Inclusion rules** (`buildTickerMap`):
-- Symbol must be USDT-quoted with an **active** (`TRADING`) USDT `PERPETUAL` futures contract —
-  futures presence is mandatory.
-- If the symbol also has an active USDT spot market, it's flagged `Ticker.hasSpot() = true`.
-  Spot-only symbols (no futures contract) are excluded entirely.
-- A small hardcoded `EXCLUDED_SYMBOLS` set filters out stablecoin/gold pairs (`USDCUSDT`,
-  `FDUSDUSDT`, `DAIUSDT`, `PYUSDUSDT`, `USD1USDT`, `XAUTUSDT`, `PAXGUSDT`).
+**Inclusion policy** — config-driven, no longer hardcoded:
+```
+futures = status TRADING & contractType PERPETUAL & quote USDT & not excluded
+spot    = status TRADING & quote USDT & not excluded
+                         & (spot-requires-futures -> symbol also in futures)
+```
+`spot-requires-futures: true` reproduces the historical universe (spot tracked only where a
+futures contract existed). `excluded-symbols` holds the stablecoin/metal pairs (`USDCUSDT`,
+`FDUSDUSDT`, `DAIUSDT`, `PYUSDUSDT`, `USD1USDT`, `XAUTUSDT`, `PAXGUSDT`).
 
-**Failure behavior**: if either REST call fails, the error is logged and the existing
-`TickerRegistry` is left untouched — the app never crashes on a bad refresh.
+**Ids** (`InstrumentRegistry`): dense, from a counter, assigned the first time a
+`(venue, nativeSymbol)` pair is registered. Four rules matter:
+- **Dense** — the space is `[0, everRegistered)`, which is what lets the book store be an array.
+- **Stable** — re-registering the same pair returns the same id; the 4-hourly refresh never
+  reshuffles ids.
+- **Never transferred** — a delisted instrument's id is retired, leaving a hole. Reusing it could
+  let a stale in-flight event land on the wrong book.
+- **Never persisted** — no id reaches the database or a payload. Rules are still stored as
+  `(symbol, market)`; `/api/tickers` exposes ids purely as a debugging aid.
 
-**Registry**: `TickerRegistry` holds an `AtomicReference<Map<String, Ticker>>`, swapped
-atomically via `replace()` — lock-free reads for consumers.
+Candidates are registered in `(venue, symbol)` order, so ids are reproducible across restarts.
+`Instrument` also precomputes `feedKey` (`SYMBOL:MARKET`, the classifier/feed key) and `logName`
+(`VENUE/SYMBOL`, for log lines), removing a per-message concatenation from the hot path.
 
-**Scheduling**: `TickerRefreshScheduler` calls `refreshTickers()` on
+**Failure behavior**: if either REST call fails, the error is logged and the existing universe is
+retained — the app never crashes on a bad refresh, and a network blip is never read as a mass
+delisting.
+
+**Scheduling**: `TickerRefreshScheduler` calls `refresh()` on
 `@Scheduled(fixedDelayString = "${screener.ticker.refresh-interval}")`
 (`screener.ticker.refresh-interval: PT4H`). `fixedDelay` (not `fixedRate`) is deliberate, so a
-slow refresh can't overlap with the next tick.
+slow refresh cannot overlap with the next tick. The first execution happens at startup and is
+what brings the pipeline up.
 
-**Startup propagation**: a successful refresh publishes `TickersRefreshedEvent`.
-`BinanceWebSocketManager` listens for it: on the **first** event it starts the spot/futures
-WebSocket connection pools (§2). On every subsequent event (i.e. the 4-hourly refresh finding
-new/delisted symbols) it currently only logs that dynamic re-subscription isn't implemented —
-**live WebSocket subscriptions are not updated when the ticker list changes after startup**,
-only the registry is. Worth knowing if a symbol gets delisted or a new one is listed mid-run.
+**Ordering invariant**: the discovery thread does **register all -> allocate slots ->
+`BookSlotTable.publish()` -> fire `InstrumentUniverseChangedEvent` -> transport subscribes**, in
+that order. Slots are pre-populated, so if a subscribe frame went out first a reader could resolve
+an id past the end of the published slot array.
+
+**Startup propagation**: `BinanceWebSocketManager` listens for
+`InstrumentUniverseChangedEvent`: on the **first** event it starts the spot/futures WebSocket
+connection pools (section 2). On every subsequent event (the 4-hourly refresh finding
+new/delisted symbols) it only logs that dynamic re-subscription is not implemented —
+**live WebSocket subscriptions are not updated when the universe changes after startup**,
+only the registry is.
 
 ---
 
 ## 2. WebSocket Connection Pools
 
-Files: `binance/websocket/{BinanceWebSocketManager,BinanceConnectionPool,BinanceStreamClient,Market}.java`, config: `WebSocketProperties` (`screener.websocket.*`).
+Files: `binance/websocket/{BinanceWebSocketManager,BinanceConnectionPool,BinanceStreamClient,SubscriptionIndex}.java`;
+config: `ExchangesProperties` (`screener.exchanges.binance.venues.*`) for anything venue-shaped,
+`WebSocketProperties` (`screener.websocket.*`) for reconnect/heartbeat timing.
 
-Spot and futures each get an independent `BinanceConnectionPool`, built once at startup from
-the first `TickersRefreshedEvent`:
-- **Spot pool**: only tickers with `hasSpot() = true`, connecting to `spot-stream-url`
-  (`wss://stream.binance.com/ws`) across `connection-count-spot` connections (default `2`).
-- **Futures pool**: every discovered ticker, connecting to `futures-stream-url`
-  (`wss://fstream.binance.com/ws`) across `connection-count-futures` connections (default `3`).
+One `BinanceConnectionPool` per venue, built once at startup from the first
+`InstrumentUniverseChangedEvent` and fed that venue's slice of the added instruments:
+- **`BINANCE_SPOT`**: `stream-url` `wss://stream.binance.com/ws`.
+- **`BINANCE_FUTURES`**: `stream-url` `wss://fstream.binance.com/ws`.
 
-`BinanceConnectionPool.start()` splits the ticker list into `connectionCount` contiguous
-batches (`i*size/count .. (i+1)*size/count`) and opens one `BinanceStreamClient` per batch,
-each pointed at the same base URL (Binance's combined-stream path, not the `?streams=` query
-form). There's no per-connection stream-count cap enforced in code — Binance's own connection
-limits are respected purely by choosing `connection-count-*` large enough to keep each
-connection's stream count under Binance's limit, not by a coded guard.
+**Connection count is derived**, not hand-picked:
+```
+connections = clamp(ceil(streams / max-streams-per-connection), min-connections, max-connections)
+```
+At Binance's `max-streams-per-connection: 1024` the ceiling term is `1` for both venues, so the
+`min-connections` floor (spot `2`, futures `3`) is what actually sets today's fan-out — the
+configured value is a floor, not the authority. The ceiling term only starts dominating at a venue
+with a small per-connection cap.
 
-**Subscribing** (`BinanceStreamClient.onOpen`): the client's symbol batch is chunked into
+`BinanceConnectionPool.start()` splits the instrument list into `connectionCount` contiguous
+batches (`i*size/count .. (i+1)*size/count`) and opens one `BinanceStreamClient` per batch, each
+pointed at the same base URL (Binance's combined-stream path, not the `?streams=` query form).
+
+**Subscribing** (`BinanceStreamClient.onOpen`): the client's instrument batch is chunked into
 groups of `subscribe-chunk-size` (default `400`), one `SUBSCRIBE` frame sent per chunk. Each
-symbol is subscribed with a market-specific depth stream suffix (`Market.streamSuffix()`):
-spot `@depth` (1000ms), futures `@depth@500ms`.
+symbol is subscribed with the venue's configured `depth-stream` suffix: spot `@depth` (1000ms),
+futures `@depth@500ms`.
 
 **Message dispatch** (`onMessage`): avoids full JSON parsing on the hot path — a single
 `charAt(2) == 'r'` check distinguishes a `SUBSCRIBE` ack (`{"result":...}`) from a depth event
-(`{"e":...}`), and the symbol is pulled out via a direct substring scan on `"s":"..."`
-(interned, since the string repeats constantly) rather than deserializing the whole message.
-Depth events are forwarded to `RawDepthMessageHandler.handle(symbol, market, rawJson)` — the
-raw JSON string is not parsed further here; that happens later, in the Disruptor consumer.
+(`{"e":...}`), and the symbol is located via a direct substring scan on `"s":"..."` rather than
+deserializing the message. That symbol is then resolved to an `int` against the connection's
+`SubscriptionIndex` — per-connection, so it needs no venue disambiguation, and it is why
+`String.intern()` is no longer called here. An unresolvable symbol increments a rate-limited
+`unknownSymbols` counter and the frame is dropped; that counter should be permanently zero, and a
+non-zero value means the identity mapping is wrong. Resolved events go to
+`RawDepthMessageHandler.handle(instrumentId, rawJson)`; the raw JSON is not parsed further here.
 
 **Reconnect**: on `onClose` (unless shutting down), the client schedules a reconnect with
 exponential backoff: `reconnectInitialDelayMs * 2^min(attempts, 8)`, capped at
@@ -107,32 +146,47 @@ Files: `binance/disruptor/{DisruptorShardManager,DepthEventHandler,DisruptorDept
 - `BlockingWaitStrategy`,
 - one dedicated consumer thread (`disruptor-shard-N`) running a single `DepthEventHandler`.
 
-**Routing** (`getRingBuffer(symbol)`): `ringBuffers[Math.abs(symbol.hashCode()) % shardCount]`.
-A given symbol always maps to the same shard, so all its diffs and snapshots are handled by
-exactly one consumer thread — this is what lets `OrderBook`'s `TreeMap`s go unsynchronized.
+**Routing** (`getRingBuffer(instrumentId)`): `ringBuffers[instrumentId & (shardCount - 1)]`;
+`shard-count` is validated as a power of two at startup. A given instrument always maps to the
+same shard, so all its diffs and snapshots are handled by exactly one consumer thread — this is
+what lets `OrderBook`'s `TreeMap`s go unsynchronized. Dense ids make this a mask instead of a
+hash-and-modulo, which distributes perfectly rather than by hash luck and removes a latent
+`Math.abs(Integer.MIN_VALUE)` out-of-bounds crash.
+
+Spot and futures `BTCUSDT` now have different ids and may land on *different* shards, where they
+previously hashed the same string to the same shard. Harmless: they are separate books with
+separate `feedKey`s and separate classifier state.
 
 **Producers** (two call sites publish `DepthEvent`s into a ring buffer):
 1. `DisruptorDepthMessageHandler.handle()` — every WebSocket depth message becomes an
    `EventType.DIFF` event.
 2. `SnapshotFetchQueue.publishSnapshotEvent()` — every completed REST snapshot response becomes
-   an `EventType.SNAPSHOT` event, published to the *same* symbol's ring buffer.
+   an `EventType.SNAPSHOT` event, published to the *same* instrument's ring buffer.
+
+Both producers must route through the one `getRingBuffer(int)` expression; a second copy of the
+routing rule would risk splitting one instrument's events across two threads.
 
 Because both flow through the same shard, a snapshot and the diffs surrounding it are never
 applied concurrently — there is no locking anywhere in `OrderBook`.
 
 **Consumer** (`DepthEventHandler.onEvent`): calls `OrderBookProcessor.process(event)` to
-apply the event to the orderbook (this document's concern), then — if a book resulted —
-hands off to `OrderBookClassifier.process(ob)` (out of scope here), then clears the event
+apply the event to the orderbook (this document's concern), then — if a slot resulted — hands off
+to `OrderBookClassifier.process(instrument, book)` (out of scope here), then clears the event
 object (`event.clear()`, reused ring-buffer slot — no per-event allocation).
+
+**Book storage** (`binance/orderbook/{BookSlot,BookSlotTable}.java`): `BookSlot` pairs an
+`Instrument` with its `OrderBook`, and `BookSlotTable` holds them in a copy-on-write array indexed
+by instrument id. Slots are allocated at registration, not lazily on first diff. `get(id)`
+bounds-checks and returns `null` rather than throwing; a `null` slot should be impossible, and is
+counted and dropped, never dereferenced.
 
 **`OrderBookProcessor.process()`** (`binance/orderbook/OrderBookProcessor.java`) — the routing
 layer between Disruptor events and `OrderBook`:
-- `DIFF` events: lazily create the `OrderBook` on first arrival (`OrderBookStore.getOrCreate`).
-- `SNAPSHOT` events: the book must already exist (`OrderBookStore.get`); if not (e.g. a stray
-  late response), the event is dropped.
-- Dispatches to `ob.applySnapshot()` or `ob.onDiff()` per event type.
-- If the result is `NEEDS_SNAPSHOT` or `NEEDS_RESYNC`, calls `snapshotFetchQueue.enqueue(ob)`
-  and (if the queue accepted it) `ob.markSnapshotRequested()`. **Only `NEEDS_SNAPSHOT` replays
+- Looks up `slots.get(event.instrumentId)`. Because slots are pre-populated there is no
+  create-versus-fetch branch by event type, no `computeIfAbsent`, and no lookup key to build.
+- Dispatches to `book.applySnapshot()` or `book.onDiff()` per event type.
+- If the result is `NEEDS_SNAPSHOT` or `NEEDS_RESYNC`, calls `snapshotFetchQueue.enqueue(slot)`
+  and (if the queue accepted it) `book.markSnapshotRequested()`. **Only `NEEDS_SNAPSHOT` replays
   the triggering diff** into `ob.onDiff()` afterward, so it isn't lost — `NEEDS_RESYNC` does
   not replay, since a resync means everything buffered so far is already known-bad and the
   book must wait for the next fresh diff to re-trigger buffering.
@@ -232,9 +286,9 @@ futures (1 update/500ms) — making it far more likely that valid sync-point dif
 
 When the WebClient Reactor thread receives the snapshot HTTP response, it does **not** write
 directly to the `OrderBook`. Instead it publishes a `DepthEvent` with `type = EventType.SNAPSHOT`
-to the same shard's `RingBuffer` that handles diffs for that symbol (§3).
+to the same shard's `RingBuffer` that handles diffs for that instrument (section 3).
 
-This is critical for correctness: diffs and snapshots for the same symbol all flow through the
+This is critical for correctness: diffs and snapshots for one instrument all flow through the
 same single-threaded Disruptor consumer. There is no concurrency between diff application and
 snapshot application for any given orderbook, and therefore no locking in `OrderBook`.
 
@@ -329,7 +383,7 @@ application.
 ```
 
 `filterThreshold` is `screener.orderbook.price-filter-threshold` (default `0.1`, i.e. ±10% of
-mid-price), injected per-`OrderBook` at construction (`OrderBookStore.getOrCreate`) — it is
+mid-price), injected per-`OrderBook` at construction (`BookSlotTable.allocate`) — it is
 **not** a hardcoded percentage. `distance` is stored as a fraction of mid-price everywhere in
 the codebase (`0.05` = 5%), the same unit the classifier and per-user rules compare against.
 
@@ -380,22 +434,25 @@ fractional distance from mid-price, consumed downstream by classification.
 
 ## Summary of Non-Obvious Design Decisions
 
-1. **Ticker refresh doesn't re-subscribe live connections** — `BinanceWebSocketManager` only
-   acts on the *first* `TickersRefreshedEvent` to start the pools; the 4-hourly refresh after
-   that updates `TickerRegistry` but not open WebSocket subscriptions.
-2. **No coded per-connection stream cap** — Binance's connection-level stream limits are
-   respected by choosing `connection-count-spot`/`connection-count-futures` appropriately, not
-   by a guard in `BinanceConnectionPool`.
-3. **5-second snapshot delay** — prevents the buffer from being empty when the snapshot is
+1. **Universe refresh doesn't re-subscribe live connections** — `BinanceWebSocketManager` only
+   acts on the *first* `InstrumentUniverseChangedEvent` to start the pools; the 4-hourly refresh
+   after that updates `InstrumentRegistry` but not open WebSocket subscriptions.
+2. **Connection count is derived from the venue's stream cap**, clamped by `min-connections` /
+   `max-connections`. With Binance's 1024-stream ceiling the floor is what binds today, so
+   changing `min-connections` still changes the fan-out.
+3. **Identity is a dense `int`, and it never leaves the process** — `(venue, nativeSymbol)` is
+   durable; the id is an array index reassigned from zero on every restart. Slots, shard routing
+   and the snapshot queue are all keyed on it, but nothing persisted is.
+4. **5-second snapshot delay** — prevents the buffer from being empty when the snapshot is
    applied, avoiding immediate re-sync loops.
-4. **Snapshot published via Disruptor** — keeps all orderbook mutations single-threaded per
+5. **Snapshot published via Disruptor** — keeps all orderbook mutations single-threaded per
    shard; snapshot and diffs are never concurrent, so `OrderBook` needs no locks.
-5. **Strict `u < snapshotId` discard (not `u <= snapshotId`)** — the spot docs say `<=` but
+6. **Strict `u < snapshotId` discard (not `u <= snapshotId`)** — the spot docs say `<=` but
    this empties the buffer in practice; strict `<` retains the overlap event needed for sync.
-6. **First diff special-cased in `applySnapshot`** — U/u/pu are not validated for the first
+7. **First diff special-cased in `applySnapshot`** — U/u/pu are not validated for the first
    diff because its range overlap with `snapshotId` was already verified in step 3, and the
    price filter is skipped for it (only applied from the second buffered diff onward).
-7. **`NEEDS_SNAPSHOT` replays the current diff, `NEEDS_RESYNC` does not** — after transitioning
+8. **`NEEDS_SNAPSHOT` replays the current diff, `NEEDS_RESYNC` does not** — after transitioning
    to `SNAPSHOT_REQUESTED` from `PENDING`, the triggering diff is replayed so it isn't lost;
    after a resync, the buffer is already known-bad, so there's nothing worth replaying.
 8. **Queue capacity serves two purposes** — limits how many orderbooks hold diff buffers

@@ -40,12 +40,54 @@ screener:
     emails: "${SCREENER_ADMIN_EMAILS:}"
 
   binance:
-    spot-base-url: https://api.binance.com
-    futures-base-url: https://fapi.binance.com
-    codec-buffer-size-mb: 18
     # Binance hard limits: spot 6 000, futures 2 400.
     spot-weight-threshold: 5800
     futures-weight-threshold: 2200
+
+  exchanges:
+    binance:
+      enabled: true
+      rest:
+        # Binance exchangeInfo responses are 1-2 MB; the default 256 KB WebClient codec
+        # buffer throws DataBufferLimitException without this setting.
+        codec-buffer-size-mb: 18
+      discovery:
+        # Instrument-universe inclusion policy. Previously hardcoded in TickerService.
+        quote-asset: USDT
+        futures-contract-type: PERPETUAL
+        # true = track a spot symbol only if the same symbol has an eligible futures contract.
+        # Flipping this to false would take spot from "futures INTERSECT spot" to every USDT
+        # spot pair - a large load change that does not belong on top of an identity refactor.
+        spot-requires-futures: true
+        # Stablecoin / metal pairs whose books carry no screening signal.
+        excluded-symbols:
+          - USDCUSDT
+          - FDUSDUSDT
+          - DAIUSDT
+          - PYUSDUSDT
+          - USD1USDT
+          - XAUTUSDT
+          - PAXGUSDT
+      venues:
+        SPOT:
+          stream-url: wss://stream.binance.com/ws
+          rest-url: https://api.binance.com
+          depth-stream: "@depth"
+          max-streams-per-connection: 1024
+          # Connection count is derived: clamp(ceil(streams / max-streams-per-connection),
+          # min, max). At Binance's 1024 ceiling the derived term is 1, so min-connections is
+          # what actually sets the fan-out - keep it at the count the pool used before.
+          min-connections: 2
+          max-connections: 8
+          subscribe-chunk-size: 400
+        FUTURES:
+          stream-url: wss://fstream.binance.com/ws
+          rest-url: https://fapi.binance.com
+          depth-stream: "@depth@500ms"
+          max-streams-per-connection: 1024
+          min-connections: 3
+          max-connections: 8
+          subscribe-chunk-size: 400
 
   ticker:
     # ISO-8601 duration.
@@ -103,11 +145,6 @@ screener:
       ofd-enabled: ${MULTICARD_OFD_ENABLED:true}
 
   websocket:
-    spot-stream-url: wss://stream.binance.com/ws
-    futures-stream-url: wss://fstream.binance.com/ws
-    connection-count-spot: 2
-    connection-count-futures: 3
-    subscribe-chunk-size: 400
     reconnect-initial-delay-ms: 100
     reconnect-max-delay-ms: 30000
     # How often to send a WebSocket PING to Binance to prevent server-side idle close (1006).

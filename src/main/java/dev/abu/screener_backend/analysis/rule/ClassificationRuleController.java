@@ -7,7 +7,7 @@ import dev.abu.screener_backend.analysis.rule.dto.DefaultRuleResponse;
 import dev.abu.screener_backend.analysis.rule.dto.RuleResponse;
 import dev.abu.screener_backend.auth.AuthService;
 import dev.abu.screener_backend.auth.AuthenticatedUser;
-import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.entitlement.EntitlementService;
 import dev.abu.screener_backend.error.ApiException;
 import dev.abu.screener_backend.user.User;

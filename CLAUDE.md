@@ -39,7 +39,8 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 
 | Package | Responsibility |
 |---------|----------------|
-| `binance/` | **Hot path.** Market-data pipeline: `api/` (REST snapshot/exchange-info client, weight guard), `websocket/` (java-websocket connection pools to Binance depth streams), `disruptor/` (sharded LMAX ring buffers + consumer), `orderbook/` (TreeMap local books, sync state machine, snapshot fetch queue). |
+| `exchange/` | Exchange-agnostic identity: `Exchange`, `Market`, `Venue` (= exchange + market, the pipeline's adapter unit), `Instrument`, `InstrumentRegistry` (dense runtime `int` ids), `InstrumentUniverseService` (discovery + inclusion policy). |
+| `binance/` | **Hot path.** Market-data pipeline: `api/` (REST snapshot/exchange-info client, weight guard), `websocket/` (java-websocket connection pools to Binance depth streams, per-connection `SubscriptionIndex`), `disruptor/` (sharded LMAX ring buffers + consumer), `orderbook/` (TreeMap local books, sync state machine, `BookSlotTable`, snapshot fetch queue). |
 | `analysis/` | Order classification engine (`OrderBookClassifier`, tier rules) and per-user custom rules — `rule/` holds the `/api/rules` CRUD, entity, and live rule-update propagation. |
 | `feed/` | `OrderBookBroadcaster` (100ms drain loop), global + per-user feed stores, classified-level model. |
 | `ws/` | Jakarta WebSocket server — `/ws` endpoint, JWT-gated `@OnOpen`, virtual-thread send loops, per-session state. |
@@ -49,7 +50,7 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 | `billing/` | Plan catalog: `Plan` + `PlanPrice` (`FIXED` day-bundles and `PER_DAY` pay-as-you-go), `Currency`, `PricingService`, `RegionResolver`. Public catalog `/api/billing-catalog`, admin catalog `/api/admin/billing`. |
 | `entitlement/` | The single access source of truth. Derives access state (`TRIAL`/`ACTIVE`/`EXPIRED`/`ADMIN`) from an `accessExpiresAt` stamp; append-only `EntitlementLedger` audits every grant. `/api/billing/entitlement`. |
 | `payment/` | Order lifecycle: `Order`, `OrderService`, `OrderStateMachine` (+ status history), scheduled `PaymentReconciliationService`, `PaymentProvider` abstraction. `multicard/` is the only provider impl today (client, signature, callback controller/service). `/api/billing/orders`, `/api/payment/multicard/callback`. |
-| `ticker/` | Ticker enumeration + scheduled refresh; drives which symbols/streams are tracked. |
+| `ticker/` | Scheduled universe refresh (`TickerRefreshScheduler`) + the `/api/tickers` debug endpoint. The discovery logic itself lives in `exchange/`. |
 | `monitoring/` | Admin-only diagnostics: `/api/monitoring/presence`, `/api/monitoring/orderbook`. |
 | `config/` | `@ConfigurationProperties` records (one per feature) + `SecurityConfig`, `WebClientConfig`, `AsyncConfig`. |
 | `error/` | `ApiException` + `ApiError` + `GlobalExceptionHandler` — the canonical error shape for all REST responses. |
@@ -79,9 +80,10 @@ The **`binance/`, `feed/`, and `analysis/` classifier** code is the hot path —
 
 The performance-critical core. Read the dedicated docs (`.claude/docs/orderbook-sync-algorithm.md`) before touching sync logic.
 
+- **Identity**: `(String symbol, Market market)` is *not* the pipeline key — a dense `int` instrument id is. `Venue = (exchange, market)`, and `BTCUSDT` is two `Instrument`s (spot + futures) with two ids and two books. `(venue, nativeSymbol)` is the durable identity; the id is a process-local array index and is **never** persisted or put in a payload. Persistence and the public API stay on `Market`.
 - **Streams**: `@depth` (spot 1/s, futures 1/500ms). Separate WebSocket connection pools for spot (`wss://stream.binance.com/ws`) and futures (`wss://fstream.binance.com/ws`), ≤1024 streams per connection.
-- **Disruptor**: configurable shards (default 2), each a `Disruptor` + one dedicated consumer thread, `ProducerType.MULTI`, power-of-2 ring buffer. **Ticker → shard is `Math.abs(symbol.hashCode()) % shardCount`** — a ticker's events must never split across shards (books are not thread-safe).
-- **Order books**: per `(symbol, market)`, `TreeMap<Double, PriceLevelEntry>` (bids reverse-ordered, asks natural). `PriceLevelEntry` is mutable and updated in place; `firstSeenMillis` tracks level lifetime. Zero-quantity updates **must** remove the level. Levels beyond the price filter (`screener.orderbook.price-filter-threshold`, default 0.1) are dropped; recalc mid-price *after* applying each batch.
+- **Disruptor**: configurable shards (default 2), each a `Disruptor` + one dedicated consumer thread, `ProducerType.MULTI`, power-of-2 ring buffer. **Instrument → shard is `id & (shardCount - 1)`**, with `shard-count` validated as a power of two at startup — an instrument's events must never split across shards (books are not thread-safe). Both producers must use that one expression.
+- **Order books**: one per `Instrument`, held in `BookSlotTable` — an array indexed by the instrument's dense `int` id, populated at registration rather than lazily. `TreeMap<Double, PriceLevelEntry>` (bids reverse-ordered, asks natural). `PriceLevelEntry` is mutable and updated in place; `firstSeenMillis` tracks level lifetime. Zero-quantity updates **must** remove the level. Levels beyond the price filter (`screener.orderbook.price-filter-threshold`, default 0.1) are dropped; recalc mid-price *after* applying each batch.
 - **Sync state machine** per book: `PENDING` (diffs dropped) → `SNAPSHOT_REQUESTED` (buffering) → `SYNCED` (live). Only `SYNCED` books produce classification output. Any sequence gap / parse error / empty buffer resets to `PENDING` and re-enqueues. Buffering starts when the snapshot **request is dispatched**, not when it returns. Futures additionally validate `pu` continuity. Snapshot fetches are rate-limited against Binance weight budgets.
 - **Classification**: two passes per update — a default pass (global tiers → global feed) and a per-user pass (each connected custom-rules user → their personal feed). Top-5 levels per side ranked by `(tier DESC, notional DESC, distance ASC)`. The full order book (bounded only by the price filter) is retained so wide custom user rules can still see far levels.
 
@@ -89,7 +91,7 @@ The performance-critical core. Read the dedicated docs (`.claude/docs/orderbook-
 
 ## Conventions
 
-- **Config**: every tunable is externalized to `application.yml` under `screener.*` and bound to a `@ConfigurationProperties` record in `config/`. Add new tunables there, not as literals.
+- **Config**: every tunable is externalized to `application.yml` under `screener.*` and bound to a `@ConfigurationProperties` record in `config/`. Add new tunables there, not as literals. Anything venue-shaped (stream/REST URL, depth-stream suffix, connection caps, subscribe chunk size) belongs under `screener.exchanges.<exchange>.venues.<market>.*` (`ExchangesProperties`), and instrument-inclusion policy under `screener.exchanges.<exchange>.discovery.*` — not hardcoded in a service.
 - **DB schema**: change only via a new Flyway migration in `src/main/resources/db/migration/` (`V<n>__description.sql`). Never edit an applied migration. `baseline-version` is 4.
 - **Errors**: throw `ApiException` (e.g. `ApiException.notFound(...)`); `GlobalExceptionHandler` renders the `ApiError` shape. Don't hand-roll error responses in controllers.
 - **Auth on endpoints**: `SecurityConfig` is the allow-list. Public: `/api/auth/{register,login,refresh,verify-email,resend-verification}`, `/ws`, `/api/billing-catalog/**`, the Multicard callback. Admin-only: `/api/monitoring/**`, `/api/admin/**`. Everything else requires a valid JWT. Screener use additionally requires active entitlement.

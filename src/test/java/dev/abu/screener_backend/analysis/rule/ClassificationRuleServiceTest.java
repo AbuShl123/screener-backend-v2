@@ -6,11 +6,11 @@ import dev.abu.screener_backend.analysis.rule.dto.RuleAssignmentDto;
 import dev.abu.screener_backend.analysis.rule.dto.RuleDto;
 import dev.abu.screener_backend.analysis.rule.dto.TargetDto;
 import dev.abu.screener_backend.analysis.rule.dto.TierDto;
-import dev.abu.screener_backend.binance.websocket.Market;
 import dev.abu.screener_backend.config.OrderbookProperties;
 import dev.abu.screener_backend.error.ApiException;
-import dev.abu.screener_backend.ticker.Ticker;
-import dev.abu.screener_backend.ticker.TickerRegistry;
+import dev.abu.screener_backend.exchange.InstrumentRegistry;
+import dev.abu.screener_backend.exchange.Market;
+import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.user.User;
 import dev.abu.screener_backend.user.UserRepository;
 import org.junit.jupiter.api.Test;
@@ -19,7 +19,6 @@ import org.springframework.context.ApplicationEventPublisher;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -58,13 +57,14 @@ class ClassificationRuleServiceTest {
     private final List<Object> published = new ArrayList<>();
 
     private ClassificationRuleService newService() {
-        TickerRegistry tickers = new TickerRegistry();
-        tickers.replace(Map.of("BTCUSDT", new Ticker("BTCUSDT", true, true)));
+        InstrumentRegistry instruments = new InstrumentRegistry();
+        instruments.register(Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT");
+        instruments.register(Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT");
         ApplicationEventPublisher publisher = published::add;
         return new ClassificationRuleService(
                 stub(ClassificationRuleRepository.class),
                 stub(UserRepository.class),
-                tickers,
+                instruments,
                 publisher,
                 new OrderbookProperties(0.3, 6000, 6000),
                 200);

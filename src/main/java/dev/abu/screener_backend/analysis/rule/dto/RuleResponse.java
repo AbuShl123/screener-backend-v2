@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.analysis.rule.dto;
 
-import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.exchange.Market;
 
 import java.util.List;
 

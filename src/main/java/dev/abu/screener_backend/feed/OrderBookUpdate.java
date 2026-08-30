@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.feed;
 
-import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.exchange.Market;
 
 /**
  * Single type for both snapshotMap values and pendingRef values.

@@ -1,12 +1,17 @@
 package dev.abu.screener_backend.ticker;
 
+import dev.abu.screener_backend.exchange.InstrumentUniverseService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Periodically refreshes the ticker registry on a configurable interval.
+ * Periodically refreshes the tracked instrument universe on a configurable interval.
+ *
+ * <p>The first execution happens at startup, which is what brings the pipeline up: discovery
+ * registers instruments, allocates their book slots and publishes the universe-changed event that
+ * starts the WebSocket pools.
  *
  * <p>Uses {@code fixedDelayString} (not {@code fixedRateString}) so that the next refresh
  * starts only after the previous one has fully completed — preventing overlapping fetches
@@ -22,15 +27,15 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class TickerRefreshScheduler {
 
-    private final TickerService tickerService;
+    private final InstrumentUniverseService universeService;
 
     /**
-     * Executes a ticker refresh. The next execution begins
+     * Executes a universe refresh. The next execution begins
      * {@code screener.ticker.refresh-interval} after this method returns.
      */
     @Scheduled(fixedDelayString = "${screener.ticker.refresh-interval}")
     public void scheduledRefresh() {
-        log.info("Scheduled ticker refresh triggered");
-        tickerService.refreshTickers();
+        log.info("Scheduled instrument universe refresh triggered");
+        universeService.refresh();
     }
 }

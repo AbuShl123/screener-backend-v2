@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.analysis.rule;
 
-import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.user.User;
 import jakarta.persistence.*;
 import lombok.Getter;

@@ -30,10 +30,18 @@ public class DisruptorShardManager {
     private RingBuffer<DepthEvent>[] ringBuffers;
     private OrderBookClassifier[]    classifiers;
 
+    /** {@code shardCount - 1}; valid only because shardCount is validated as a power of two. */
+    private int shardMask;
+
     @PostConstruct
     @SuppressWarnings("unchecked")
     public void start() {
         int shardCount = props.shardCount();
+        if (shardCount < 1 || Integer.bitCount(shardCount) != 1) {
+            throw new IllegalStateException(
+                    "screener.disruptor.shard-count must be a power of two and >= 1, got " + shardCount);
+        }
+        shardMask = shardCount - 1;
         disruptors  = new Disruptor[shardCount];
         ringBuffers = new RingBuffer[shardCount];
         classifiers = new OrderBookClassifier[shardCount];
@@ -69,8 +77,17 @@ public class DisruptorShardManager {
         }
     }
 
-    public RingBuffer<DepthEvent> getRingBuffer(String symbol) {
-        return ringBuffers[Math.abs(symbol.hashCode()) % props.shardCount()];
+    /**
+     * Maps an instrument to its shard. Both producers — the WebSocket reader thread and the
+     * snapshot queue's Reactor thread — must route through this one expression: an instrument's
+     * events splitting across shards would mean two threads mutating one non-thread-safe book.
+     *
+     * <p>Dense ids make this a mask instead of {@code Math.abs(hashCode()) % n}, which distributes
+     * perfectly rather than by hash luck — and removes a latent crash, since
+     * {@code Math.abs(Integer.MIN_VALUE)} is negative and could index out of bounds.
+     */
+    public RingBuffer<DepthEvent> getRingBuffer(int instrumentId) {
+        return ringBuffers[instrumentId & shardMask];
     }
 
     @PreDestroy

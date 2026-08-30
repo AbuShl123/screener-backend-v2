@@ -575,9 +575,11 @@ All validation runs **before any DB write**; the first failure rejects the whole
 and no partial application (`ClassificationRuleService.validate`):
 
 - `assignments` non-empty; each assignment has ≥1 target; each target has a symbol and a market.
-- Symbols are normalised (`trim().toUpperCase()`) and must exist in `TickerRegistry` **and** be
-  tracked on the requested market (`ticker.hasSpot()` / `hasFutures()`), else
-  `400 "unknown symbol"` / `"… is not tracked on market …"`.
+- Symbols are normalised (`trim().toUpperCase()`) and the `(venue, symbol)` pair must be present in
+  `InstrumentRegistry`, where the venue is derived from the requested market
+  (`Venue.of(Exchange.BINANCE, market)`), else `400 "… is not tracked on market …"`. Since spot and
+  futures are separate instruments, this is one lookup rather than a lookup plus a per-market flag
+  check.
 - `tier ∈ [1,4]`, no duplicates, and the tier list must cover **all four tiers** — partial sets like
   `{1,2}` are rejected.
 - `minNotional >= 0`.
