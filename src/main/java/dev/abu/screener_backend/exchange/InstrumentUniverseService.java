@@ -1,11 +1,11 @@
 package dev.abu.screener_backend.exchange;
 
-import dev.abu.screener_backend.binance.api.BinanceRestClient;
-import dev.abu.screener_backend.binance.api.dto.BinanceSymbolDto;
-import dev.abu.screener_backend.binance.api.dto.ExchangeInfoResponse;
-import dev.abu.screener_backend.binance.orderbook.BookSlotTable;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.DiscoveryProperties;
+import dev.abu.screener_backend.exchange.binance.BinanceRestClient;
+import dev.abu.screener_backend.exchange.binance.dto.BinanceSymbolDto;
+import dev.abu.screener_backend.exchange.binance.dto.ExchangeInfoResponse;
+import dev.abu.screener_backend.exchange.book.BookSlotTable;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -132,7 +132,7 @@ public class InstrumentUniverseService {
                 .thenComparing(Candidate::nativeSymbol));
 
         log.debug("Instrument universe selected: {} spot, {} futures", spotSymbols.size(), futuresSymbols.size());
-        return candidates.subList(0, 10);
+        return candidates;
     }
 
     /** Discovery thread. Registers, allocates, publishes, then announces — in that order. */

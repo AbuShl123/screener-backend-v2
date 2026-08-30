@@ -1,6 +1,6 @@
 # P1 — Instrument Identity (narrowed scope)
 
-**Status**: implementation plan, agreed. Supersedes the "P0 — Identity" row of
+**Status**: implementation plan, agreed. Supersedes the "P1 — Identity" row of
 `.claude/plans/multi-exchange-architecture-vision.md` §12, which was deliberately narrowed.
 
 **Goal**: replace `(String symbol, Market market)` as the pipeline's identity with a dense
@@ -41,7 +41,7 @@ behaviour that must not change), `CLAUDE.md` (hot-path rules — unchanged and s
 | Dynamic subscribe/unsubscribe on universe change | P3 | Refresh keeps logging "not implemented", as today. |
 | Staleness watchdog, venue-dimensioned health surface | P3 | |
 | Tracking spot-only symbols (vision §9.1) | P3 | Would take spot from ~"futures ∩ spot" to every USDT spot pair — a large load change stacked on a correctness refactor. Policy is made *configurable* here and set to reproduce today exactly. |
-| Storage accessor seam / primitive book | P4/P5 | |
+| Storage accessor seam / primitive book | P3 / P6 | |
 
 ### Hard constraints
 
@@ -438,7 +438,7 @@ if (slot == null) return ResponseEntity.notFound().build();
 
 *(Pre-existing, not introduced here: `snapshotBids()` does `new TreeMap<>(bids)` while a consumer
 thread mutates the map, so this endpoint can throw `ConcurrentModificationException`. Noted, left
-alone — fixing it belongs with the P4 storage accessor seam.)*
+alone — fixing it belongs with the P3 storage accessor seam.)*
 
 **`TickerController`** — reshaped, as agreed. `Ticker` no longer exists and one symbol is now two
 instruments:

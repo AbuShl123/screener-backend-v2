@@ -1,9 +1,9 @@
 package dev.abu.screener_backend.analysis;
 
-import dev.abu.screener_backend.binance.orderbook.OrderBook;
-import dev.abu.screener_backend.binance.orderbook.OrderBookState;
-import dev.abu.screener_backend.binance.orderbook.PriceLevelEntry;
 import dev.abu.screener_backend.exchange.Instrument;
+import dev.abu.screener_backend.exchange.book.OrderBook;
+import dev.abu.screener_backend.exchange.book.OrderBookState;
+import dev.abu.screener_backend.exchange.book.PriceLevelEntry;
 import dev.abu.screener_backend.feed.ClassifiedLevel;
 import dev.abu.screener_backend.feed.FeedEventType;
 import dev.abu.screener_backend.feed.OrderBookFeedStore;
@@ -20,7 +20,7 @@ import java.util.TreeMap;
  *
  * <h2>Lifecycle and threading</h2>
  * One {@code OrderBookClassifier} instance is created per Disruptor shard by
- * {@link dev.abu.screener_backend.binance.disruptor.DisruptorShardManager} and is never shared
+ * {@link dev.abu.screener_backend.exchange.ingress.DisruptorShardManager} and is never shared
  * between shards. Because every order book is pinned to exactly one shard, and each shard has
  * exactly one consumer thread, all per-shard state inside this class is accessed by a single
  * thread. The only cross-thread field is {@link #activeUserContexts}, a {@code volatile} array

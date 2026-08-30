@@ -778,12 +778,12 @@ worth defending in review, not an accident to be relied on.
 
 | Phase | Work | Exit criterion |
 |---|---|---|
-| **P0 — Identity** | `Venue`, `Instrument`, `InstrumentRegistry` with dense int ids; `BookSlot` table replacing `OrderBookStore`; slots populated at registration. Re-key shard routing, `DepthEvent`, feed store, classifier state, rule targets (+ Flyway migration + backfill), WS payload, frontend contract. **Binance remains the only implementation; behaviour identical.** | Sync counts and feed output byte-identical to pre-P0 for the same ticker set. |
-| **P1 — Abstraction** | Extract the SPI. Move Binance sync into `BinanceSpotSyncStrategy` / `BinanceFuturesSyncStrategy` with `BookSyncContext`. Generic `ConnectionPool` + `StreamProtocol` + `RequestBudget` + per-venue `RecoverySink` + parameterised `SnapshotRequestQueue`. Config restructured to `screener.exchanges.*`. Still Binance-only. | Pure refactor; parity-testable against P0. |
-| **P2 — Deferred debt** | Reset lane (§3.4) and `tryNext()` backpressure policy (§8.1). Dynamic subscribe/unsubscribe on universe change (§8.3), including the reverse routing index (§5.3). Staleness watchdog (§8.2). Venue-dimensioned health surface (§8.4). Storage accessor seam (§7). Connect/subscribe pacer (§5.4). | Binance runs at parity, plus a delisting/listing cycle observably handled without restart. |
-| **P3 — Second venue: Bybit** | First real adapter under the SPI. | Bybit books reach `SYNCED` and stay there; no core edits required. |
-| **P4 — Breadth** | MEXC, Bitget. Checksum-carrying deltas if a venue needs them. Binary/compressed frame support. | Near-mechanical if P3 was honest. |
-| **P5 — Density** | Primitive-array order book, driven by measured heap/GC. | Heap per book materially reduced at equivalent depth. |
+| **P1 — Identity** | `Venue`, `Instrument`, `InstrumentRegistry` with dense int ids; `BookSlot` table replacing `OrderBookStore`; slots populated at registration. Re-key shard routing, `DepthEvent`, feed store, classifier state, rule targets (+ Flyway migration + backfill), WS payload, frontend contract. **Binance remains the only implementation; behaviour identical.** | Sync counts and feed output byte-identical to pre-P1 for the same ticker set. |
+| **P2 — Abstraction** | Extract the SPI. Move Binance sync into `BinanceSpotSyncStrategy` / `BinanceFuturesSyncStrategy` with `BookSyncContext`. Generic `ConnectionPool` + `StreamProtocol` + `RequestBudget` + per-venue `RecoverySink` + parameterised `SnapshotRequestQueue`. Config restructured to `screener.exchanges.*`. Still Binance-only. | Pure refactor; parity-testable against P1. |
+| **P3 — Deferred debt** | Reset lane (§3.4) and `tryNext()` backpressure policy (§8.1). Dynamic subscribe/unsubscribe on universe change (§8.3), including the reverse routing index (§5.3). Staleness watchdog (§8.2). Venue-dimensioned health surface (§8.4). Storage accessor seam (§7). Connect/subscribe pacer (§5.4). | Binance runs at parity, plus a delisting/listing cycle observably handled without restart. |
+| **P4 — Second venue: Bybit** | First real adapter under the SPI. | Bybit books reach `SYNCED` and stay there; no core edits required. |
+| **P5 — Breadth** | MEXC, Bitget. Checksum-carrying deltas if a venue needs them. Binary/compressed frame support. | Near-mechanical if P4 was honest. |
+| **P6 — Density** | Primitive-array order book, driven by measured heap/GC. | Heap per book materially reduced at equivalent depth. |
 
 ### 12.1 Why Bybit — not MEXC — must be venue #2
 
@@ -811,7 +811,7 @@ topic-based routing — every axis on which the SPI could be wrong.
 3. **Per-venue depth limits** — some venues cap WebSocket depth (e.g. top-50 topics). Does a
    truncated book need a distinct state, or is a narrower filter band equivalent?
 4. **Frame representation** — when (not whether) to move ring slots from `String` to reusable
-   byte buffers, which also subsumes the in-place routing-token hash. Measurement-driven after P4.
+   byte buffers, which also subsumes the in-place routing-token hash. Measurement-driven after P5.
 5. **Reset coalescing** — is a `volatile boolean` sufficient, or does a monotonic epoch counter
    earn its keep for diagnosing repeated resets under sustained backpressure?
 6. **Discovery cadence** — the current 4-hour refresh is fine for one exchange; per-venue
@@ -840,6 +840,6 @@ topic-based routing — every axis on which the SPI could be wrong.
    both directions.
 9. **The storage accessor seam goes in now**, even though `TreeMap` stays for a while.
 10. **Backpressure drops frames and requests recovery; it never blocks a reader thread.**
-11. **P0's re-keying reaches into `analysis/`, `feed/`, `ws/`, and the frontend contract** — this
+11. **P1's re-keying reaches into `analysis/`, `feed/`, `ws/`, and the frontend contract** — this
     is accepted, and it is why it happens exactly once, before any second exchange.
 12. **Bybit is venue #2**, deliberately, because it is the hardest shape.

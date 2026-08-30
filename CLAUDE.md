@@ -39,8 +39,7 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 
 | Package | Responsibility |
 |---------|----------------|
-| `exchange/` | Exchange-agnostic identity: `Exchange`, `Market`, `Venue` (= exchange + market, the pipeline's adapter unit), `Instrument`, `InstrumentRegistry` (dense runtime `int` ids), `InstrumentUniverseService` (discovery + inclusion policy). |
-| `binance/` | **Hot path.** Market-data pipeline: `api/` (REST snapshot/exchange-info client, weight guard), `websocket/` (java-websocket connection pools to Binance depth streams, per-connection `SubscriptionIndex`), `disruptor/` (sharded LMAX ring buffers + consumer), `orderbook/` (TreeMap local books, sync state machine, `BookSlotTable`, snapshot fetch queue). |
+| `exchange/` | Identity + the whole market-data pipeline. **Root (cold):** `Exchange`, `Market`, `Venue` (= exchange + market, the pipeline's adapter unit), `Instrument`, `InstrumentRegistry` (dense runtime `int` ids), `InstrumentUniverseService` (discovery + inclusion policy). **Subpackages:** `stream/` (java-websocket connection pools to depth streams, per-connection `SubscriptionIndex`), `ingress/` (sharded LMAX ring buffers + consumer, `OrderBookProcessor`), `book/` (TreeMap local books, sync state machine, `BookSlotTable`), `recovery/` (`SnapshotFetchQueue`) — these four are the **hot path**. `binance/` is the venue adapter (REST client, weight guard, exchange-info DTOs), cold today and the only one; the per-venue sync strategies land there next. |
 | `analysis/` | Order classification engine (`OrderBookClassifier`, tier rules) and per-user custom rules — `rule/` holds the `/api/rules` CRUD, entity, and live rule-update propagation. |
 | `feed/` | `OrderBookBroadcaster` (100ms drain loop), global + per-user feed stores, classified-level model. |
 | `ws/` | Jakarta WebSocket server — `/ws` endpoint, JWT-gated `@OnOpen`, virtual-thread send loops, per-session state. |
@@ -64,7 +63,7 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 
 ## Performance Rules: Hot Path vs. Everything Else
 
-The **`binance/`, `feed/`, and `analysis/` classifier** code is the hot path — it processes the full Binance depth firehose on the Disruptor consumer threads and the 100ms broadcaster. Strict rules apply **there**:
+The **`exchange/` pipeline subpackages (`stream/`, `ingress/`, `book/`, `recovery/`), `feed/`, and the `analysis/` classifier** are the hot path — they process the full Binance depth firehose on the Disruptor consumer threads and the 100ms broadcaster. Strict rules apply **there**:
 
 - **No object allocation** in `onMessage` callbacks and Disruptor `onEvent` loops. Reuse mutable objects; parse in place.
 - **No `BigDecimal`** for market data. Prices/quantities are primitive `double` (parsed via fastdoubleparser). `double`'s precision is more than sufficient for a screener.

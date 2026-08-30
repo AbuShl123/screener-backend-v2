@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.analysis;
 
-import dev.abu.screener_backend.binance.orderbook.PriceLevelEntry;
+import dev.abu.screener_backend.exchange.book.PriceLevelEntry;
 import dev.abu.screener_backend.feed.ClassifiedLevel;
 
 import java.util.Map;

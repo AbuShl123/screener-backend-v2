@@ -2,7 +2,7 @@ package dev.abu.screener_backend.analysis;
 
 import dev.abu.screener_backend.analysis.rule.ClassificationRuleService;
 import dev.abu.screener_backend.analysis.rule.RuleUpdatedEvent;
-import dev.abu.screener_backend.binance.disruptor.DisruptorShardManager;
+import dev.abu.screener_backend.exchange.ingress.DisruptorShardManager;
 import dev.abu.screener_backend.feed.OrderBookFeedStore;
 import dev.abu.screener_backend.ws.UserWebSocketSession;
 import lombok.RequiredArgsConstructor;

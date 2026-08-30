@@ -1,9 +1,9 @@
 package dev.abu.screener_backend.config;
 
-import dev.abu.screener_backend.binance.api.WeightGuard;
-import dev.abu.screener_backend.binance.api.WeightLimitFilter;
 import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.binance.WeightGuard;
+import dev.abu.screener_backend.exchange.binance.WeightLimitFilter;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
