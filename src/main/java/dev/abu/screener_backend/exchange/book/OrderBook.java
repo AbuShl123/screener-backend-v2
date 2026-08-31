@@ -10,7 +10,6 @@ import tools.jackson.core.JsonToken;
 import tools.jackson.core.ObjectReadContext;
 import tools.jackson.core.json.JsonFactory;
 
-import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.TreeMap;
@@ -172,7 +171,7 @@ public class OrderBook {
             log.debug("[{}] OrderBook SYNCED: — {} bid levels, {} ask levels", logName, bids.size(), asks.size());
             return OrderBookResult.OK;
 
-        } catch (IOException e) {
+        } catch (Exception e) {
             log.warn("[{}] Failed to apply snapshot: {}", logName, e.getMessage());
             return resync();
         }
@@ -215,7 +214,7 @@ public class OrderBook {
                     default -> p.skipChildren();
                 }
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             log.warn("[{}] Failed to parse diff: {}", logName, e.getMessage());
             return resync();
         }
@@ -239,7 +238,7 @@ public class OrderBook {
                     default -> p.skipChildren();
                 }
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             log.warn("[{}] Failed to parse first buffered diff: {}", logName, e.getMessage());
             return OrderBookResult.DROPPED;
         }
@@ -260,14 +259,14 @@ public class OrderBook {
                     default -> p.skipChildren();
                 }
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             log.warn("[{}] Failed to parse snapshot event: {}", logName, e.getMessage());
             return -1;
         }
         return snapshotId;
     }
 
-    private void applyLevelsDirectly(JsonParser p, TreeMap<Double, PriceLevelEntry> map) throws IOException {
+    private void applyLevelsDirectly(JsonParser p, TreeMap<Double, PriceLevelEntry> map) {
         while (p.nextToken() != JsonToken.END_ARRAY) {
             p.nextToken();
             char[] buf = p.getStringCharacters();
@@ -296,7 +295,7 @@ public class OrderBook {
     }
 
     /** Parse only the lowercase {@code u} (final update id) field from a diff JSON. */
-    private long parseUField(String rawJson) throws IOException {
+    private long parseUField(String rawJson) {
         try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
             p.nextToken();
             while (p.nextToken() != JsonToken.END_OBJECT) {
@@ -310,7 +309,7 @@ public class OrderBook {
     }
 
     /** Parse only the uppercase {@code U} (first update id) field from a diff JSON. */
-    private long parseUpperUField(String rawJson) throws IOException {
+    private long parseUpperUField(String rawJson) {
         try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
             p.nextToken();
             while (p.nextToken() != JsonToken.END_OBJECT) {
@@ -328,7 +327,7 @@ public class OrderBook {
      * Each level is a two-element string array: [price, qty].
      * Used only by parseSnapshotEvent (cold path).
      */
-    private void parseLevelsInto(JsonParser p, ArrayDeque<double[]> levels) throws IOException {
+    private void parseLevelsInto(JsonParser p, ArrayDeque<double[]> levels) {
         while (p.nextToken() != JsonToken.END_ARRAY) {
             // p is at START_ARRAY for [price, qty]
             p.nextToken();
@@ -377,7 +376,7 @@ public class OrderBook {
         }
     }
 
-    private void discardInvalidDiffsFromBuffer(long snapshotId) throws IOException {
+    private void discardInvalidDiffsFromBuffer(long snapshotId) {
         while (!diffBuffer.isEmpty()) {
             long u = parseUField(diffBuffer.peekFirst());
 
