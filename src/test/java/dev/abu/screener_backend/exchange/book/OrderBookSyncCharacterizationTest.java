@@ -4,7 +4,6 @@ import dev.abu.screener_backend.exchange.Venue;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import tools.jackson.core.JacksonException;
 
 import static dev.abu.screener_backend.exchange.book.SyncTestSupport.Harness;
 import static dev.abu.screener_backend.exchange.book.SyncTestSupport.bufferSize;
@@ -15,7 +14,6 @@ import static dev.abu.screener_backend.exchange.book.SyncTestSupport.snapshot;
 import static dev.abu.screener_backend.exchange.book.SyncTestSupport.synced;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -122,50 +120,56 @@ class OrderBookSyncCharacterizationTest {
             assertEquals(0, bufferSize(h.book));
         }
 
-        /**
-         * <b>Pins a live defect — do not read this as the intended behaviour.</b>
-         *
-         * <p>{@code OrderBook} guards every parse with {@code catch (IOException e) { … resync(); }},
-         * but the project is on Jackson 3, where {@code tools.jackson.core.JacksonException extends
-         * RuntimeException}. Those catch blocks are therefore dead for parse failures: a malformed
-         * frame propagates out of {@code onDiff} instead of resyncing. The book is left {@code SYNCED}
-         * with levels partially applied (the parser mutates the {@code TreeMap} as it walks) and a
-         * stale {@code lastUpdateId}, no recovery is requested, and the throw reaches the Disruptor
-         * consumer thread.
-         *
-         * <p>Pinned rather than fixed so that the fix is a deliberate, visible change. The plan's
-         * case 10 expects {@code SNAPSHOT_REQUESTED} plus exactly one recovery request; that
-         * expectation is the correct one and should replace this test when the catch clauses are
-         * widened.
-         */
         @Test
-        @DisplayName("10 — a malformed diff while SYNCED escapes instead of resyncing (Jackson 3 defect)")
-        void malformedDiffWhileSyncedThrows() {
+        @DisplayName("10 — a malformed diff while SYNCED resyncs with exactly one recovery request")
+        void malformedDiffWhileSyncedResyncs() {
             Harness h = synced(FUTURES, levels(lvl(99, 1)), levels(lvl(101, 1)));
             assertEquals(OrderBookState.SYNCED, h.book.getState());
 
             String truncated = "{\"e\":\"depthUpdate\",\"U\":121,\"u\":130,\"pu\":120,\"b\":[[\"99.0\",";
 
-            assertThrows(JacksonException.class, () -> h.wsMsg(truncated));
+            h.wsMsg(truncated);
 
-            // No recovery, and the book still believes it is live.
-            assertEquals(OrderBookState.SYNCED, h.book.getState());
-            assertEquals(1, h.recoveryRequests);
+            // The catch clauses in OrderBook are scoped to Exception, so a Jackson 3
+            // JacksonException (a RuntimeException) is caught and turned into a resync rather
+            // than escaping onto the Disruptor consumer thread.
+            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(2, h.recoveryRequests, "exactly one resync — not one per nested failure");
+            assertEquals(0, bufferSize(h.book));
         }
 
-        /** The same dead-catch defect on the REST lane. See {@link #malformedDiffWhileSyncedThrows}. */
+        /** The same path on the REST lane. See {@link #malformedDiffWhileSyncedResyncs}. */
         @Test
-        @DisplayName("a malformed snapshot escapes applySnapshot instead of resyncing (Jackson 3 defect)")
-        void malformedSnapshotThrows() {
+        @DisplayName("a malformed snapshot resyncs instead of escaping applySnapshot")
+        void malformedSnapshotResyncs() {
             Harness h = new Harness(FUTURES, SyncTestSupport.FILTER);
             h.wsMsg(diff(FUTURES, 100, 110, 99, "", ""));
             assertEquals(1, h.recoveryRequests);
 
-            String truncated = "{\"lastUpdateId\":105,\"bids\":[[\"99.0\",";
+            // parseSnapshotEvent catches and returns -1, so applySnapshot resyncs before it
+            // touches the levels.
+            h.restMsg("{\"lastUpdateId\":105,\"bids\":[[\"99.0\",");
 
-            assertThrows(JacksonException.class, () -> h.restMsg(truncated));
+            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(2, h.recoveryRequests);
+            assertEquals(0, bufferSize(h.book));
+        }
 
-            assertEquals(1, h.recoveryRequests, "no resync is requested for an unparseable snapshot");
+        @Test
+        @DisplayName("a resync clears the diff buffer but leaves the price levels in place")
+        void resyncKeepsPriceLevels() {
+            Harness h = synced(FUTURES, levels(lvl(99, 1)), levels(lvl(101, 1)));
+
+            h.wsMsg(diff(FUTURES, 121, 130, 999, "", ""));   // pu gap
+
+            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(0, bufferSize(h.book));
+            // Stale levels survive until the next snapshot's clear-and-load. The classifier is
+            // gated on state, so this is invisible in the feed — but /api/monitoring/orderbook
+            // shows it, and the snapshot path depends on the book NOT being emptied before
+            // validation succeeds.
+            assertTrue(h.book.getBids().containsKey(99.0));
+            assertTrue(h.book.getAsks().containsKey(101.0));
         }
     }
 
@@ -237,6 +241,27 @@ class OrderBookSyncCharacterizationTest {
             assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book));
+        }
+
+        @Test
+        @DisplayName("syncing on a single buffered diff leaves distances uncomputed and far levels unswept")
+        void singleBufferedDiffSyncsWithoutComputingDistance() {
+            Harness h = new Harness(FUTURES, SyncTestSupport.FILTER);
+            h.wsMsg(diff(FUTURES, 100, 110, 99, "", ""));    // the only buffered diff
+
+            // Step 4 polls it, so step 5's drain loop iterates zero times — and computeDistance()
+            // is reached only from applyLiveDiff. The book syncs with an unswept, undistanced
+            // level set, and the classifier sees every level as at-mid for one pass.
+            h.restMsg(snapshot(105, levels(lvl(99, 1), lvl(50, 1)), levels(lvl(101, 1))));
+
+            assertEquals(OrderBookState.SYNCED, h.book.getState());
+            assertTrue(h.book.getBids().containsKey(50.0), "far level survives: no filter sweep ran");
+            assertEquals(0.0, h.book.getBids().get(99.0).distance);
+
+            // The next live diff heals both.
+            h.wsMsg(diff(FUTURES, 111, 120, 110, "", ""));
+            assertFalse(h.book.getBids().containsKey(50.0));
+            assertTrue(h.book.getBids().get(99.0).distance > 0.0);
         }
     }
 
