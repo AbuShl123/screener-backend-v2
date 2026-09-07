@@ -101,7 +101,7 @@ class OrderBookSyncCharacterizationTest {
             // lastUpdateId is 120, so U must be 121. It is not.
             h.wsMsg(diff(SPOT, 130, 140, 0, levels(lvl(99, 5)), ""));
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book), "the gap diff must not be buffered");
         }
@@ -115,7 +115,7 @@ class OrderBookSyncCharacterizationTest {
             // lastUpdateId is 120, so pu must be 120. It is not.
             h.wsMsg(diff(FUTURES, 121, 130, 999, levels(lvl(99, 5)), ""));
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book));
         }
@@ -133,7 +133,7 @@ class OrderBookSyncCharacterizationTest {
             // The catch clauses in OrderBook are scoped to Exception, so a Jackson 3
             // JacksonException (a RuntimeException) is caught and turned into a resync rather
             // than escaping onto the Disruptor consumer thread.
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests, "exactly one resync — not one per nested failure");
             assertEquals(0, bufferSize(h.book));
         }
@@ -150,7 +150,7 @@ class OrderBookSyncCharacterizationTest {
             // touches the levels.
             h.restMsg("{\"lastUpdateId\":105,\"bids\":[[\"99.0\",");
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book));
         }
@@ -162,7 +162,7 @@ class OrderBookSyncCharacterizationTest {
 
             h.wsMsg(diff(FUTURES, 121, 130, 999, "", ""));   // pu gap
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(0, bufferSize(h.book));
             // Stale levels survive until the next snapshot's clear-and-load. The classifier is
             // gated on state, so this is invisible in the feed — but /api/monitoring/orderbook
@@ -188,7 +188,7 @@ class OrderBookSyncCharacterizationTest {
             // unreachable — the discard step guarantees u >= snapshotId by the time it runs.)
             h.restMsg(snapshot(50, levels(lvl(99, 1)), levels(lvl(101, 1))));
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book));
         }
@@ -203,7 +203,7 @@ class OrderBookSyncCharacterizationTest {
             // to establish a sync point against.
             h.restMsg(snapshot(200, levels(lvl(99, 1)), levels(lvl(101, 1))));
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book));
         }
@@ -219,7 +219,7 @@ class OrderBookSyncCharacterizationTest {
             // fixing it is a deliberate, visible change rather than a silent one.
             h.restMsg(snapshot(500, levels(lvl(99, 1)), levels(lvl(101, 1))));
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
         }
 
@@ -238,7 +238,7 @@ class OrderBookSyncCharacterizationTest {
             // again. Both are state-only — only the outer return value reaches the processor, so
             // the book is enqueued once. Commit C must keep that single-enqueue property when the
             // strategy starts calling the sink directly.
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book));
         }
@@ -276,7 +276,7 @@ class OrderBookSyncCharacterizationTest {
 
             h.wsMsg(diff(FUTURES, 100, 110, 99, levels(lvl(99, 1)), ""));
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(1, h.recoveryRequests);
             assertEquals(1, bufferSize(h.book), "the triggering diff is re-fed into the buffer");
         }
@@ -309,7 +309,7 @@ class OrderBookSyncCharacterizationTest {
 
             h.wsMsg(diff(FUTURES, 900, 901, 899, "", ""));  // the 501st
 
-            assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+            assertEquals(OrderBookState.RECOVERING, h.book.getState());
             assertEquals(2, h.recoveryRequests);
             assertEquals(0, bufferSize(h.book), "overflow clears the buffer and drops the trigger");
         }

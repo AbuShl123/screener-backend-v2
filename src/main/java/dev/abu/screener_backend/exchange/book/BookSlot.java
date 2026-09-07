@@ -1,6 +1,9 @@
 package dev.abu.screener_backend.exchange.book;
 
 import dev.abu.screener_backend.exchange.Instrument;
+import dev.abu.screener_backend.exchange.ingress.DepthEvent;
+import dev.abu.screener_backend.exchange.spi.BookSyncContext;
+import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
 
 /**
  * The per-instrument runtime record, held in {@link BookSlotTable} at index
@@ -16,4 +19,4 @@ import dev.abu.screener_backend.exchange.Instrument;
  *
  * <p>The sync context, the sync strategy and the reset flag join this record in later phases.
  */
-public record BookSlot(Instrument instrument, OrderBook book) {}
+public record BookSlot(Instrument instrument, OrderBook book, DepthSyncStrategy strategy, BookSyncContext ctx) { }

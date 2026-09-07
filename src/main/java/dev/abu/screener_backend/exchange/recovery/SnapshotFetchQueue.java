@@ -7,6 +7,7 @@ import dev.abu.screener_backend.exchange.book.BookSlot;
 import dev.abu.screener_backend.exchange.ingress.DepthEvent;
 import dev.abu.screener_backend.exchange.ingress.DisruptorShardManager;
 import dev.abu.screener_backend.exchange.ingress.EventType;
+import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
@@ -36,7 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 @Component
-public class SnapshotFetchQueue {
+public class SnapshotFetchQueue implements RecoverySink {
 
     private final BinanceRestClient restClient;
     private final DisruptorShardManager shardManager;
@@ -61,7 +62,8 @@ public class SnapshotFetchQueue {
      *
      * @return true if enqueued, false if the queue is at capacity
      */
-    public boolean enqueue(BookSlot slot) {
+    @Override
+    public boolean requestRecovery(BookSlot slot) {
         boolean isSpot = slot.instrument().venue() == Venue.BINANCE_SPOT;
         ConcurrentHashMap<Integer, BookSlot> queue = isSpot ? spotQueue : futuresQueue;
         int maxSize = isSpot ? spotMaxSize : futuresMaxSize;
@@ -84,7 +86,7 @@ public class SnapshotFetchQueue {
                             error -> {
                                 spotQueue.remove(id);
                                 log.warn("Snapshot fetch failed for {}: {}", slot.instrument().logName(), error.getMessage());
-                                enqueue(slot);
+                                requestRecovery(slot);
                             }
                     );
         }
@@ -104,7 +106,7 @@ public class SnapshotFetchQueue {
                             error -> {
                                 futuresQueue.remove(id);
                                 log.warn("Snapshot fetch failed for {}: {}", slot.instrument().logName(), error.getMessage());
-                                enqueue(slot);
+                                requestRecovery(slot);
                             }
                     );
         }

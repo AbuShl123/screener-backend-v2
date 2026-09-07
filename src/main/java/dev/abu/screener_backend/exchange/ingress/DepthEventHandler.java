@@ -3,6 +3,7 @@ package dev.abu.screener_backend.exchange.ingress;
 import com.lmax.disruptor.EventHandler;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.exchange.book.BookSlot;
+import dev.abu.screener_backend.exchange.book.BookSlotTable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -14,14 +15,17 @@ public class DepthEventHandler implements EventHandler<DepthEvent> {
     private final int shardIndex;
     private final OrderBookProcessor obSyncMachine;
     private final OrderBookClassifier classificationModule;
+    private final BookSlotTable slots;
 
     @Override
     public void onEvent(DepthEvent event, long sequence, boolean endOfBatch) {
+        BookSlot slot = slots.get(event.instrumentId);
+
         // manage local orderbook of this event
-        BookSlot slot = obSyncMachine.process(event);
+        slot.strategy().onEvent(slot, event);
 
         // run default & per-user classification
-        if (slot != null) classificationModule.process(slot.instrument(), slot.book());
+        classificationModule.process(slot.instrument(), slot.book());
 
         // free
         event.clear();

@@ -56,7 +56,7 @@ public class BookSlotTable {
         if (id >= staging.length) {
             staging = Arrays.copyOf(staging, Math.max(id + 1, staging.length * 2));
         }
-        staging[id] = new BookSlot(instrument, new OrderBook(instrument, props.priceFilterThreshold()));
+        staging[id] = new BookSlot(instrument, new OrderBook(props.priceFilterThreshold()), null, null);
     }
 
     /** Publishes every slot allocated since the last call. Discovery thread only. */

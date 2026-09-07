@@ -96,7 +96,7 @@ class OrderBookTest {
 
         // Desync, then take a fresh snapshot at a different price level entirely.
         h.wsMsg(diff(FUTURES, 500, 510, 499, levels(lvl(99, 2)), ""));
-        assertEquals(OrderBookState.SNAPSHOT_REQUESTED, h.book.getState());
+        assertEquals(OrderBookState.RECOVERING, h.book.getState());
         h.wsMsg(diff(FUTURES, 600, 610, 599, "", ""));
         h.wsMsg(diff(FUTURES, 611, 620, 610, "", ""));
         h.restMsg(snapshot(605, levels(lvl(90, 1)), levels(lvl(110, 1))));
