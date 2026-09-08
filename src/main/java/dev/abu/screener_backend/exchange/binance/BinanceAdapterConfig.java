@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.exchange.binance;
 
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import dev.abu.screener_backend.exchange.spi.VenueStrategyBinding;
 import org.springframework.context.annotation.Bean;
@@ -23,12 +24,12 @@ import org.springframework.context.annotation.Configuration;
 public class BinanceAdapterConfig {
 
     @Bean
-    VenueStrategyBinding binanceSpotStrategyBinding(RecoverySink recoverySink) {
-        return new VenueStrategyBinding(Venue.BINANCE_SPOT, new BinanceSpotSyncStrategy(recoverySink));
+    VenueStrategyBinding binanceSpotStrategyBinding(RecoverySink recoverySink, PipelineMetrics metrics) {
+        return new VenueStrategyBinding(Venue.BINANCE_SPOT, new BinanceSpotSyncStrategy(recoverySink, metrics));
     }
 
     @Bean
-    VenueStrategyBinding binanceFuturesStrategyBinding(RecoverySink recoverySink) {
-        return new VenueStrategyBinding(Venue.BINANCE_FUTURES, new BinanceFuturesSyncStrategy(recoverySink));
+    VenueStrategyBinding binanceFuturesStrategyBinding(RecoverySink recoverySink, PipelineMetrics metrics) {
+        return new VenueStrategyBinding(Venue.BINANCE_FUTURES, new BinanceFuturesSyncStrategy(recoverySink, metrics));
     }
 }

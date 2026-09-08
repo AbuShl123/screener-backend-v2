@@ -51,9 +51,51 @@ public class OrderBookBroadcaster {
     // so injectSeq() can reuse the same buffer immediately after without risk of corruption.
     private final StringBuilder sb = new StringBuilder(4096);
 
+    /** A drain slower than this has eaten most of its 100ms budget and is worth a line of its own. */
+    private static final long SLOW_DRAIN_NANOS = 50_000_000L;
+
+    // Written only by the @Scheduled drain thread, read by the health logger's thread. Volatile
+    // rather than plain because these are sampled ~10x/second, not per depth message, so the fence
+    // costs nothing worth counting.
+    private volatile long maxDrainNanos;
+    private volatile long slowDrains;
+
+    /**
+     * Times one drain and reports the outliers.
+     *
+     * <p>The loop has a 100ms budget and does per-session JSON building inside it. If it overruns,
+     * delivery — not ingest — is the bottleneck, and nothing else in the pipeline would distinguish
+     * those two: both look like a client seeing stale levels.
+     */
     @Scheduled(fixedDelay = 100)
     public void drain() {
         if (sessions.isEmpty()) return;
+        long startNanos = System.nanoTime();
+        try {
+            drainOnce();
+        } finally {
+            long elapsed = System.nanoTime() - startNanos;
+            if (elapsed > maxDrainNanos) maxDrainNanos = elapsed;
+            if (elapsed > SLOW_DRAIN_NANOS) {
+                slowDrains++;
+                log.warn("drain took {}ms for {} session(s) — over half the 100ms budget",
+                        elapsed / 1_000_000, sessions.size());
+            }
+        }
+    }
+
+    /**
+     * Longest drain since the last call, in milliseconds, and the number of drains that blew the
+     * threshold. Reading resets both, so exactly one reader (the health logger) may call it.
+     */
+    public long[] takeDrainStats() {
+        long[] out = { maxDrainNanos / 1_000_000, slowDrains };
+        maxDrainNanos = 0;
+        slowDrains = 0;
+        return out;
+    }
+
+    private void drainOnce() {
 
         // Drain eagerly even if all sessions are NEED_SNAPSHOT: skipping would let DROP events
         // accumulate across cycles and reach READY sessions that already hold a current snapshot.

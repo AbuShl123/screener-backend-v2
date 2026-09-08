@@ -382,7 +382,7 @@ instrument name passed in. All lazy `{}` placeholders at `debug`/`warn`, per hot
    on a book one of those two already emptied. `applySnapshot`'s lack of a defensive clear depends
    entirely on this.
 4. Only the shard's consumer thread writes `OrderBook.state`. It stays `volatile` because
-   `BookSlotTable.logSyncCount` (scheduler thread) reads it.
+   `PipelineHealthLogger` (scheduler thread) reads it.
 5. `check()` leaves the parser positioned before `b`/`a`.
 6. `lastUpdateId == -1` means "no sync point"; on futures that must coincide with
    `syncPointFound == false`.
@@ -475,9 +475,13 @@ abstraction by luck and validate nothing.
   live subscriptions. Needs the reverse `instrumentId → (connection, topic)` routing direction.
 - **No staleness watchdog.** A subscription that silently stops delivering is invisible: the book
   sits `SYNCED` with frozen data indefinitely.
-- **No venue health surface.** `sync count: spot=… fut=…` is the entire observability story. Books by
-  state per venue, resync rate, connections up/down, queue depth, ring utilisation and oldest
-  `lastMessageAtMs` all belong in a `SyncHealthRegistry`.
+- **Health surface is a log line, not a registry.** `PipelineHealthLogger` emits one line every 30s
+  — synced/tracked per venue, resyncs per interval per venue, msgs/s and free ring slots per shard,
+  and the feed drain's worst tick — backed by `exchange/health/PipelineMetrics`. That covers churn,
+  throughput, backpressure and delivery, which is enough to tell the current failure modes apart.
+  Still missing: connections up/down and reconnect counts, snapshot queue depth and dispatch
+  latency, dropped-event counters, and oldest `lastMessageAtMs` per venue — and none of it is
+  queryable, only logged. `PipelineMetrics` is the seam those grow into.
 - **No read-side storage seam.** `OrderBookClassifier` reaches straight into `getBids()`/`getAsks()`.
   Until reads go through accessors, swapping `TreeMap<Double,…>` for primitive parallel arrays (P6)
   is a multi-class rewrite rather than a one-class change.

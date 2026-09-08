@@ -29,6 +29,7 @@ public class DisruptorShardManager {
     private Disruptor<DepthEvent>[]  disruptors;
     private RingBuffer<DepthEvent>[] ringBuffers;
     private OrderBookClassifier[]    classifiers;
+    private DepthEventHandler[]      handlers;
 
     /** {@code shardCount - 1}; valid only because shardCount is validated as a power of two. */
     private int shardMask;
@@ -45,6 +46,7 @@ public class DisruptorShardManager {
         disruptors  = new Disruptor[shardCount];
         ringBuffers = new RingBuffer[shardCount];
         classifiers = new OrderBookClassifier[shardCount];
+        handlers    = new DepthEventHandler[shardCount];
 
         for (int i = 0; i < shardCount; i++) {
             int shardIndex = i;
@@ -56,7 +58,8 @@ public class DisruptorShardManager {
                     new BlockingWaitStrategy()
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule);
-            disruptor.handleEventsWith(new DepthEventHandler(i, slots, classifiers[i]));
+            handlers[i]    = new DepthEventHandler(i, slots, classifiers[i]);
+            disruptor.handleEventsWith(handlers[i]);
 
             ringBuffers[i] = disruptor.start();
             disruptors[i]  = disruptor;
@@ -87,6 +90,39 @@ public class DisruptorShardManager {
      */
     public RingBuffer<DepthEvent> getRingBuffer(int instrumentId) {
         return ringBuffers[instrumentId & shardMask];
+    }
+
+    /** Number of shards, or 0 before {@link #start()} has run. */
+    public int shardCount() {
+        return ringBuffers == null ? 0 : ringBuffers.length;
+    }
+
+    /**
+     * Events consumed by each shard since startup, for the health log. Cold path.
+     *
+     * <p>Shard totals should stay within a few percent of each other: instruments are spread by
+     * {@code id & mask} over dense ids, so a persistent skew would mean the id space is not as
+     * dense or as evenly distributed as the routing assumes.
+     */
+    public long[] processedPerShard() {
+        long[] out = new long[shardCount()];
+        for (int i = 0; i < out.length; i++) out[i] = handlers[i].processed();
+        return out;
+    }
+
+    /**
+     * Free slots in each shard's ring buffer, sampled from the caller's thread. Cold path.
+     *
+     * <p>The definitive "is the consumer keeping up" reading, and free of hot-path cost since it
+     * derives from sequences the Disruptor already maintains. At steady state these should sit at
+     * essentially {@link DisruptorProperties#ringBufferSize()}; a persistent dip means producers
+     * are outrunning consumers, which is what makes the blocking {@code next()} in
+     * {@link DisruptorDepthMessageHandler} a live risk rather than a theoretical one.
+     */
+    public long[] ringFreePerShard() {
+        long[] out = new long[shardCount()];
+        for (int i = 0; i < out.length; i++) out[i] = ringBuffers[i].remainingCapacity();
+        return out;
     }
 
     @PreDestroy

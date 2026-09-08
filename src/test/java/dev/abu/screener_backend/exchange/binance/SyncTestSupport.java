@@ -4,6 +4,7 @@ import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.book.BookSlot;
 import dev.abu.screener_backend.exchange.book.OrderBook;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEvent;
 import dev.abu.screener_backend.exchange.ingress.EventType;
 
@@ -44,12 +45,14 @@ final class SyncTestSupport {
 
         final BookSlot slot;
         final FakeRecoverySink sink = new FakeRecoverySink();
+        /** Real instance, not a mock — resyncs() doubles as an independent check on recover() calls. */
+        final PipelineMetrics metrics = new PipelineMetrics();
         private final DepthEvent event = new DepthEvent();
 
         Harness(Venue venue, double filterThreshold) {
             BinanceDepthSyncStrategy strategy = venue == Venue.BINANCE_SPOT
-                    ? new BinanceSpotSyncStrategy(sink)
-                    : new BinanceFuturesSyncStrategy(sink);
+                    ? new BinanceSpotSyncStrategy(sink, metrics)
+                    : new BinanceFuturesSyncStrategy(sink, metrics);
             this.slot = new BookSlot(
                     Instrument.of(1, venue, "BTCUSDT", "BTC", "USDT"),
                     new OrderBook(filterThreshold),

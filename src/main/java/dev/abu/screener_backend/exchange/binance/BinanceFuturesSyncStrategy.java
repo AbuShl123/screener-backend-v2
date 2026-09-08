@@ -1,5 +1,6 @@
 package dev.abu.screener_backend.exchange.binance;
 
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.JsonParser;
@@ -12,8 +13,8 @@ import tools.jackson.core.JsonToken;
 @Slf4j
 public class BinanceFuturesSyncStrategy extends BinanceDepthSyncStrategy {
 
-    public BinanceFuturesSyncStrategy(RecoverySink recoverSink) {
-        super(recoverSink);
+    public BinanceFuturesSyncStrategy(RecoverySink recoverSink, PipelineMetrics metrics) {
+        super(recoverSink, metrics);
     }
 
     @Override

@@ -4,12 +4,12 @@ import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
 import dev.abu.screener_backend.exchange.book.BookSlot;
 import dev.abu.screener_backend.exchange.book.OrderBook;
 import dev.abu.screener_backend.exchange.book.OrderBookState;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEvent;
 import dev.abu.screener_backend.exchange.ingress.EventType;
 import dev.abu.screener_backend.exchange.spi.BookSyncContext;
 import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
@@ -18,7 +18,6 @@ import tools.jackson.core.json.JsonFactory;
 
 
 @Slf4j
-@RequiredArgsConstructor
 public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
 
     protected static final JsonFactory JSON_FACTORY = JsonFactory.builder().build();
@@ -58,6 +57,12 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
     }
 
     private final RecoverySink recoverSink;
+    private final PipelineMetrics metrics;
+
+    protected BinanceDepthSyncStrategy(RecoverySink recoverSink, PipelineMetrics metrics) {
+        this.recoverSink = recoverSink;
+        this.metrics = metrics;
+    }
 
     @Override
     public BookSyncContext newContext() {
@@ -207,6 +212,7 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
      * {@code false} rather than recovering on its own.
      */
     private void recover(BookSlot slot, BinanceSyncContext ctx) {
+        metrics.recordResync(slot.instrument().venue());
         ctx.reset();
         slot.book().clearLevels();
         slot.book().markPending();

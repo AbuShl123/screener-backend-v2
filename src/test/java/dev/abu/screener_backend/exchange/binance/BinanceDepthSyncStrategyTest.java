@@ -442,6 +442,35 @@ class BinanceDepthSyncStrategyTest {
         }
 
         @Test
+        @DisplayName("the resync counter tracks recover() calls, not recovery requests")
+        void resyncCounterCountsRecoveries() {
+            // The health line reports this number as "churn", so it must mean recoveries and not
+            // sink calls: the two differ by exactly the cold-start request, which is not a resync.
+            // Counting at the sink instead would report thousands of phantom resyncs during the
+            // startup ramp, when a refused request is the normal path.
+            Harness h = new Harness(FUTURES, FILTER);
+            h.wsMsg(diff(FUTURES, 100, 110, 99, "", ""));            // PENDING → RECOVERING
+            assertEquals(1, h.requests(), "the cold-start request reached the sink");
+            assertEquals(0, h.metrics.resyncs(FUTURES), "...but nothing has de-synced yet");
+
+            h.restMsg(snapshot(105, levels(lvl(99, 1)), levels(lvl(101, 1))));
+            assertEquals(OrderBookState.SYNCED, h.book().getState());
+            assertEquals(0, h.metrics.resyncs(FUTURES));
+
+            h.wsMsg(diff(FUTURES, 111, 120, 999, "", ""));           // pu gap
+            assertEquals(1, h.metrics.resyncs(FUTURES), "one de-sync, one count");
+
+            // Refused re-asks must not inflate it either — the book is already counted as churning.
+            h.sink.accepts = false;
+            h.wsMsg(diff(FUTURES, 121, 130, 120, "", ""));
+            h.wsMsg(diff(FUTURES, 131, 140, 130, "", ""));
+            assertEquals(1, h.metrics.resyncs(FUTURES), "a PENDING retry is not a new de-sync");
+
+            // And the counter is per venue, so one venue's churn never shows up under the other.
+            assertEquals(0, h.metrics.resyncs(Venue.BINANCE_SPOT));
+        }
+
+        @Test
         @DisplayName("invariant 3 — a book leaving SYNCED is emptied, so the snapshot can stream in directly")
         void recoverClearsPriceLevels() {
             Harness h = synced(FUTURES, levels(lvl(99, 1)), levels(lvl(101, 1)));

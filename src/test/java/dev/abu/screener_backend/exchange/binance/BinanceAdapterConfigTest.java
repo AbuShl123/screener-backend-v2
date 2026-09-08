@@ -2,6 +2,7 @@ package dev.abu.screener_backend.exchange.binance;
 
 import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.exchange.spi.SyncStrategyRegistry;
 import dev.abu.screener_backend.exchange.spi.VenueStrategyBinding;
@@ -28,9 +29,10 @@ class BinanceAdapterConfigTest {
     private static SyncStrategyRegistry registry() {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
         FakeRecoverySink sink = new FakeRecoverySink();
+        PipelineMetrics metrics = new PipelineMetrics();
         return new SyncStrategyRegistry(List.of(
-                config.binanceSpotStrategyBinding(sink),
-                config.binanceFuturesStrategyBinding(sink)));
+                config.binanceSpotStrategyBinding(sink, metrics),
+                config.binanceFuturesStrategyBinding(sink, metrics)));
     }
 
     @Test
@@ -89,11 +91,12 @@ class BinanceAdapterConfigTest {
     void duplicateBindingThrows() {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
         FakeRecoverySink sink = new FakeRecoverySink();
+        PipelineMetrics metrics = new PipelineMetrics();
 
         // What a leftover @Component on a strategy class would look like: the same venue bound
         // twice, silently giving half the books a different instance.
         assertThrows(IllegalStateException.class, () -> new SyncStrategyRegistry(List.of(
-                config.binanceSpotStrategyBinding(sink),
-                new VenueStrategyBinding(Venue.BINANCE_SPOT, new BinanceSpotSyncStrategy(sink)))));
+                config.binanceSpotStrategyBinding(sink, metrics),
+                new VenueStrategyBinding(Venue.BINANCE_SPOT, new BinanceSpotSyncStrategy(sink, metrics)))));
     }
 }

@@ -2,12 +2,9 @@ package dev.abu.screener_backend.exchange.book;
 
 import dev.abu.screener_backend.config.OrderbookProperties;
 import dev.abu.screener_backend.exchange.Instrument;
-import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.exchange.spi.SyncStrategyRegistry;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
@@ -28,7 +25,6 @@ import java.util.Arrays;
  * <p>{@link #get} bounds-checks and returns {@code null} rather than throwing. A {@code null} slot
  * should be permanently impossible; the caller counts and drops it instead of dereferencing.
  */
-@Slf4j
 @Component
 @RequiredArgsConstructor
 public class BookSlotTable {
@@ -43,9 +39,6 @@ public class BookSlotTable {
 
     /** Discovery thread only; {@code null} between publications. */
     private BookSlot[] staging;
-
-    private int lastLoggedSpot = -1;
-    private int lastLoggedFutures = -1;
 
     /**
      * Creates the slot and its {@link OrderBook} for a newly registered instrument. Not visible to
@@ -80,22 +73,5 @@ public class BookSlotTable {
     /** Cold path — monitoring and the sync-count log. The array must not be modified. */
     public BookSlot[] snapshot() {
         return slots;
-    }
-
-    @Scheduled(fixedDelayString = "${screener.orderbook.sync-log-rate-ms:30000}")
-    public void logSyncCount() {
-        int spot = 0, futures = 0;
-        for (BookSlot slot : slots) {
-            if (slot == null) continue;
-            if (slot.book().getState() == OrderBookState.SYNCED) {
-                if (slot.instrument().venue() == Venue.BINANCE_SPOT) spot++;
-                else futures++;
-            }
-        }
-        if (spot != lastLoggedSpot || futures != lastLoggedFutures) {
-            log.info("sync count: spot={} fut={}", spot, futures);
-            lastLoggedSpot = spot;
-            lastLoggedFutures = futures;
-        }
     }
 }
