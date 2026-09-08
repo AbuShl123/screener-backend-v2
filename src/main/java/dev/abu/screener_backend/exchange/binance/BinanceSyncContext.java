@@ -8,7 +8,8 @@ import java.util.ArrayDeque;
 @Slf4j
 public class BinanceSyncContext implements BookSyncContext {
 
-    private static final int MAX_BUFFER_SIZE = 500;
+    /** Package-private so the sync tests can drive an overflow without duplicating the constant. */
+    static final int MAX_BUFFER_SIZE = 500;
 
     final ArrayDeque<String> diffBuffer;
     long lastUpdateId;
@@ -21,9 +22,17 @@ public class BinanceSyncContext implements BookSyncContext {
         this.diffBuffer = new ArrayDeque<>();
     }
 
-    public boolean bufferDiff(String diff) {
+    /**
+     * Buffers a diff while the book is {@code RECOVERING}, waiting for its snapshot.
+     *
+     * @param logName {@code slot.instrument().logName()} — passed in rather than held on the
+     *                context, which has no identity of its own, so the overflow line can name the
+     *                instrument that produced it
+     * @return {@code false} when the buffer is full; the caller must treat that as a de-sync
+     */
+    public boolean bufferDiff(String diff, String logName) {
         if (diffBuffer.size() >= MAX_BUFFER_SIZE) {
-            log.warn("BUFFER OVERFLOW!!! {} diffs buffered", MAX_BUFFER_SIZE);
+            log.warn("[{}] diff buffer overflow - {} diffs buffered without a snapshot", logName, MAX_BUFFER_SIZE);
             return false;
         }
         return diffBuffer.add(diff);

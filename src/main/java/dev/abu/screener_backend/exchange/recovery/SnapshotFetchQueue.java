@@ -32,7 +32,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>The {@link DisruptorShardManager} dependency is {@link Lazy} to break the startup
  * circular dependency:
- * DisruptorShardManager → OrderBookProcessor → SnapshotFetchQueue → DisruptorShardManager.
+ * BookSlotTable → SyncStrategyRegistry → VenueStrategyBinding beans (BinanceAdapterConfig) →
+ * SnapshotFetchQueue → DisruptorShardManager → BookSlotTable.
  * The proxy is resolved on first use, which only happens after the context is fully started.
  */
 @Slf4j

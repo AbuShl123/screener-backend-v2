@@ -2,12 +2,14 @@ package dev.abu.screener_backend.exchange.binance;
 
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
 
+/**
+ * Binance spot sequence validation. Instantiated by {@code BinanceAdapterConfig} — deliberately not
+ * a {@code @Component}.
+ */
 @Slf4j
-@Component
 public class BinanceSpotSyncStrategy extends BinanceDepthSyncStrategy {
 
     public BinanceSpotSyncStrategy(RecoverySink recoverSink) {
@@ -15,7 +17,7 @@ public class BinanceSpotSyncStrategy extends BinanceDepthSyncStrategy {
     }
 
     @Override
-    protected CheckResult check(JsonParser p, BinanceSyncContext ctx) {
+    protected CheckResult check(JsonParser p, BinanceSyncContext ctx, String logName) {
         long u = -1, bigU = -1;
 
         while (p.nextToken() != JsonToken.END_OBJECT) {
@@ -45,7 +47,8 @@ public class BinanceSpotSyncStrategy extends BinanceDepthSyncStrategy {
             ctx.lastUpdateId = u;
             return CheckResult.OK;
         } else {
-            ctx.lastUpdateId = -1;
+            log.debug("[{}] sequence gap: expected U <= {}, got U={} (u={})",
+                    logName, ctx.lastUpdateId + 1, bigU, u);
             return CheckResult.DE_SYNCED;
         }
     }

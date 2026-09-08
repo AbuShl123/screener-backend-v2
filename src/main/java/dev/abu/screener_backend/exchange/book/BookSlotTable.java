@@ -3,6 +3,8 @@ package dev.abu.screener_backend.exchange.book;
 import dev.abu.screener_backend.config.OrderbookProperties;
 import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
+import dev.abu.screener_backend.exchange.spi.SyncStrategyRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -34,6 +36,7 @@ public class BookSlotTable {
     private static final BookSlot[] EMPTY = new BookSlot[0];
 
     private final OrderbookProperties props;
+    private final SyncStrategyRegistry strategyRegistry;
 
     /** Hot path reads this. Copy-on-write: never mutated after publication. */
     private volatile BookSlot[] slots = EMPTY;
@@ -56,7 +59,9 @@ public class BookSlotTable {
         if (id >= staging.length) {
             staging = Arrays.copyOf(staging, Math.max(id + 1, staging.length * 2));
         }
-        staging[id] = new BookSlot(instrument, new OrderBook(props.priceFilterThreshold()), null, null);
+        DepthSyncStrategy strategy = strategyRegistry.forVenue(instrument.venue());
+        staging[id] = new BookSlot(instrument, new OrderBook(props.priceFilterThreshold()),
+                strategy, strategy.newContext());
     }
 
     /** Publishes every slot allocated since the last call. Discovery thread only. */

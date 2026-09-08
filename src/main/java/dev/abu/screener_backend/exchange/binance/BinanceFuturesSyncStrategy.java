@@ -2,12 +2,14 @@ package dev.abu.screener_backend.exchange.binance;
 
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
 
+/**
+ * Binance futures sequence validation. Instantiated by {@code BinanceAdapterConfig} — deliberately
+ * not a {@code @Component}.
+ */
 @Slf4j
-@Component
 public class BinanceFuturesSyncStrategy extends BinanceDepthSyncStrategy {
 
     public BinanceFuturesSyncStrategy(RecoverySink recoverSink) {
@@ -15,7 +17,7 @@ public class BinanceFuturesSyncStrategy extends BinanceDepthSyncStrategy {
     }
 
     @Override
-    protected CheckResult check(JsonParser p, BinanceSyncContext ctx) {
+    protected CheckResult check(JsonParser p, BinanceSyncContext ctx, String logName) {
         long pu = -1, u = -1, bigU = -1;
         boolean flag = ctx.syncPointFound;
 
@@ -48,6 +50,8 @@ public class BinanceFuturesSyncStrategy extends BinanceDepthSyncStrategy {
                 ctx.syncPointFound = true;
                 return CheckResult.OK;
             } else {
+                log.debug("[{}] sync point missed: snapshotId={} not in [U={}, u={}]",
+                        logName, ctx.lastUpdateId, bigU, u);
                 return CheckResult.DE_SYNCED;
             }
         }
@@ -56,6 +60,7 @@ public class BinanceFuturesSyncStrategy extends BinanceDepthSyncStrategy {
             ctx.lastUpdateId = u;
             return CheckResult.OK;
         } else {
+            log.debug("[{}] pu gap: expected pu={}, got pu={} (u={})", logName, ctx.lastUpdateId, pu, u);
             return CheckResult.DE_SYNCED;
         }
     }

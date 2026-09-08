@@ -23,7 +23,35 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
 
     protected static final JsonFactory JSON_FACTORY = JsonFactory.builder().build();
 
-    protected abstract CheckResult check(JsonParser p, BinanceSyncContext ctx);
+    /**
+     * Validates one depth diff against the book's sequence cursor — the only thing each Binance
+     * venue implements. Spot and futures read different fields and apply different rules, so field
+     * parsing belongs here rather than in the base.
+     *
+     * <h3>Parser hand-off contract — read this before editing an implementation</h3>
+     * {@code check} is called with the parser positioned on the diff object's {@code START_OBJECT}.
+     * It must:
+     * <ol>
+     *   <li>read only the sequence fields it needs ({@code U}, {@code u}, and on futures {@code pu}),
+     *       breaking out of its scan as soon as it has them;</li>
+     *   <li>return leaving the parser positioned <b>before</b> the {@code b} / {@code a} fields, and
+     *       <b>without</b> consuming the object's {@code END_OBJECT}.</li>
+     * </ol>
+     * {@link #applyDiff} resumes from exactly that position. This works because Binance guarantees
+     * {@code U}, {@code u} and {@code pu} precede {@code b} and {@code a} in the frame.
+     *
+     * <p><b>Failure mode if the contract is broken:</b> an implementation that over-consumes leaves
+     * {@code applyDiff} with no levels to read. Nothing throws — the book simply stops receiving
+     * updates while continuing to report {@code SYNCED}, and drifts silently. No other layer can
+     * detect this, which is why it is pinned by a test.
+     *
+     * @param p       positioned on START_OBJECT; see the hand-off contract above
+     * @param ctx     the book's sync cursor; an {@code OK} return must have advanced it
+     * @param logName {@code slot.instrument().logName()}, for the de-sync log line only
+     * @return {@code OK} to apply the diff, {@code IGNORE} to drop it and stay synced,
+     *         {@code DE_SYNCED} to trigger recovery
+     */
+    protected abstract CheckResult check(JsonParser p, BinanceSyncContext ctx, String logName);
 
     protected enum CheckResult {
         OK, IGNORE, DE_SYNCED;
@@ -58,14 +86,14 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
             return;
         }
 
-        if (state == OrderBookState.RECOVERING && !ctx.bufferDiff(event.rawJson)) {
+        if (state == OrderBookState.RECOVERING && !ctx.bufferDiff(event.rawJson, slot.instrument().logName())) {
             recover(slot, ctx);
             return;
         }
 
         if (state == OrderBookState.PENDING && recoverSink.requestRecovery(slot)) {
             slot.book().markRecovering();
-            ctx.bufferDiff(event.rawJson);
+            ctx.bufferDiff(event.rawJson, slot.instrument().logName());
         }
     }
 
@@ -74,7 +102,7 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
 
         try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
             p.nextToken();
-            CheckResult result = check(p, ctx);
+            CheckResult result = check(p, ctx, slot.instrument().logName());
 
             if (result == CheckResult.DE_SYNCED) {
                 return false;
@@ -173,12 +201,22 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
         }
     }
 
+    /**
+     * The single recovery path — called from {@link #onEvent} and nowhere else, which is what
+     * bounds the sink to at most one request per event. Every helper reports failure by returning
+     * {@code false} rather than recovering on its own.
+     */
     private void recover(BookSlot slot, BinanceSyncContext ctx) {
         ctx.reset();
         slot.book().clearLevels();
         slot.book().markPending();
-        if (recoverSink.requestRecovery(slot)) {
+        boolean queued = recoverSink.requestRecovery(slot);
+        if (queued) {
             slot.book().markRecovering();
         }
+        // Refusal is the normal startup path with a queue of 10 against ~800 books: the book stays
+        // PENDING and re-asks on its next diff, so a refusal here is not a stuck book.
+        log.debug("[{}] recovering - snapshot {}", slot.instrument().logName(),
+                queued ? "requested" : "refused, will retry on next diff");
     }
 }

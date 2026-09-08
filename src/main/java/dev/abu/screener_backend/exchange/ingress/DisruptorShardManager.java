@@ -8,6 +8,7 @@ import dev.abu.screener_backend.analysis.DefaultClassificationRule;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.config.DisruptorProperties;
+import dev.abu.screener_backend.exchange.book.BookSlotTable;
 import dev.abu.screener_backend.feed.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -20,9 +21,9 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class DisruptorShardManager {
 
-    private final DisruptorProperties      props;
-    private final OrderBookProcessor       orderBookProcessor;
-    private final OrderBookFeedStore       feedStore;
+    private final DisruptorProperties       props;
+    private final BookSlotTable             slots;
+    private final OrderBookFeedStore        feedStore;
     private final DefaultClassificationRule defaultRule;
 
     private Disruptor<DepthEvent>[]  disruptors;
@@ -55,12 +56,11 @@ public class DisruptorShardManager {
                     new BlockingWaitStrategy()
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule);
-            disruptor.handleEventsWith(new DepthEventHandler(i, orderBookProcessor, classifiers[i]));
+            disruptor.handleEventsWith(new DepthEventHandler(i, slots, classifiers[i]));
 
             ringBuffers[i] = disruptor.start();
             disruptors[i]  = disruptor;
         }
-
         log.info("Disruptor pipeline started — {} shards, {} slots each", shardCount, props.ringBufferSize());
     }
 

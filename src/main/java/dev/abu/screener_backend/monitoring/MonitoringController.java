@@ -113,35 +113,10 @@ public class MonitoringController {
      * @return 200 with orderbook snapshot, or 404 if no book exists for the pair
      */
     @GetMapping("/orderbook")
-    public ResponseEntity<OrderBookResponse> getOrderBook(
+    public ResponseEntity<String> getOrderBook(
             @RequestParam String symbol,
             @RequestParam Market market) {
-
-        Venue venue = Venue.of(Exchange.BINANCE, market);
-        BookSlot slot = instrumentRegistry.find(venue, symbol.toUpperCase())
-                .map(i -> slots.get(i.id()))
-                .orElse(null);
-        if (slot == null) {
-            return ResponseEntity.notFound().build();
-        }
-        OrderBook book = slot.book();
-
-        long now = System.currentTimeMillis();
-        TreeMap<Double, PriceLevelEntry> bids = book.snapshotBids();
-        TreeMap<Double, PriceLevelEntry> asks = book.snapshotAsks();
-
-        List<LevelView> bidList = bids.entrySet().stream()
-                .map(e -> new LevelView(e.getKey(), e.getValue().quantity, e.getValue().distance, now - e.getValue().firstSeenMillis))
-                .toList();
-        List<LevelView> askList = asks.entrySet().stream()
-                .map(e -> new LevelView(e.getKey(), e.getValue().quantity, e.getValue().distance, now - e.getValue().firstSeenMillis))
-                .toList();
-
-        return ResponseEntity.ok(new OrderBookResponse(
-                symbol.toUpperCase(), market, book.getState(),
-                bidList.size(), askList.size(),
-                bidList, askList
-        ));
+        return ResponseEntity.ok("Endpoint abandoned for now");
     }
 
     /**

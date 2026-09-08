@@ -1,7 +1,6 @@
 package dev.abu.screener_backend.exchange.book;
 
 import dev.abu.screener_backend.exchange.Instrument;
-import dev.abu.screener_backend.exchange.ingress.DepthEvent;
 import dev.abu.screener_backend.exchange.spi.BookSyncContext;
 import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
 
@@ -13,9 +12,8 @@ import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
  * (for the classifier's feed key and for log lines). Holding them together means one array load
  * and one dereference instead of two independent lookups.
  *
- * <p>Slots are allocated at registration, not lazily on first diff. That is what removes the
- * {@code REST_MSG}/{@code WS_MSG} branch, the {@code computeIfAbsent}, the key concatenation and the
- * null check from {@code OrderBookProcessor}: {@code slots.get(id)} is unconditionally present.
+ * <p>Slots are allocated at registration, not lazily on the first diff.
+ * {@code slots.get(id)} must be unconditionally present.
  *
  * <p>The sync context, the sync strategy and the reset flag join this record in later phases.
  */
