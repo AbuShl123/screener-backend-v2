@@ -20,6 +20,7 @@ Where this document and the code disagree, the code is right.
 | `.claude/plans/multi-exchange-architecture-vision.md` | The north star. Still accurate as design intent. |
 | `.claude/docs/orderbook-sync-algorithm.md` | **Stale.** Describes the pre-P1 Binance-only pipeline. §4 below replaces its sync chapters. |
 | `.claude/plans/p1-*.md`, `.claude/plans/p2-*.md` | Historical. Delivered or superseded; read them for reasoning, not for current shape. |
+| `.claude/docs/pipeline-benchmark-2026-09-08.md` | Measured baseline: a 2.5h run including a real mass-disconnect event. Sizes recovery throughput, heap and GC. |
 
 ---
 

@@ -50,7 +50,7 @@ class UserFeedRegistryTest {
         int buildCount = 0;
 
         FakeRuleService() {
-            super(null, null, null, null, new OrderbookProperties(0.3, 6000, 6000), 200);
+            super(null, null, null, null, new OrderbookProperties(0.3), 200);
         }
 
         @Override

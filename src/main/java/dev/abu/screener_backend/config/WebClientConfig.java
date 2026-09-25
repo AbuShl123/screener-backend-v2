@@ -1,6 +1,5 @@
 package dev.abu.screener_backend.config;
 
-import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.binance.WeightGuard;
 import dev.abu.screener_backend.exchange.binance.WeightLimitFilter;
@@ -29,7 +28,11 @@ import org.springframework.web.reactive.function.client.WebClient;
  * in {@code application.yml} forces servlet mode so the application remains on Spring MVC.
  */
 @Configuration
-@EnableConfigurationProperties({BinanceApiProperties.class, ExchangesProperties.class, WebSocketProperties.class, DisruptorProperties.class, OrderbookProperties.class, JwtProperties.class, AdminProperties.class, BillingProperties.class, PaymentProperties.class, EmailProperties.class})
+@EnableConfigurationProperties({
+        ExchangesProperties.class, WebSocketProperties.class, DisruptorProperties.class,
+        OrderbookProperties.class, JwtProperties.class, AdminProperties.class,
+        BillingProperties.class, PaymentProperties.class, EmailProperties.class
+})
 public class WebClientConfig {
 
     /**
@@ -52,32 +55,34 @@ public class WebClientConfig {
     /**
      * WebClient pre-configured for the Binance Spot REST API.
      *
-     * @param props     Binance weight-limit properties
      * @param exchanges venue configuration supplying the REST base URL and codec buffer size
      * @return spot WebClient bean
      */
     @Bean("spotWebClient")
-    public WebClient spotWebClient(BinanceApiProperties props, ExchangesProperties exchanges) {
-        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(props.spotWeightThreshold()), "SPOT");
+    public WebClient spotWebClient(ExchangesProperties exchanges) {
+        WeightLimitFilter filter = new WeightLimitFilter(
+                new WeightGuard(exchanges.venue(Venue.BINANCE_SPOT).weightThreshold()), "SPOT");
+
         return buildWebClient(
                 exchanges.venue(Venue.BINANCE_SPOT).restUrl(),
-                exchanges.exchange(Exchange.BINANCE).rest().codecBufferSizeMb(),
+                exchanges.venue(Venue.BINANCE_SPOT).codecBufferSizeMb(),
                 filter);
     }
 
     /**
      * WebClient pre-configured for the Binance Futures REST API.
      *
-     * @param props     Binance weight-limit properties
      * @param exchanges venue configuration supplying the REST base URL and codec buffer size
      * @return futures WebClient bean
      */
     @Bean("futuresWebClient")
-    public WebClient futuresWebClient(BinanceApiProperties props, ExchangesProperties exchanges) {
-        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(props.futuresWeightThreshold()), "FUTURES");
+    public WebClient futuresWebClient(ExchangesProperties exchanges) {
+        WeightLimitFilter filter = new WeightLimitFilter(
+                new WeightGuard(exchanges.venue(Venue.BINANCE_FUTURES).weightThreshold()), "FUTURES");
+
         return buildWebClient(
                 exchanges.venue(Venue.BINANCE_FUTURES).restUrl(),
-                exchanges.exchange(Exchange.BINANCE).rest().codecBufferSizeMb(),
+                exchanges.venue(Venue.BINANCE_FUTURES).codecBufferSizeMb(),
                 filter);
     }
 

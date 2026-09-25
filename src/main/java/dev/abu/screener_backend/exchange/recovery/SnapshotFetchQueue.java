@@ -9,7 +9,6 @@ import dev.abu.screener_backend.exchange.ingress.DisruptorShardManager;
 import dev.abu.screener_backend.exchange.ingress.EventType;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -48,14 +47,11 @@ public class SnapshotFetchQueue implements RecoverySink {
     private final ConcurrentHashMap<Integer, BookSlot> spotQueue    = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, BookSlot> futuresQueue = new ConcurrentHashMap<>();
 
-    public SnapshotFetchQueue(BinanceRestClient restClient,
-                              @Lazy DisruptorShardManager shardManager,
-                              @Value("${screener.orderbook.spot-snapshot-queue-size}") int spotMaxSize,
-                              @Value("${screener.orderbook.futures-snapshot-queue-size}") int futuresMaxSize) {
-        this.restClient    = restClient;
-        this.shardManager  = shardManager;
-        this.spotMaxSize   = spotMaxSize;
-        this.futuresMaxSize = futuresMaxSize;
+    public SnapshotFetchQueue(BinanceRestClient restClient, @Lazy DisruptorShardManager shardManager) {
+        this.restClient     = restClient;
+        this.shardManager   = shardManager;
+        this.spotMaxSize    = 10;
+        this.futuresMaxSize = 10;
     }
 
     /**
@@ -73,7 +69,7 @@ public class SnapshotFetchQueue implements RecoverySink {
         return true;
     }
 
-    @Scheduled(fixedRateString = "${screener.orderbook.spot-snapshot-dispatch-rate-ms}")
+    @Scheduled(fixedRateString = "6000")
     public void dispatchSpot() {
         for (BookSlot slot : spotQueue.values()) {
             int id = slot.instrument().id();
@@ -93,7 +89,7 @@ public class SnapshotFetchQueue implements RecoverySink {
         }
     }
 
-    @Scheduled(fixedRateString = "${screener.orderbook.futures-snapshot-dispatch-rate-ms}")
+    @Scheduled(fixedRateString = "6000")
     public void dispatchFutures() {
         for (BookSlot slot : futuresQueue.values()) {
             int id = slot.instrument().id();

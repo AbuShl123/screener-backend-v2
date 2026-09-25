@@ -54,7 +54,7 @@ public class PipelineHealthLogger {
     private long[] lastProcessed;
     private long lastSampleNanos;
 
-    @Scheduled(fixedDelayString = "${screener.orderbook.sync-log-rate-ms:30000}")
+    @Scheduled(fixedDelayString = "30000")
     public void logHealth() {
         long nowNanos = System.nanoTime();
         double elapsedSec = lastSampleNanos == 0 ? 0 : (nowNanos - lastSampleNanos) / 1e9;

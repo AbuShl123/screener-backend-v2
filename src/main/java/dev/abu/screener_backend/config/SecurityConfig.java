@@ -56,7 +56,9 @@ public class SecurityConfig {
                 "http://localhost:*",            // local dev
                 "http://127.0.0.1:*",           // local dev
                 "https://tc-screener.com",       // production
-                "https://www.tc-screener.com"   // production www
+                "https://www.tc-screener.com",  // production www
+                "https://tc-screener.uz",        // production (.uz)
+                "https://www.tc-screener.uz"    // production www (.uz)
         ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));

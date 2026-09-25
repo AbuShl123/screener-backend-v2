@@ -7,7 +7,7 @@ import dev.abu.screener_backend.exchange.spi.RecoverySink;
  * Stands in for {@code SnapshotFetchQueue}.
  *
  * <p>The refusal verdict is first-class rather than an afterthought: with
- * {@code spot/futures-snapshot-queue-size: 10} against ~1400 books, a refused
+ * a snapshot queue capped at 10 per market against ~1400 books, a refused
  * {@code requestRecovery} is the <b>normal</b> startup path, not an edge case. A book that stops
  * re-asking after a refusal parks forever, so that behaviour needs pinning.
  *

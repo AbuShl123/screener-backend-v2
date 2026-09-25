@@ -47,22 +47,14 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
 
     /**
      * @param enabled   safe-rollout switch — an adapter can ship dark and be turned on independently
-     * @param rest      REST client tuning shared across the exchange's venues
      * @param discovery instrument-universe inclusion policy
      * @param venues    per-market transport config
      */
     public record ExchangeProperties(
             boolean enabled,
-            RestProperties rest,
             DiscoveryProperties discovery,
             Map<Market, VenueProperties> venues
     ) {}
-
-    /**
-     * @param codecBufferSizeMb maximum in-memory buffer for WebClient response codecs; must hold a
-     *                          full {@code exchangeInfo} response (well over the 256 KB default)
-     */
-    public record RestProperties(int codecBufferSizeMb) {}
 
     /**
      * Instrument-universe inclusion policy, previously hardcoded in {@code TickerService}.
@@ -99,6 +91,8 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
             String restUrl,
             String depthStream,
             int maxStreamsPerConnection,
+            int codecBufferSizeMb,
+            long weightThreshold,
             int minConnections,
             int maxConnections,
             int subscribeChunkSize
