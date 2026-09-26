@@ -49,6 +49,8 @@ See also: `.claude/plans/universe-discovery-generalization.md`,
    marks itself initialized, and Binance is never streamed until restart. Per-source isolation makes
    this more likely. Until dynamic subscribe exists: **start pools per venue**, the first time a
    venue appears in `added`.
+   **DONE (P2 step 5):** `StreamManager` starts one pool per venue the first time that venue appears
+   in `added`; a venue failing to start is isolated from the others.
 4. **No startup retry.** If the first refresh fails, nothing runs for `refresh-interval` (4h). This
    predates the change, but more exchanges mean a higher chance one is down at boot. Retry on a
    short interval while any enabled venue has never had a successful fetch.
@@ -57,6 +59,9 @@ See also: `.claude/plans/universe-discovery-generalization.md`,
    bindings are unconditional, and some call `exchanges.venue(...)`, which throws on a missing
    block. For an adapter to genuinely "ship dark", gate its whole `@Configuration` (e.g.
    `@ConditionalOnProperty`), not just its source.
+   **Transport half DONE (P2 step 5):** `StreamManager` only opens pools for venues that discovery
+   emits, and skips a disabled venue defensively. The adapter half (gating `BinanceAdapterConfig`,
+   `WebClientConfig`, `SnapshotFetchQueue`) is still open.
 6. **`InstrumentCandidate` has no quantity multiplier.** Deferring `tickSize`/`stepSize` is fine.
    The one that will bite is contract size: MEXC futures depth quantities are in contracts, not base
    coin (OKX swaps likewise). Without it, notional is wrong and every tier is misclassified. It must
@@ -134,10 +139,11 @@ not.
 
 ## 4. Suggested order
 
-1. Commit the discovery change with fixes 1–2.
-2. Per-venue pool start (3), adapter config gated on `enabled` (5), startup retry (4).
+1. Commit the discovery change with fixes 1–2. (DONE! Fix #1 applied, but fix #2 intentionally deferred by the user)
+2. Per-venue pool start (3) — DONE; adapter config gated on `enabled` (5) — transport half done;
+   startup retry (4).
 3. Exchange dimension in the API, feed and rules.
 4. `SnapshotSource` + WebClient factory with timeouts; per-venue `BinanceRestClient`.
 5. `RequestBudget`.
-6. Transport SPI (including adapter-owned frame parsing).
+6. Transport SPI (including adapter-owned frame parsing). — DONE (P2 step 5, pulled forward).
 7. First new exchange.

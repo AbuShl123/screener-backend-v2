@@ -5,12 +5,15 @@ import dev.abu.screener_backend.exchange.Instrument;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
- * Per-connection {@code nativeSymbol → instrumentId} lookup, consulted on every inbound frame.
+ * Per-connection {@code routingKey → instrumentId} lookup, consulted on every inbound frame. The
+ * routing key is whatever the venue's {@code StreamProtocol} extracts from a data frame (for
+ * Binance, the native symbol).
  *
- * <p>Per-connection because a connection serves exactly one venue, so the native symbol alone is
- * unambiguous — no {@code (venue, symbol)} composite needed on the hot path. Resolving to an
+ * <p>Per-connection because a connection serves exactly one venue, so the routing key alone is
+ * unambiguous — no {@code (venue, key)} composite needed on the hot path. Resolving to an
  * {@code int} here is what makes {@code String.intern()} unnecessary in the reader callback.
  *
  * <h3>Why the map, and not the zero-allocation version</h3>
@@ -24,27 +27,36 @@ import java.util.Map;
  */
 public final class SubscriptionIndex {
 
-    private final Map<String, Integer> byNativeSymbol;
+    private final Map<String, Integer> byRoutingKey;
 
-    public SubscriptionIndex(List<Instrument> instruments) {
+    /**
+     * @throws IllegalArgumentException if two instruments share a routing key — one's frames would
+     *         silently be routed to the other's book
+     */
+    public SubscriptionIndex(List<Instrument> instruments, Function<Instrument, String> routingKey) {
         Map<String, Integer> index = new HashMap<>(instruments.size() * 2);
         for (Instrument instrument : instruments) {
-            index.put(instrument.nativeSymbol(), instrument.id());
+            String key = routingKey.apply(instrument);
+            Integer previous = index.put(key, instrument.id());
+            if (previous != null) {
+                throw new IllegalArgumentException("Routing key '" + key + "' maps to instruments "
+                        + previous + " and " + instrument.id() + " on one connection");
+            }
         }
-        this.byNativeSymbol = Map.copyOf(index);
+        this.byRoutingKey = Map.copyOf(index);
     }
 
     /**
-     * Resolves the symbol occupying {@code [start, end)} of {@code msg} to an instrument id.
+     * Resolves the routing key occupying {@code [start, end)} of {@code msg} to an instrument id.
      *
-     * @return the instrument id, or {@code -1} if this connection never subscribed to that symbol
+     * @return the instrument id, or {@code -1} if this connection never subscribed to that key
      */
     public int resolve(String msg, int start, int end) {
-        Integer id = byNativeSymbol.get(msg.substring(start, end));
+        Integer id = byRoutingKey.get(msg.substring(start, end));
         return id == null ? -1 : id;
     }
 
     public int size() {
-        return byNativeSymbol.size();
+        return byRoutingKey.size();
     }
 }

@@ -78,25 +78,49 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     ) {}
 
     /**
-     * @param streamUrl               WebSocket endpoint for this venue
-     * @param restUrl                 REST base URL for this venue
-     * @param depthStream             stream suffix appended to the lower-cased symbol, e.g. {@code "@depth"}
-     * @param maxStreamsPerConnection venue's own per-connection subscription ceiling
-     * @param minConnections          floor on the derived connection count. With Binance's 1024-stream
-     *                                ceiling the derived term is 1, so this floor is what actually
-     *                                sets the fan-out — see {@code BinanceConnectionPool}
-     * @param maxConnections          ceiling on the derived connection count
-     * @param subscribeChunkSize      streams per SUBSCRIBE frame (unrelated to connection count)
+     * @param streamUrl                WebSocket endpoint for this venue
+     * @param restUrl                  REST base URL for this venue
+     * @param streamTopic              per-venue topic template containing {@value #SYMBOL_PLACEHOLDER},
+     *                                 e.g. Binance {@code "{symbol}@depth"} or Bybit
+     *                                 {@code "orderbook.50.{symbol}"}
+     * @param maxStreamsPerConnection  venue's own per-connection subscription ceiling
+     * @param minConnections           floor on the derived connection count. With Binance's 1024-stream
+     *                                 ceiling the derived term is 1, so this floor is what actually
+     *                                 sets the fan-out — see {@code ConnectionPool}
+     * @param maxConnections           ceiling on the derived connection count
+     * @param subscribeChunkSize       instruments per subscribe frame (unrelated to connection count)
+     * @param heartbeatIntervalSeconds how often a connection pings, preventing a server-side idle close
      */
     public record VenueProperties(
             String streamUrl,
             String restUrl,
-            String depthStream,
+            String streamTopic,
             int maxStreamsPerConnection,
             int codecBufferSizeMb,
             long weightThreshold,
             int minConnections,
             int maxConnections,
-            int subscribeChunkSize
-    ) {}
+            int subscribeChunkSize,
+            int heartbeatIntervalSeconds
+    ) {
+        public static final String SYMBOL_PLACEHOLDER = "{symbol}";
+
+        public VenueProperties {
+            // Fail at startup rather than subscribing every stream to a garbage topic.
+            if (streamTopic == null || !streamTopic.contains(SYMBOL_PLACEHOLDER)) {
+                throw new IllegalArgumentException("stream-topic must contain " + SYMBOL_PLACEHOLDER
+                        + ", got: " + streamTopic);
+            }
+            if (subscribeChunkSize <= 0) throw new IllegalArgumentException("subscribe-chunk-size must be > 0");
+            if (heartbeatIntervalSeconds <= 0) throw new IllegalArgumentException("heartbeat-interval-seconds must be > 0");
+        }
+
+        /**
+         * Renders this venue's topic for one symbol. Casing is the adapter's call; this method
+         * substitutes {@code symbol} exactly as given.
+         */
+        public String streamTopic(String symbol) {
+            return streamTopic.replace(SYMBOL_PLACEHOLDER, symbol);
+        }
+    }
 }

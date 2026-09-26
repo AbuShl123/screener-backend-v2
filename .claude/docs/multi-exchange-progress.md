@@ -1,6 +1,6 @@
 # Multi-Exchange Migration — State of Play
 
-**Last updated**: 2026-09-08, working tree on top of commit `fb5f15d`, branch
+**Last updated**: 2026-09-27, P2 step 5 (stream transport) on top of commit `28d0d84`, branch
 `feature/multi-exchange`.
 
 **What this file is**: the single accurate record of where the multi-exchange migration stands —
@@ -34,8 +34,8 @@ Where this document and the code disagree, the code is right.
 | **P2 step 2** | Sync SPI (`DepthSyncStrategy` / `BookSyncContext` / `RecoverySink`); Binance spot + futures strategies; `OrderBook` reduced to pure storage; `SyncStrategyRegistry` + `BinanceAdapterConfig` wiring; sync test suite | **Done — builds green, verified live** |
 | **P2 step 3** | Per-venue `SnapshotRequestQueue` + `SnapshotSource` abstraction | Not started |
 | **P2 step 4** | `RequestBudget` (`HeaderFeedbackBudget` / `LocalTokenBucketBudget`); WebClients keyed by venue | Not started |
-| **P2 step 5** | `StreamProtocol`, `Heartbeat`, generic `ConnectionPool` | Not started |
-| **P2 step 6** | Config consolidation — fold `screener.orderbook.*` / `screener.websocket.*` into `screener.exchanges.*` | Partially pre-done (`ExchangesProperties` exists and carries per-venue stream/REST/connection config) |
+| **P2 step 5** | `StreamProtocol` / `Heartbeat` / `VenueStreamBinding` SPI; venue-agnostic `StreamManager` / `ConnectionPool` / `StreamConnection`; `BinanceStreamProtocol`; single `DepthEventPublisher` ingress for both producers; per-venue pool start | **Done — verified live** |
+| **P2 step 6** | Config consolidation — fold `screener.orderbook.*` / `screener.websocket.*` into `screener.exchanges.*` | Partially pre-done (`ExchangesProperties` carries per-venue stream/REST/connection config, stream topic and heartbeat interval; `screener.websocket.*` is down to reconnect backoff) |
 | **P3** | Reset lane, `tryNext()` backpressure, dynamic subscribe/unsubscribe, staleness watchdog, venue health surface, read-side storage seam | Not started |
 | **P4** | Bybit — the first real second venue | Not started |
 | **P5–P6** | MEXC/Bitget breadth; primitive-array book | Not started |
@@ -129,8 +129,8 @@ event.clear();
 ```
 
 **Bean cycle.** `BookSlotTable → SyncStrategyRegistry → VenueStrategyBinding beans
-(BinanceAdapterConfig) → SnapshotFetchQueue → DisruptorShardManager → BookSlotTable`, closed by the
-`@Lazy` on `SnapshotFetchQueue`'s `DisruptorShardManager`. The comment there names the current cycle;
+(BinanceAdapterConfig) → SnapshotFetchQueue → DepthEventPublisher → DisruptorShardManager →
+BookSlotTable`, closed by the `@Lazy` on `SnapshotFetchQueue`'s `DepthEventPublisher`. The comment there names the current cycle;
 removing that `@Lazy` fails the context at startup.
 
 **`OrderBook` is now pure storage.** It holds `volatile OrderBookState state`, `filterThreshold` and
@@ -140,8 +140,8 @@ no `lastUpdateId`, no diff buffer, no JSON parsing, no knowledge of Binance. `Or
 `PENDING → RECOVERING → SYNCED`.
 
 **`SnapshotFetchQueue implements RecoverySink`.** Two maps keyed by instrument id, `@Scheduled`
-drain, 5s settle delay, response published into the ring buffer as `REST_MSG` rather than written to
-the book from the HTTP thread. Still Binance-shaped (hardcoded `/api/v3/depth` and `/fapi/v1/depth`,
+drain, 5s settle delay, response published through `DepthEventPublisher.publishSnapshot` (as
+`REST_MSG`) rather than written to the book from the HTTP thread. Still Binance-shaped (hardcoded `/api/v3/depth` and `/fapi/v1/depth`,
 `dispatchSpot`/`dispatchFutures` pair) — that is P2 step 3.
 
 ---
@@ -453,6 +453,7 @@ and a YAML block.* Measured against that, here is what is already additive and w
 | Event provenance | `EventType` says where bytes came from, not what they mean |
 | Per-venue transport config | `screener.exchanges.<exchange>.venues.<market>.*` via `ExchangesProperties`; connection count is derived from stream count and the venue's own cap |
 | Discovery | An `InstrumentSource` bean from the adapter's config, with its own policy record under `screener.exchanges.<exchange>.discovery.*` |
+| Transport | `StreamProtocol` (subscribe frames, frame routing, `Heartbeat` kind) bound via a `VenueStreamBinding` bean; core `StreamManager` / `ConnectionPool` / `StreamConnection` own lifecycle, reconnect, fan-out, chunking and heartbeat scheduling. The topic template and heartbeat interval are per-venue config. `StreamProtocolRegistry` fails startup if an enabled venue has no binding |
 
 **Not yet additive** — these still name Binance in core and are the remaining P2 work:
 
@@ -460,10 +461,9 @@ and a YAML block.* Measured against that, here is what is already additive and w
 |---|---|---|
 | Snapshot fetching | `SnapshotFetchQueue` hardcodes `/api/v3/depth` and `/fapi/v1/depth` and has a `dispatchSpot`/`dispatchFutures` pair | One `SnapshotRequestQueue` class parameterised per model-A venue behind a `SnapshotSource` (P2 step 3) |
 | Request budget | `WeightGuard` / `WeightLimitFilter` assume Binance's `x-mbx-used-weight-1m` header and a wall-clock-minute reset | `RequestBudget` with `HeaderFeedbackBudget` + `LocalTokenBucketBudget`, one instance per venue (P2 step 4) |
-| Transport | `BinanceConnectionPool` / `BinanceStreamClient` / `BinanceWebSocketManager` — Binance frame shapes, ack discrimination, protocol-level ping | `StreamProtocol` + `Heartbeat` + a generic `ConnectionPool`; the adapter supplies subscribe frames, control-frame detection and routing-token extraction (P2 step 5) |
 | Config | `screener.orderbook.*` and `screener.websocket.*` still sit outside `screener.exchanges.*`; the snapshot queue sizes are read via `@Value` rather than through `OrderbookProperties` | Fold in under the venue block (P2 step 6) |
 
-Once those four land, Bybit becomes a new package plus YAML. Bybit is venue #2 deliberately: it is
+Once those three land, Bybit becomes a new package plus YAML. Bybit is venue #2 deliberately: it is
 model B (in-stream snapshot, resubscribe-to-recover, application-level heartbeat, topic routing), so
 it exercises every axis on which the SPI could be wrong. MEXC spot would pass a Binance-shaped
 abstraction by luck and validate nothing.
@@ -477,11 +477,13 @@ abstraction by luck and validate nothing.
 - **No reset lane.** `BookSlot` has no `resetRequested` flag. Four situations need to tell a book
   "your state is invalid" from a thread that does not own it: a dropped frame under backpressure, a
   reconnect, a staleness timeout, and an unsubscribe on universe change. None are handled today.
-- **Ring-buffer backpressure blocks.** `DisruptorDepthMessageHandler` and `SnapshotFetchQueue` both
-  use blocking `rb.next()`. `WS_MSG` should use `tryNext()` and set the reset flag on failure, so a
+- **Ring-buffer backpressure blocks.** Both producers (WebSocket frames and REST snapshots) publish
+  through `DisruptorDepthEventPublisher`, the single fill-and-publish site, which uses blocking
+  `rb.next()`. `WS_MSG` should use `tryNext()` and set the reset flag on failure, so a
   slow shard cannot stall a reader thread and cost a whole connection.
-- **No dynamic subscribe/unsubscribe.** `BinanceWebSocketManager.onUniverseChanged` still logs
-  *"dynamic re-subscription not yet implemented"* — the 4-hourly refresh updates the registry but not
+- **No dynamic subscribe/unsubscribe.** `StreamManager` starts a venue's pool the first time the
+  venue appears in a universe event; for venues that already have a pool it logs *"dynamic
+  re-subscription not yet implemented"* per venue — the 4-hourly refresh updates the registry but not
   live subscriptions. Needs the reverse `instrumentId → (connection, topic)` routing direction.
 - **No staleness watchdog.** A subscription that silently stops delivering is invisible: the book
   sits `SYNCED` with frozen data indefinitely.
@@ -553,11 +555,11 @@ Settled, with the reasoning, so they are not relitigated:
 
 ## 8. Next actions, in order
 
-1. **P2 step 3** — `SnapshotRequestQueue` parameterised per venue behind a `SnapshotSource`; drop the
+1. **Startup retry for discovery** (generalization review §1 #4) — retry on a short interval while
+   any enabled venue has never had a successful fetch, instead of waiting out the 4h refresh.
+2. **P2 step 3** — `SnapshotRequestQueue` parameterised per venue behind a `SnapshotSource`; drop the
    `dispatchSpot`/`dispatchFutures` fork and the hardcoded depth paths.
-2. **P2 step 4** — `RequestBudget` per venue; generalise `WeightLimitFilter`; WebClients keyed by venue.
-3. **P2 step 5** — `StreamProtocol` + `Heartbeat` + generic `ConnectionPool`; move Binance frame
-   handling into the adapter package.
+3. **P2 step 4** — `RequestBudget` per venue; generalise `WeightLimitFilter`; WebClients keyed by venue.
 4. **P2 step 6** — fold `screener.orderbook.*` and `screener.websocket.*` into the venue config, and
    move the snapshot queue sizes off `@Value` onto a properties record.
 5. **P3** — reset lane and `tryNext()` backpressure first (they are coupled), then dynamic

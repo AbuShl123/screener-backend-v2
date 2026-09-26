@@ -4,6 +4,9 @@ import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.exchange.spi.Heartbeat;
+import dev.abu.screener_backend.exchange.spi.StreamProtocol;
 import lombok.extern.slf4j.Slf4j;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
@@ -17,14 +20,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * One WebSocket connection serving a fixed subset of one venue's instruments.
+ *
+ * <p>Owns lifecycle, reconnect backoff, subscribe chunking and heartbeat scheduling. Everything
+ * about the venue's bytes — subscribe frames, frame routing, heartbeat kind — comes from its
+ * {@link StreamProtocol}.
+ */
 @Slf4j
-public class BinanceStreamClient extends WebSocketClient {
+public class StreamConnection extends WebSocketClient {
 
-    private static final long UNKNOWN_SYMBOL_LOG_INTERVAL_MS = 60_000;
+    private static final long UNKNOWN_FRAME_LOG_INTERVAL_MS = 60_000;
+    private static final int UNKNOWN_FRAME_LOG_CHARS = 120;
 
     private final Venue venue;
     private final List<Instrument> instruments;
-    private final RawDepthMessageHandler handler;
+    private final StreamProtocol protocol;
+    private final DepthEventPublisher publisher;
     private final ScheduledExecutorService reconnectScheduler;
     private final VenueProperties venueProps;
     private final WebSocketProperties wsProps;
@@ -40,14 +52,15 @@ public class BinanceStreamClient extends WebSocketClient {
     private volatile ScheduledFuture<?> heartbeatTask;
 
     /** Should be permanently zero — see {@link #onMessage(String)}. */
-    private final AtomicLong unknownSymbols = new AtomicLong();
-    private final AtomicLong unknownSymbolsLoggedAt = new AtomicLong();
+    private final AtomicLong unknownFrames = new AtomicLong();
+    private final AtomicLong unknownFramesLoggedAt = new AtomicLong();
 
-    public BinanceStreamClient(
+    public StreamConnection(
             URI serverUri,
             Venue venue,
             List<Instrument> instruments,
-            RawDepthMessageHandler handler,
+            StreamProtocol protocol,
+            DepthEventPublisher publisher,
             ScheduledExecutorService reconnectScheduler,
             VenueProperties venueProps,
             WebSocketProperties wsProps
@@ -56,11 +69,12 @@ public class BinanceStreamClient extends WebSocketClient {
         setConnectionLostTimeout(0);
         this.venue = venue;
         this.instruments = List.copyOf(instruments);
-        this.handler = handler;
+        this.protocol = protocol;
+        this.publisher = publisher;
         this.reconnectScheduler = reconnectScheduler;
         this.venueProps = venueProps;
         this.wsProps = wsProps;
-        this.index = new SubscriptionIndex(this.instruments);
+        this.index = new SubscriptionIndex(this.instruments, protocol::routingKey);
     }
 
     @Override
@@ -68,44 +82,38 @@ public class BinanceStreamClient extends WebSocketClient {
         reconnectAttempt.set(0);
         startHeartbeat();
 
-        int chunkSize = venueProps.subscribeChunkSize();
-        int totalChunks = (instruments.size() + chunkSize - 1) / chunkSize;
-
-        for (int i = 0; i < totalChunks; i++) {
-            int from = i * chunkSize;
-            int to = Math.min(from + chunkSize, instruments.size());
-            List<Instrument> chunk = instruments.subList(from, to);
-            send(buildSubscribeFrame(chunk, i));
+        List<String> frames = subscribeFrames(protocol, instruments, venueProps.subscribeChunkSize());
+        for (String frame : frames) {
+            send(frame);
         }
 
         log.info("[{}] WebSocket opened — subscribing {} streams across {} frames",
-                venue, instruments.size(), totalChunks);
+                venue, instruments.size(), frames.size());
+    }
+
+    /** One frame per chunk of {@code chunkSize} instruments; the request id is the chunk's index. */
+    static List<String> subscribeFrames(StreamProtocol protocol, List<Instrument> instruments, int chunkSize) {
+        int totalChunks = (instruments.size() + chunkSize - 1) / chunkSize;
+        List<String> frames = new ArrayList<>(totalChunks);
+        for (int i = 0; i < totalChunks; i++) {
+            int from = i * chunkSize;
+            int to = Math.min(from + chunkSize, instruments.size());
+            frames.add(protocol.subscribeFrame(instruments.subList(from, to), i));
+        }
+        return frames;
     }
 
     @Override
     public void onMessage(String message) {
-        if (message.length() <= 4) return;
-        // O(1) discrimination: SUBSCRIBE responses start with {"result":, depth events with {"e":
-        if (message.charAt(2) == 'r') {
-            log.debug("[{}] SUBSCRIBE ack received", venue);
-            return;
-        }
-
-        int sPos = message.indexOf("\"s\":\"");
-        if (sPos == -1) return;
-        int start = sPos + 5;
-        int end = message.indexOf('"', start);
-        if (end == -1) return;
-
-        int instrumentId = index.resolve(message, start, end);
-        if (instrumentId < 0) {
-            // Binance only pushes what was subscribed, so this should never fire; a partial
+        int instrumentId = protocol.route(message, index);
+        if (instrumentId >= 0) {
+            publisher.publishFrame(instrumentId, message);
+        } else if (instrumentId == StreamProtocol.UNKNOWN) {
+            // Venues only push what was subscribed, so this should never fire; a partial
             // resubscribe after a reconnect is the one plausible source. Routing an unresolved
-            // symbol onward would be exactly the mis-identification this design exists to prevent.
-            noteUnknownSymbol(message.substring(start, end));
-            return;
+            // key onward would be exactly the mis-identification this design exists to prevent.
+            noteUnknownFrame(message);
         }
-        handler.handle(instrumentId, message);
     }
 
     @Override
@@ -137,9 +145,10 @@ public class BinanceStreamClient extends WebSocketClient {
 
     private void startHeartbeat() {
         cancelHeartbeat();
-        int intervalSeconds = wsProps.heartbeatIntervalSeconds();
+        Heartbeat heartbeat = protocol.heartbeat();
+        long intervalMs = heartbeat.interval().toMillis();
         heartbeatTask = reconnectScheduler.scheduleAtFixedRate(
-                this::sendHeartbeat, intervalSeconds, intervalSeconds, TimeUnit.SECONDS
+                () -> sendHeartbeat(heartbeat), intervalMs, intervalMs, TimeUnit.MILLISECONDS
         );
     }
 
@@ -151,30 +160,26 @@ public class BinanceStreamClient extends WebSocketClient {
         }
     }
 
-    private void sendHeartbeat() {
+    private void sendHeartbeat(Heartbeat heartbeat) {
         if (isOpen()) {
             try {
-                sendPing();
+                switch (heartbeat) {
+                    case Heartbeat.ProtocolPing p -> sendPing();
+                    case Heartbeat.TextPing t -> send(t.payload());
+                }
             } catch (Exception e) {
-                log.debug("[{}] Heartbeat ping failed: {}", venue, e.getMessage());
+                log.debug("[{}] Heartbeat failed: {}", venue, e.getMessage());
             }
         }
     }
 
-    private void noteUnknownSymbol(String symbol) {
-        long total = unknownSymbols.incrementAndGet();
+    private void noteUnknownFrame(String message) {
+        long total = unknownFrames.incrementAndGet();
         long now = System.currentTimeMillis();
-        long last = unknownSymbolsLoggedAt.get();
-        if (now - last >= UNKNOWN_SYMBOL_LOG_INTERVAL_MS && unknownSymbolsLoggedAt.compareAndSet(last, now)) {
-            log.warn("[{}] Depth frame for unsubscribed symbol {} — dropped ({} total)", venue, symbol, total);
+        long last = unknownFramesLoggedAt.get();
+        if (now - last >= UNKNOWN_FRAME_LOG_INTERVAL_MS && unknownFramesLoggedAt.compareAndSet(last, now)) {
+            log.warn("[{}] Data frame for an unsubscribed routing key — dropped ({} total): {}",
+                    venue, total, message.substring(0, Math.min(message.length(), UNKNOWN_FRAME_LOG_CHARS)));
         }
-    }
-
-    private String buildSubscribeFrame(List<Instrument> chunk, int id) {
-        List<String> params = new ArrayList<>(chunk.size());
-        for (Instrument instrument : chunk) {
-            params.add("\"" + instrument.nativeSymbol().toLowerCase() + venueProps.depthStream() + "\"");
-        }
-        return "{\"method\":\"SUBSCRIBE\",\"params\":[" + String.join(",", params) + "],\"id\":" + id + "}";
     }
 }

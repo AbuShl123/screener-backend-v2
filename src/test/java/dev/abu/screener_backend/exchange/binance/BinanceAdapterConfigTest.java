@@ -1,15 +1,21 @@
 package dev.abu.screener_backend.exchange.binance;
 
+import dev.abu.screener_backend.config.ExchangesProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.exchange.Exchange;
+import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
+import dev.abu.screener_backend.exchange.spi.StreamProtocolRegistry;
 import dev.abu.screener_backend.exchange.spi.SyncStrategyRegistry;
 import dev.abu.screener_backend.exchange.spi.VenueStrategyBinding;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -75,6 +81,26 @@ class BinanceAdapterConfigTest {
 
         assertNotSame(spot.newContext(), spot.newContext(), "newContext must be per book");
         assertEquals(-1, ((BinanceSyncContext) spot.newContext()).lastUpdateId, "a fresh context has no sync point");
+    }
+
+    @Test
+    @DisplayName("every Binance venue has a stream binding with its own BinanceStreamProtocol")
+    void everyBinanceVenueHasStreamBinding() {
+        BinanceAdapterConfig config = new BinanceAdapterConfig();
+        VenueProperties spot = new VenueProperties("wss://x", "https://x", "{symbol}@depth", 1024, 1, 1000, 1, 1, 400, 120);
+        VenueProperties futures = new VenueProperties("wss://x", "https://x", "{symbol}@depth@500ms", 1024, 1, 1000, 1, 1, 400, 120);
+        ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
+                new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures))));
+        StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
+                config.binanceSpotStreamBinding(exchanges),
+                config.binanceFuturesStreamBinding(exchanges)), exchanges);
+
+        for (Venue venue : Venue.values()) {
+            if (venue.exchange() == Exchange.BINANCE) {
+                assertInstanceOf(BinanceStreamProtocol.class, registry.forVenue(venue), venue + " must stream with Binance's protocol");
+            }
+        }
+        assertNotSame(registry.forVenue(Venue.BINANCE_SPOT), registry.forVenue(Venue.BINANCE_FUTURES));
     }
 
     @Test

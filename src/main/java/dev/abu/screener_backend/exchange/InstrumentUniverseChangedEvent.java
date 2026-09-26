@@ -15,8 +15,12 @@ import java.util.List;
  * of the published slot array.
  *
  * <p>Replaces {@code TickersRefreshedEvent}. Note that {@code added} carries {@link Instrument}s,
- * not symbols: on the first refresh it is the entire universe, which is what the transport uses to
- * build its connection pools.
+ * not symbols.
+ *
+ * <p><b>Per-venue invariant the transport relies on:</b> the first time a venue appears in
+ * {@code added}, that list is the venue's <em>entire</em> current universe. {@code apply()} only adds
+ * instruments that {@code registry.find} has never seen, and a venue's first successful fetch has no
+ * earlier registrations. The transport starts a venue's connection pool from exactly that list.
  */
 @Getter
 public class InstrumentUniverseChangedEvent extends ApplicationEvent {

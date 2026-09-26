@@ -274,7 +274,7 @@ public class InstrumentUniverseService {
 
         if (succeeded == 0) {
             // Nothing fresh, so nothing can have changed. Firing anyway would also mislead the
-            // transport, which starts its pools from the first event it receives.
+            // transport, which starts a venue's pool from the first event that adds to it.
             if (sources.isEmpty()) {
                 log.warn("No enabled instrument sources — the universe is empty");
             } else {

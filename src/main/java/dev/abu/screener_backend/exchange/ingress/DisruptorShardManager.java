@@ -117,7 +117,7 @@ public class DisruptorShardManager {
      * derives from sequences the Disruptor already maintains. At steady state these should sit at
      * essentially {@link DisruptorProperties#ringBufferSize()}; a persistent dip means producers
      * are outrunning consumers, which is what makes the blocking {@code next()} in
-     * {@link DisruptorDepthMessageHandler} a live risk rather than a theoretical one.
+     * {@link DisruptorDepthEventPublisher} a live risk rather than a theoretical one.
      */
     public long[] ringFreePerShard() {
         long[] out = new long[shardCount()];

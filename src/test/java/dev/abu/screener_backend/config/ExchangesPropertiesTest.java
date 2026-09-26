@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
-        return new VenueProperties("wss://example", "https://example", "@depth", 1024, 1, 1000, 1, 1, 100);
+        return new VenueProperties("wss://example", "https://example", "{symbol}@depth", 1024, 1, 1000, 1, 1, 100, 120);
     }
 
     private static ExchangesProperties binance(boolean enabled, Market... markets) {

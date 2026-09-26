@@ -58,23 +58,27 @@ screener:
         SPOT:
           stream-url: wss://stream.binance.com/ws
           rest-url: https://api.binance.com
-          depth-stream: "@depth"
+          stream-topic: "{symbol}@depth"
           max-streams-per-connection: 1024
           codec-buffer-size-mb: 18
           weight-threshold: 5800
           min-connections: 2
           max-connections: 8
           subscribe-chunk-size: 400
+          # How often to send a WebSocket PING, preventing a server-side idle close (1006).
+          heartbeat-interval-seconds: 120
         FUTURES:
           stream-url: wss://fstream.binance.com/ws
           rest-url: https://fapi.binance.com
-          depth-stream: "@depth@500ms"
+          stream-topic: "{symbol}@depth@500ms"
           max-streams-per-connection: 1024
           codec-buffer-size-mb: 18
           weight-threshold: 2200
           min-connections: 3
           max-connections: 8
           subscribe-chunk-size: 400
+          # How often to send a WebSocket PING, preventing a server-side idle close (1006).
+          heartbeat-interval-seconds: 120
 
   discovery:
     # Per-source wait on each universe refresh. A source that overruns is cancelled and its venues
@@ -133,8 +137,6 @@ screener:
   websocket:
     reconnect-initial-delay-ms: 100
     reconnect-max-delay-ms: 30000
-    # How often to send a WebSocket PING to Binance to prevent server-side idle close (1006).
-    heartbeat-interval-seconds: 120
 
   jwt:
     secret: "${JWT_SECRET:}"

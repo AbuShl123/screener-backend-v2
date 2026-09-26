@@ -661,8 +661,8 @@ count, whether they have a custom context) — backs the admin-only
 
 ```
 Binance depth diff (spot 1/s, futures 2/s)
-  → BinanceConnectionPool (java-websocket)
-  → Disruptor ring buffer, shard = |symbol.hashCode()| % shardCount
+  → StreamConnection (java-websocket; BinanceStreamProtocol routes the frame to an instrument id)
+  → DepthEventPublisher → Disruptor ring buffer, shard = instrumentId & (shardCount - 1)
   → DepthEventHandler.onEvent  [consumer thread, one per shard]
       → OrderBookProcessor.process → OrderBook (TreeMap update, distance recompute, price filter)
       → OrderBookClassifier.process(ob)

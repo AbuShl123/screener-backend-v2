@@ -1,12 +1,9 @@
 package dev.abu.screener_backend.exchange.recovery;
 
-import com.lmax.disruptor.RingBuffer;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.binance.BinanceRestClient;
 import dev.abu.screener_backend.exchange.book.BookSlot;
-import dev.abu.screener_backend.exchange.ingress.DepthEvent;
-import dev.abu.screener_backend.exchange.ingress.DisruptorShardManager;
-import dev.abu.screener_backend.exchange.ingress.EventType;
+import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
@@ -29,10 +26,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Keying by instrument id rather than symbol also removes a collision that spot and futures
  * {@code BTCUSDT} would otherwise have had once both markets became independent instruments.
  *
- * <p>The {@link DisruptorShardManager} dependency is {@link Lazy} to break the startup
+ * <p>The {@link DepthEventPublisher} dependency is {@link Lazy} to break the startup
  * circular dependency:
  * BookSlotTable → SyncStrategyRegistry → VenueStrategyBinding beans (BinanceAdapterConfig) →
- * SnapshotFetchQueue → DisruptorShardManager → BookSlotTable.
+ * SnapshotFetchQueue → DepthEventPublisher → DisruptorShardManager → BookSlotTable.
  * The proxy is resolved on first use, which only happens after the context is fully started.
  */
 @Slf4j
@@ -40,16 +37,16 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SnapshotFetchQueue implements RecoverySink {
 
     private final BinanceRestClient restClient;
-    private final DisruptorShardManager shardManager;
+    private final DepthEventPublisher publisher;
     private final int spotMaxSize;
     private final int futuresMaxSize;
 
     private final ConcurrentHashMap<Integer, BookSlot> spotQueue    = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, BookSlot> futuresQueue = new ConcurrentHashMap<>();
 
-    public SnapshotFetchQueue(BinanceRestClient restClient, @Lazy DisruptorShardManager shardManager) {
+    public SnapshotFetchQueue(BinanceRestClient restClient, @Lazy DepthEventPublisher publisher) {
         this.restClient     = restClient;
-        this.shardManager   = shardManager;
+        this.publisher      = publisher;
         this.spotMaxSize    = 10;
         this.futuresMaxSize = 10;
     }
@@ -78,7 +75,7 @@ public class SnapshotFetchQueue implements RecoverySink {
                     .subscribe(
                             rawJson -> {
                                 spotQueue.remove(id);
-                                publishSnapshotEvent(slot, rawJson);
+                                publisher.publishSnapshot(id, rawJson);
                             },
                             error -> {
                                 spotQueue.remove(id);
@@ -98,7 +95,7 @@ public class SnapshotFetchQueue implements RecoverySink {
                     .subscribe(
                             rawJson -> {
                                 futuresQueue.remove(id);
-                                publishSnapshotEvent(slot, rawJson);
+                                publisher.publishSnapshot(id, rawJson);
                             },
                             error -> {
                                 futuresQueue.remove(id);
@@ -106,21 +103,6 @@ public class SnapshotFetchQueue implements RecoverySink {
                                 requestRecovery(slot);
                             }
                     );
-        }
-    }
-
-    /** Called from the Reactor/WebClient thread. Publishes into the ring buffer — never writes to OrderBook directly. */
-    private void publishSnapshotEvent(BookSlot slot, String rawJson) {
-        int id = slot.instrument().id();
-        RingBuffer<DepthEvent> rb = shardManager.getRingBuffer(id);
-        long seq = rb.next();
-        try {
-            DepthEvent event = rb.get(seq);
-            event.type         = EventType.REST_MSG;
-            event.instrumentId = id;
-            event.rawJson      = rawJson;
-        } finally {
-            rb.publish(seq);
         }
     }
 }
