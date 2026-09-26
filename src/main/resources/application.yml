@@ -41,7 +41,7 @@ screener:
 
   exchanges:
     binance:
-      enabled: true
+      enabled: ${BINANCE_ENABLED:true}
       discovery:
         quote-asset: USDT
         futures-contract-type: PERPETUAL
@@ -62,7 +62,6 @@ screener:
           max-streams-per-connection: 1024
           codec-buffer-size-mb: 18
           weight-threshold: 5800
-          # Connection count is derived: clamp(ceil(streams / max-streams-per-connection), min, max).
           min-connections: 2
           max-connections: 8
           subscribe-chunk-size: 400
@@ -76,6 +75,11 @@ screener:
           min-connections: 3
           max-connections: 8
           subscribe-chunk-size: 400
+
+  discovery:
+    # Per-source wait on each universe refresh. A source that overruns is cancelled and its venues
+    # keep their previous universe (no removals).
+    source-timeout: PT30S
 
   ticker:
     refresh-interval: PT4H

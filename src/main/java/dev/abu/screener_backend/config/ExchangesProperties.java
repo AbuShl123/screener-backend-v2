@@ -6,10 +6,10 @@ import dev.abu.screener_backend.exchange.Venue;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.Map;
-import java.util.Set;
 
 /**
- * Binds {@code screener.exchanges.*} — the venue-dimensioned transport and discovery config.
+ * Binds {@code screener.exchanges.*} — the venue-dimensioned transport config and the per-exchange
+ * {@code enabled} switch.
  *
  * <p>The prefix is {@code screener} rather than {@code screener.exchanges} so that the single
  * {@code exchanges} component binds as a {@link Map} keyed by {@link Exchange}; Spring's relaxed
@@ -33,6 +33,24 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
         return props;
     }
 
+    /**
+     * The single chokepoint for the {@code enabled} switch.
+     *
+     * <p>Unlike {@link #exchange} and {@link #venue}, a missing block does not throw: it means
+     * disabled. That lets a {@link Venue} constant exist before its adapter has YAML.
+     *
+     * @return {@code false} when the venue's exchange is disabled or has no configuration block,
+     *         or the venue itself has no block under {@code venues} — a venue without transport
+     *         config could not be streamed anyway
+     */
+    public boolean isEnabled(Venue venue) {
+        ExchangeProperties props = exchanges == null ? null : exchanges.get(venue.exchange());
+        return props != null
+                && props.enabled()
+                && props.venues() != null
+                && props.venues().containsKey(venue.market());
+    }
+
     /** @throws IllegalStateException if the venue has no configuration block */
     public VenueProperties venue(Venue venue) {
         ExchangeProperties exchangeProps = exchange(venue.exchange());
@@ -46,33 +64,17 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     }
 
     /**
-     * @param enabled   safe-rollout switch — an adapter can ship dark and be turned on independently
-     * @param discovery instrument-universe inclusion policy
-     * @param venues    per-market transport config
+     * The {@code discovery} subtree of an exchange block is deliberately not bound here: inclusion
+     * policy is exchange-shaped, so each adapter binds its own record to
+     * {@code screener.exchanges.<exchange>.discovery} (e.g. {@code BinanceDiscoveryProperties}).
+     *
+     * @param enabled safe-rollout switch — an adapter can ship dark and be turned on independently.
+     *                Read through {@link ExchangesProperties#isEnabled}
+     * @param venues  per-market transport config
      */
     public record ExchangeProperties(
             boolean enabled,
-            DiscoveryProperties discovery,
             Map<Market, VenueProperties> venues
-    ) {}
-
-    /**
-     * Instrument-universe inclusion policy, previously hardcoded in {@code TickerService}.
-     *
-     * @param quoteAsset          only pairs quoted in this asset are tracked
-     * @param futuresContractType futures contract type to accept, e.g. {@code PERPETUAL}
-     * @param spotRequiresFutures when {@code true}, a spot symbol is tracked only if the same symbol
-     *                            has an eligible futures contract — reproducing today's behaviour
-     *                            exactly. Flipping it to {@code false} takes spot from
-     *                            "futures ∩ spot" to every quoted spot pair, a large load change
-     *                            that belongs in its own phase
-     * @param excludedSymbols     stablecoin / metal pairs whose books carry no signal
-     */
-    public record DiscoveryProperties(
-            String quoteAsset,
-            String futuresContractType,
-            boolean spotRequiresFutures,
-            Set<String> excludedSymbols
     ) {}
 
     /**

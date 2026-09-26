@@ -1,176 +1,299 @@
 package dev.abu.screener_backend.exchange;
 
+import dev.abu.screener_backend.config.DiscoveryProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.DiscoveryProperties;
-import dev.abu.screener_backend.exchange.binance.BinanceRestClient;
-import dev.abu.screener_backend.exchange.binance.dto.BinanceSymbolDto;
-import dev.abu.screener_backend.exchange.binance.dto.ExchangeInfoResponse;
 import dev.abu.screener_backend.exchange.book.BookSlotTable;
+import dev.abu.screener_backend.exchange.spi.InstrumentCandidate;
+import dev.abu.screener_backend.exchange.spi.InstrumentSource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 /**
- * Discovers the tradable instrument universe and drives registration, slot allocation and
- * subscription.
+ * Merges every enabled {@link InstrumentSource} into one instrument universe and drives
+ * registration, slot allocation and subscription.
  *
- * <p>Replaces {@code TickerService}. The behavioural difference is one of modelling, not of
- * coverage: {@code Ticker(symbol, hasFutures, hasSpot)} bundled both markets into one object —
- * which is exactly what forced the order-book store's composite string key — whereas {@code BTCUSDT}
- * is now two {@link Instrument}s, {@code (BINANCE_SPOT, "BTCUSDT")} and
- * {@code (BINANCE_FUTURES, "BTCUSDT")}, with two ids, two slots and two books.
+ * <p>Exchange-agnostic: what an exchange lists and which of it to track is the adapter's source's
+ * business. This class owns only what must be uniform across exchanges — id assignment, the
+ * added/removed diff, publication order and failure isolation.
  *
- * <h3>Inclusion policy</h3>
- * Restated from {@code TickerService}'s hardcoded filters into config
- * ({@code screener.exchanges.binance.discovery}), so it can be changed without a code edit:
- * <pre>
- * futures = status TRADING ∧ contractType PERPETUAL ∧ quote USDT ∧ not excluded
- * spot    = status TRADING ∧ quote USDT ∧ not excluded ∧ (spot-requires-futures → symbol ∈ futures)
- * </pre>
- * With the shipped values the resulting universe is identical to {@code TickerService}'s.
+ * <h3>Sources</h3>
+ * Validated once at construction: every source claims a non-empty set of venues of one exchange,
+ * and no venue is claimed twice. A source whose venues are all disabled
+ * ({@link ExchangesProperties#isEnabled}) is skipped; a partially-enabled one is a configuration
+ * error, because a source cannot be asked to fetch a subset of its venues.
  *
  * <h3>Ordering invariant</h3>
  * {@code register all → allocate slots → publish → fire event → transport subscribes.} The event
  * listener runs synchronously on this thread, so the ordering holds naturally — but it is asserted
  * here rather than assumed. See {@link BookSlotTable}.
  *
+ * <p>Ids are assigned on the calling thread in {@code (venue.ordinal(), nativeSymbol)} order, so
+ * they are reproducible across restarts regardless of the order sources report in.
+ *
  * <h3>Failure behaviour</h3>
- * Unchanged: a failed refresh is logged and the existing universe is retained. A network blip must
- * never be read as a mass delisting.
+ * Isolated per source. Sources are fetched concurrently, each bounded by
+ * {@code screener.discovery.source-timeout}. A source that throws, times out, reports the wrong
+ * venues, or empties a previously non-empty venue is treated as failed: its venues keep their
+ * previous universe and contribute no removals, while the other sources' changes apply normally.
+ * A network blip must never be read as a mass delisting.
  */
 @Slf4j
 @Service
 public class InstrumentUniverseService {
 
-    private static final String TRADING_STATUS = "TRADING";
+    private static final Comparator<PlacedCandidate> ID_ORDER = Comparator
+            .<PlacedCandidate>comparingInt(c -> c.venue().ordinal())
+            .thenComparing(c -> c.candidate().nativeSymbol());
 
-    private final BinanceRestClient restClient;
+    private final List<SourceHandle> sources;
     private final InstrumentRegistry registry;
     private final BookSlotTable slots;
-    private final DiscoveryProperties discovery;
+    private final Duration sourceTimeout;
     private final ApplicationEventPublisher eventPublisher;
 
-    /** Ids in the universe as of the last successful refresh. Discovery thread only. */
-    private Set<Integer> activeIds = Set.of();
+    /** Ids per venue as of that venue's last successful fetch. Discovery thread only. */
+    private Map<Venue, Set<Integer>> activeByVenue = new EnumMap<>(Venue.class);
 
-    public InstrumentUniverseService(BinanceRestClient restClient,
+    public InstrumentUniverseService(List<InstrumentSource> sources,
                                      InstrumentRegistry registry,
                                      BookSlotTable slots,
                                      ExchangesProperties exchanges,
+                                     DiscoveryProperties discovery,
                                      ApplicationEventPublisher eventPublisher) {
-        this.restClient = restClient;
+        this.sources = enabledSources(sources, exchanges);
         this.registry = registry;
         this.slots = slots;
-        this.discovery = exchanges.exchange(Exchange.BINANCE).discovery();
+        this.sourceTimeout = discovery.sourceTimeout();
         this.eventPublisher = eventPublisher;
     }
 
     /**
-     * Fetches spot and futures exchange info concurrently, applies the inclusion policy, and
-     * registers the resulting universe.
+     * Validates every source's claim, then keeps the fully-enabled ones.
      *
-     * <p>Both REST calls are issued in parallel via {@link Mono#zip} and the combinator only
-     * <em>filters</em> — registration happens on the calling thread after the block, keeping id
-     * assignment single-threaded. Intentionally synchronous so the startup listener and the
-     * scheduler can reason about completion without subscribing.
+     * @throws IllegalStateException on an empty or multi-exchange claim, a venue claimed twice, or a
+     *         source whose venues are only partly enabled — all startup bugs
+     */
+    private static List<SourceHandle> enabledSources(List<InstrumentSource> sources, ExchangesProperties exchanges) {
+        Map<Venue, InstrumentSource> claimedBy = new EnumMap<>(Venue.class);
+        List<SourceHandle> enabled = new ArrayList<>();
+
+        for (InstrumentSource source : sources) {
+            Set<Venue> claimed = source.venues();
+            if (claimed == null || claimed.isEmpty()) {
+                throw new IllegalStateException("InstrumentSource " + name(source) + " claims no venues");
+            }
+            Set<Venue> venues = Set.copyOf(claimed);
+            if (venues.stream().map(Venue::exchange).distinct().count() > 1) {
+                throw new IllegalStateException("InstrumentSource " + name(source)
+                        + " spans more than one exchange: " + venues);
+            }
+            for (Venue venue : venues) {
+                InstrumentSource previous = claimedBy.put(venue, source);
+                if (previous != null) {
+                    throw new IllegalStateException("Venue " + venue + " is claimed by two InstrumentSources: "
+                            + name(previous) + " and " + name(source)
+                            + " — check for a stray @Component alongside the adapter's @Bean");
+                }
+            }
+
+            long enabledCount = venues.stream().filter(exchanges::isEnabled).count();
+            if (enabledCount == venues.size()) {
+                enabled.add(new SourceHandle(source, venues));
+            } else if (enabledCount == 0) {
+                log.info("Instrument source {} skipped — venues {} are disabled", name(source), venues);
+            } else {
+                throw new IllegalStateException("InstrumentSource " + name(source) + " covers venues " + venues
+                        + " but only some are enabled; a source cannot fetch a subset of its venues");
+            }
+        }
+        return List.copyOf(enabled);
+    }
+
+    /**
+     * Fetches every enabled source concurrently, then registers the merged universe on this thread.
+     *
+     * <p>Intentionally synchronous so the startup listener and the scheduler can reason about
+     * completion.
      */
     public void refresh() {
-        log.info("Refreshing instrument universe from Binance...");
+        log.info("Refreshing instrument universe from {} source(s)...", sources.size());
+        Map<Venue, List<InstrumentCandidate>> fresh = new EnumMap<>(Venue.class);
+        Set<Venue> retained = EnumSet.noneOf(Venue.class);
+        int succeeded = fetchAll(fresh, retained);
+        apply(fresh, retained, succeeded);
+    }
+
+    /**
+     * Runs every source's {@code fetch()} on its own virtual thread and sorts the outcomes into
+     * {@code fresh} (validated results) and {@code retained} (venues of failed sources).
+     *
+     * <p>The executor is shut down with {@code shutdownNow()} rather than closed: {@code close()}
+     * waits for every task, so one source ignoring its interrupt would stall the whole refresh.
+     *
+     * @return the number of sources that succeeded
+     */
+    private int fetchAll(Map<Venue, List<InstrumentCandidate>> fresh, Set<Venue> retained) {
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         try {
-            Mono.zip(
-                    restClient.getSpot("/api/v3/exchangeInfo", ExchangeInfoResponse.class),
-                    restClient.getFutures("/fapi/v1/exchangeInfo", ExchangeInfoResponse.class),
-                    this::selectCandidates
-            ).blockOptional(Duration.ofSeconds(30)).ifPresent(this::apply);
-        } catch (Exception e) {
-            log.error("Instrument universe refresh failed — retaining existing data ({} instruments)",
-                    activeIds.size(), e);
+            List<Future<Map<Venue, List<InstrumentCandidate>>>> futures = new ArrayList<>(sources.size());
+            for (SourceHandle handle : sources) {
+                futures.add(executor.submit(handle.source()::fetch));
+            }
+
+            // All fetches start together, so one shared deadline gives each the full timeout.
+            long deadline = System.nanoTime() + sourceTimeout.toNanos();
+            int succeeded = 0;
+
+            for (int i = 0; i < sources.size(); i++) {
+                SourceHandle handle = sources.get(i);
+                Future<Map<Venue, List<InstrumentCandidate>>> future = futures.get(i);
+
+                try {
+                    Map<Venue, List<InstrumentCandidate>> result = future.get(
+                            Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+
+                    String rejection = validate(handle, result);
+                    if (rejection == null) {
+                        fresh.putAll(result);
+                        succeeded++;
+                    } else {
+                        retain(handle, retained, rejection, null);
+                    }
+
+                } catch (TimeoutException e) {
+                    future.cancel(true);
+                    retain(handle, retained, "timed out after " + sourceTimeout, null);
+                } catch (ExecutionException e) {
+                    retain(handle, retained, "fetch failed", e.getCause());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    for (int j = i; j < sources.size(); j++) {
+                        retain(sources.get(j), retained, "refresh interrupted", null);
+                    }
+                    return succeeded;
+                }
+            }
+            return succeeded;
+        } finally {
+            executor.shutdownNow();
         }
     }
 
     /**
-     * Applies the inclusion policy. Pure — runs on a Reactor thread and touches no registry state.
-     *
-     * <p>Candidates come back sorted by {@code (venue, nativeSymbol)} so ids are reproducible
-     * across restarts, which makes parity runs diffable.
+     * @return {@code null} if the result is usable, otherwise why it is not. A result that would
+     *         empty a previously non-empty venue is rejected: a changed response shape or a bad
+     *         filter value must not silently delist a whole venue.
      */
-    private List<Candidate> selectCandidates(ExchangeInfoResponse spot, ExchangeInfoResponse futures) {
-        Set<String> excluded = discovery.excludedSymbols() == null ? Set.of() : discovery.excludedSymbols();
+    private String validate(SourceHandle handle, Map<Venue, List<InstrumentCandidate>> result) {
+        if (result == null || !result.keySet().equals(handle.venues())) {
+            return "returned venues " + (result == null ? null : result.keySet())
+                    + ", expected " + handle.venues();
+        }
+        for (Venue venue : handle.venues()) {
+            List<InstrumentCandidate> candidates = result.get(venue);
+            if (candidates == null) {
+                return "returned no list for " + venue;
+            }
+            if (candidates.isEmpty() && !activeByVenue.getOrDefault(venue, Set.of()).isEmpty()) {
+                return "returned an empty universe for " + venue + ", which previously had "
+                        + activeByVenue.get(venue).size() + " instruments";
+            }
+        }
+        return null;
+    }
 
-        List<BinanceSymbolDto> futuresSymbols = futures.getSymbols().stream()
-                .filter(s -> TRADING_STATUS.equals(s.getStatus()))
-                .filter(s -> discovery.futuresContractType().equals(s.getContractType()))
-                .filter(s -> discovery.quoteAsset().equals(s.getQuoteAsset()))
-                .filter(s -> !excluded.contains(s.getSymbol()))
-                .toList();
-
-        Set<String> futuresNames = futuresSymbols.stream()
-                .map(BinanceSymbolDto::getSymbol)
-                .collect(Collectors.toSet());
-
-        List<BinanceSymbolDto> spotSymbols = spot.getSymbols().stream()
-                .filter(s -> TRADING_STATUS.equals(s.getStatus()))
-                .filter(s -> discovery.quoteAsset().equals(s.getQuoteAsset()))
-                .filter(s -> !excluded.contains(s.getSymbol()))
-                .filter(s -> !discovery.spotRequiresFutures() || futuresNames.contains(s.getSymbol()))
-                .toList();
-
-        List<Candidate> candidates = new ArrayList<>(futuresSymbols.size() + spotSymbols.size());
-        for (BinanceSymbolDto s : spotSymbols) candidates.add(toCandidate(Venue.BINANCE_SPOT, s));
-        for (BinanceSymbolDto s : futuresSymbols) candidates.add(toCandidate(Venue.BINANCE_FUTURES, s));
-        candidates.sort(Comparator
-                .<Candidate>comparingInt(c -> c.venue().ordinal())
-                .thenComparing(Candidate::nativeSymbol));
-
-        log.debug("Instrument universe selected: {} spot, {} futures", spotSymbols.size(), futuresSymbols.size());
-        return candidates;
+    private void retain(SourceHandle handle, Set<Venue> retained, String reason, Throwable cause) {
+        retained.addAll(handle.venues());
+        String previous = handle.venues().stream()
+                .map(v -> v + "=" + activeByVenue.getOrDefault(v, Set.of()).size())
+                .collect(Collectors.joining(", "));
+        log.warn("Instrument source {} {} — retaining previous universe ({})",
+                name(handle.source()), reason, previous, cause);
     }
 
     /** Discovery thread. Registers, allocates, publishes, then announces — in that order. */
-    private void apply(List<Candidate> candidates) {
-        List<Instrument> added = new ArrayList<>();
-        Set<Integer> current = new HashSet<>(candidates.size() * 2);
+    private void apply(Map<Venue, List<InstrumentCandidate>> fresh, Set<Venue> retained, int succeeded) {
+        List<PlacedCandidate> candidates = new ArrayList<>();
+        Map<Venue, Set<Integer>> current = new EnumMap<>(Venue.class);
+        fresh.forEach((venue, list) -> {
+            current.put(venue, new HashSet<>(list.size() * 2));
+            for (InstrumentCandidate c : list) candidates.add(new PlacedCandidate(venue, c));
+        });
+        candidates.sort(ID_ORDER);
 
-        for (Candidate c : candidates) {
-            boolean isNew = registry.find(c.venue(), c.nativeSymbol()).isEmpty();
-            Instrument instrument = registry.register(c.venue(), c.nativeSymbol(), c.base(), c.quote());
-            current.add(instrument.id());
+        List<Instrument> added = new ArrayList<>();
+        for (PlacedCandidate pc : candidates) {
+            InstrumentCandidate c = pc.candidate();
+            boolean isNew = registry.find(pc.venue(), c.nativeSymbol()).isEmpty();
+            Instrument instrument = registry.register(pc.venue(), c.nativeSymbol(), c.base(), c.quote());
+            current.get(pc.venue()).add(instrument.id());
             if (isNew) {
                 slots.allocate(instrument);
                 added.add(instrument);
             }
+        }
+        for (Venue venue : retained) {
+            Set<Integer> previous = activeByVenue.get(venue);
+            if (previous != null) current.put(venue, previous);
         }
 
         // Must precede the event: subscribing before the array is visible could route a message to
         // an index past its end.
         slots.publish();
 
+        Set<Integer> currentIds = new HashSet<>();
+        current.values().forEach(currentIds::addAll);
         List<Instrument> removed = new ArrayList<>();
-        for (Integer id : activeIds) {
-            if (!current.contains(id)) {
-                Instrument instrument = registry.byId(id);
-                if (instrument != null) removed.add(instrument);
+        for (Set<Integer> ids : activeByVenue.values()) {
+            for (Integer id : ids) {
+                if (!currentIds.contains(id)) {
+                    Instrument instrument = registry.byId(id);
+                    if (instrument != null) removed.add(instrument);
+                }
             }
         }
-        activeIds = current;
+        activeByVenue = current;
 
+        if (succeeded == 0) {
+            // Nothing fresh, so nothing can have changed. Firing anyway would also mislead the
+            // transport, which starts its pools from the first event it receives.
+            if (sources.isEmpty()) {
+                log.warn("No enabled instrument sources — the universe is empty");
+            } else {
+                log.error("Instrument universe refresh failed for every source — retaining existing data "
+                        + "({} instruments)", currentIds.size());
+            }
+            return;
+        }
         log.info("Instrument universe updated — {} tracked ({} added, {} removed)",
-                current.size(), added.size(), removed.size());
+                currentIds.size(), added.size(), removed.size());
         eventPublisher.publishEvent(new InstrumentUniverseChangedEvent(this, added, removed));
     }
 
-    private static Candidate toCandidate(Venue venue, BinanceSymbolDto dto) {
-        return new Candidate(venue, dto.getSymbol(), dto.getBaseAsset(), dto.getQuoteAsset());
+    private static String name(InstrumentSource source) {
+        return source.getClass().getSimpleName();
     }
 
-    private record Candidate(Venue venue, String nativeSymbol, String base, String quote) {}
+    /** A source with its validated, immutable venue claim. */
+    private record SourceHandle(InstrumentSource source, Set<Venue> venues) {}
+
+    private record PlacedCandidate(Venue venue, InstrumentCandidate candidate) {}
 }
