@@ -3,6 +3,7 @@ package dev.abu.screener_backend.exchange.binance;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.exchange.Venue;
@@ -14,6 +15,7 @@ import dev.abu.screener_backend.exchange.spi.VenueStrategyBinding;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -87,8 +89,9 @@ class BinanceAdapterConfigTest {
     @DisplayName("every Binance venue has a stream binding with its own BinanceStreamProtocol")
     void everyBinanceVenueHasStreamBinding() {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
-        VenueProperties spot = new VenueProperties("wss://x", "https://x", "{symbol}@depth", 1024, 1, 1000, 1, 1, 400, 120);
-        VenueProperties futures = new VenueProperties("wss://x", "https://x", "{symbol}@depth@500ms", 1024, 1, 1000, 1, 1, 400, 120);
+        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
+        VenueProperties spot = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1000, 1, 1, 400, 120);
+        VenueProperties futures = new VenueProperties("wss://x", rest, "{symbol}@depth@500ms", 1024, 1000, 1, 1, 400, 120);
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures))));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(

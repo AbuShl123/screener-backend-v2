@@ -5,6 +5,7 @@ import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.exchange.Venue;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -79,7 +80,7 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
 
     /**
      * @param streamUrl                WebSocket endpoint for this venue
-     * @param restUrl                  REST base URL for this venue
+     * @param rest                     REST client config for this venue (base URL, codec buffer, timeouts)
      * @param streamTopic              per-venue topic template containing {@value #SYMBOL_PLACEHOLDER},
      *                                 e.g. Binance {@code "{symbol}@depth"} or Bybit
      *                                 {@code "orderbook.50.{symbol}"}
@@ -93,10 +94,9 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
      */
     public record VenueProperties(
             String streamUrl,
-            String restUrl,
+            RestProperties rest,
             String streamTopic,
             int maxStreamsPerConnection,
-            int codecBufferSizeMb,
             long weightThreshold,
             int minConnections,
             int maxConnections,
@@ -122,5 +122,21 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
         public String streamTopic(String symbol) {
             return streamTopic.replace(SYMBOL_PLACEHOLDER, symbol);
         }
+
+        /**
+         * @param baseUrl            REST base URL for this venue
+         * @param codecBufferSizeMb  in-memory codec buffer for the WebClient, in megabytes — Binance's
+         *                           {@code /exchangeInfo} alone needs more than the 256 KB default
+         * @param connectTimeout     TCP connect timeout
+         * @param responseTimeout    reactor-netty network response timeout ({@code HttpClient.responseTimeout});
+         *                           deliberately not a {@code Mono.timeout}, which would also count time a
+         *                           request spends waiting on a request budget
+         */
+        public record RestProperties(
+                String baseUrl,
+                int codecBufferSizeMb,
+                Duration connectTimeout,
+                Duration responseTimeout
+        ) {}
     }
 }

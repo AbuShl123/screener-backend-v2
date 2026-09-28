@@ -3,13 +3,16 @@ package dev.abu.screener_backend.exchange.binance;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.health.PipelineMetrics;
+import dev.abu.screener_backend.exchange.rest.ExchangeWebClientFactory;
 import dev.abu.screener_backend.exchange.spi.InstrumentSource;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import dev.abu.screener_backend.exchange.spi.VenueStrategyBinding;
 import dev.abu.screener_backend.exchange.spi.VenueStreamBinding;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.reactive.function.client.WebClient;
 
 /**
  * The Binance adapter's registration point — the only place in the application that knows which
@@ -55,8 +58,25 @@ public class BinanceAdapterConfig {
     }
 
     @Bean
-    InstrumentSource binanceInstrumentSource(BinanceRestClient restClient,
+    InstrumentSource binanceInstrumentSource(@Qualifier("binanceSpotRestClient") BinanceRestClient spotClient,
+                                             @Qualifier("binanceFuturesRestClient") BinanceRestClient futuresClient,
                                              BinanceDiscoveryProperties discovery) {
-        return new BinanceInstrumentSource(restClient, discovery);
+        return new BinanceInstrumentSource(spotClient, futuresClient, discovery);
+    }
+
+    @Bean
+    BinanceRestClient binanceSpotRestClient(ExchangeWebClientFactory webClientFactory, ExchangesProperties exchanges) {
+        ExchangesProperties.VenueProperties props = exchanges.venue(Venue.BINANCE_SPOT);
+        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(props.weightThreshold()), "SPOT");
+        WebClient webClient = webClientFactory.create(props.rest(), filter);
+        return new BinanceRestClient(Venue.BINANCE_SPOT, webClient, BinancePaths.SPOT);
+    }
+
+    @Bean
+    BinanceRestClient binanceFuturesRestClient(ExchangeWebClientFactory webClientFactory, ExchangesProperties exchanges) {
+        ExchangesProperties.VenueProperties props = exchanges.venue(Venue.BINANCE_FUTURES);
+        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(props.weightThreshold()), "FUTURES");
+        WebClient webClient = webClientFactory.create(props.rest(), filter);
+        return new BinanceRestClient(Venue.BINANCE_FUTURES, webClient, BinancePaths.FUTURES);
     }
 }

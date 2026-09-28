@@ -2,6 +2,7 @@ package dev.abu.screener_backend.exchange.binance;
 
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.binance.dto.ExchangeInfoResponse;
+import dev.abu.screener_backend.exchange.rest.ExchangeApiException;
 import dev.abu.screener_backend.exchange.spi.InstrumentCandidate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -91,7 +92,7 @@ class BinanceInstrumentSourceTest {
     @DisplayName("a failing REST call throws rather than returning an empty universe")
     void restFailureThrows() {
         Mono<ExchangeInfoResponse> failing = Mono.error(
-                new BinanceApiException(HttpStatus.SERVICE_UNAVAILABLE, "down"));
+                new ExchangeApiException(Venue.BINANCE_SPOT, HttpStatus.SERVICE_UNAVAILABLE, "down"));
 
         assertThrows(RuntimeException.class, () -> source(true, parse(SPOT), failing).fetch());
         assertThrows(RuntimeException.class, () -> source(true, failing, parse(FUTURES)).fetch());
@@ -111,7 +112,10 @@ class BinanceInstrumentSourceTest {
                                                   Mono<ExchangeInfoResponse> futures) {
         BinanceDiscoveryProperties discovery = new BinanceDiscoveryProperties(
                 "USDT", "PERPETUAL", spotRequiresFutures, Set.of("USDCUSDT"));
-        return new BinanceInstrumentSource(new StubRestClient(spot, futures), discovery);
+        return new BinanceInstrumentSource(
+                new StubRestClient(Venue.BINANCE_SPOT, spot),
+                new StubRestClient(Venue.BINANCE_FUTURES, futures),
+                discovery);
     }
 
     private static Mono<ExchangeInfoResponse> parse(String json) {
@@ -122,29 +126,18 @@ class BinanceInstrumentSourceTest {
         return candidates.stream().map(InstrumentCandidate::nativeSymbol).sorted().toList();
     }
 
-    /** Serves canned responses, and pins that the source asks for the right endpoints. */
+    /** Serves a canned {@code exchangeInfo} response without touching a real WebClient. */
     private static final class StubRestClient extends BinanceRestClient {
-        private final Mono<ExchangeInfoResponse> spot;
-        private final Mono<ExchangeInfoResponse> futures;
+        private final Mono<ExchangeInfoResponse> response;
 
-        StubRestClient(Mono<ExchangeInfoResponse> spot, Mono<ExchangeInfoResponse> futures) {
-            super(null, null);
-            this.spot = spot;
-            this.futures = futures;
+        StubRestClient(Venue venue, Mono<ExchangeInfoResponse> response) {
+            super(venue, null, null);
+            this.response = response;
         }
 
         @Override
-        @SuppressWarnings("unchecked")
-        public <T> Mono<T> getSpot(String path, Class<T> responseType) {
-            assertEquals(BinanceInstrumentSource.SPOT_EXCHANGE_INFO, path);
-            return (Mono<T>) spot;
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public <T> Mono<T> getFutures(String path, Class<T> responseType) {
-            assertEquals(BinanceInstrumentSource.FUTURES_EXCHANGE_INFO, path);
-            return (Mono<T>) futures;
+        public Mono<ExchangeInfoResponse> exchangeInfo() {
+            return response;
         }
     }
 }

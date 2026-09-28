@@ -6,11 +6,11 @@ import dev.abu.screener_backend.exchange.book.BookSlot;
 import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -36,7 +36,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class SnapshotFetchQueue implements RecoverySink {
 
-    private final BinanceRestClient restClient;
+    private final BinanceRestClient spotClient;
+    private final BinanceRestClient futuresClient;
     private final DepthEventPublisher publisher;
     private final int spotMaxSize;
     private final int futuresMaxSize;
@@ -44,11 +45,14 @@ public class SnapshotFetchQueue implements RecoverySink {
     private final ConcurrentHashMap<Integer, BookSlot> spotQueue    = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, BookSlot> futuresQueue = new ConcurrentHashMap<>();
 
-    public SnapshotFetchQueue(BinanceRestClient restClient, @Lazy DepthEventPublisher publisher) {
-        this.restClient     = restClient;
-        this.publisher      = publisher;
-        this.spotMaxSize    = 10;
-        this.futuresMaxSize = 10;
+    public SnapshotFetchQueue(@Qualifier("binanceSpotRestClient") BinanceRestClient spotClient,
+                               @Qualifier("binanceFuturesRestClient") BinanceRestClient futuresClient,
+                               @Lazy DepthEventPublisher publisher) {
+        this.spotClient      = spotClient;
+        this.futuresClient   = futuresClient;
+        this.publisher       = publisher;
+        this.spotMaxSize     = 10;
+        this.futuresMaxSize  = 10;
     }
 
     /**
@@ -70,8 +74,7 @@ public class SnapshotFetchQueue implements RecoverySink {
     public void dispatchSpot() {
         for (BookSlot slot : spotQueue.values()) {
             int id = slot.instrument().id();
-            restClient.getSpot("/api/v3/depth?symbol=" + slot.instrument().nativeSymbol() + "&limit=1000", String.class)
-                    .delayElement(Duration.ofSeconds(5))
+            spotClient.depth(slot.instrument().nativeSymbol(), 1000)
                     .subscribe(
                             rawJson -> {
                                 spotQueue.remove(id);
@@ -90,8 +93,7 @@ public class SnapshotFetchQueue implements RecoverySink {
     public void dispatchFutures() {
         for (BookSlot slot : futuresQueue.values()) {
             int id = slot.instrument().id();
-            restClient.getFutures("/fapi/v1/depth?symbol=" + slot.instrument().nativeSymbol() + "&limit=1000", String.class)
-                    .delayElement(Duration.ofSeconds(5))
+            futuresClient.depth(slot.instrument().nativeSymbol(), 1000)
                     .subscribe(
                             rawJson -> {
                                 futuresQueue.remove(id);

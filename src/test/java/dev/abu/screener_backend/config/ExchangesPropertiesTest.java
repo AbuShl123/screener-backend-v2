@@ -2,12 +2,14 @@ package dev.abu.screener_backend.config;
 
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.exchange.Venue;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.EnumMap;
 import java.util.Map;
 
@@ -18,7 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
-        return new VenueProperties("wss://example", "https://example", "{symbol}@depth", 1024, 1, 1000, 1, 1, 100, 120);
+        RestProperties rest = new RestProperties("https://example", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
+        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1000, 1, 1, 100, 120);
     }
 
     private static ExchangesProperties binance(boolean enabled, Market... markets) {

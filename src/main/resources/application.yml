@@ -56,11 +56,14 @@ screener:
           - PAXGUSDT
       venues:
         SPOT:
+          rest:
+            base-url: https://api.binance.com
+            codec-buffer-size-mb: 18
+            connect-timeout: PT5S
+            response-timeout: PT10S
           stream-url: wss://stream.binance.com/ws
-          rest-url: https://api.binance.com
           stream-topic: "{symbol}@depth"
           max-streams-per-connection: 1024
-          codec-buffer-size-mb: 18
           weight-threshold: 5800
           min-connections: 2
           max-connections: 8
@@ -68,11 +71,14 @@ screener:
           # How often to send a WebSocket PING, preventing a server-side idle close (1006).
           heartbeat-interval-seconds: 120
         FUTURES:
+          rest:
+            base-url: https://fapi.binance.com
+            codec-buffer-size-mb: 18
+            connect-timeout: PT5S
+            response-timeout: PT10S
           stream-url: wss://fstream.binance.com/ws
-          rest-url: https://fapi.binance.com
           stream-topic: "{symbol}@depth@500ms"
           max-streams-per-connection: 1024
-          codec-buffer-size-mb: 18
           weight-threshold: 2200
           min-connections: 3
           max-connections: 8

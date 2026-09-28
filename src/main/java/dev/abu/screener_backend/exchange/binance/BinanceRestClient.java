@@ -1,76 +1,67 @@
 package dev.abu.screener_backend.exchange.binance;
 
+import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.binance.dto.ExchangeInfoResponse;
+import dev.abu.screener_backend.exchange.rest.ExchangeApiException;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatusCode;
-import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.util.Arrays;
+
 /**
- * Generic, reusable HTTP client for the Binance REST API.
+ * Typed REST client for one Binance venue (spot or futures). Built twice — once per venue, each
+ * with its own {@link WebClient} and {@link BinancePaths} — by {@link BinanceAdapterConfig}.
  *
- * <p>Provides separate access paths for the Spot and Futures APIs, each backed by a
- * dedicated {@link WebClient} pre-configured with the appropriate base URL. All methods
- * return cold {@link Mono} publishers — callers decide whether to
+ * <p>All methods return cold {@link Mono} publishers — callers decide whether to
  * {@link Mono#block() block} (acceptable in scheduled/MVC contexts) or subscribe reactively.
  *
- * <p>This client is intentionally thin. Business logic (ticker filtering, rate-limit
- * scheduling, retry policies) belongs in callers, not here.
- *
- * <p>Non-2xx responses are wrapped in {@link BinanceApiException} and propagated through
- * the Mono error channel. All errors are logged at {@code WARN} level before propagation.
+ * <p>Non-2xx responses are wrapped in {@link ExchangeApiException} and propagated through the Mono
+ * error channel. All errors are logged at {@code WARN} level before propagation.
  */
 @Slf4j
-@Component
 public class BinanceRestClient {
 
-    private final WebClient spotClient;
-    private final WebClient futuresClient;
+    private final Venue venue;
+    private final WebClient webClient;
+    private final BinancePaths paths;
 
-    public BinanceRestClient(
-            @Qualifier("spotWebClient") WebClient spotClient,
-            @Qualifier("futuresWebClient") WebClient futuresClient) {
-        this.spotClient = spotClient;
-        this.futuresClient = futuresClient;
+    public BinanceRestClient(Venue venue, WebClient webClient, BinancePaths paths) {
+        this.venue = venue;
+        this.webClient = webClient;
+        this.paths = paths;
+    }
+
+    /** Issues a GET to this venue's {@code exchangeInfo} endpoint. */
+    public Mono<ExchangeInfoResponse> exchangeInfo() {
+        return get(ExchangeInfoResponse.class, paths.exchangeInfoPath());
     }
 
     /**
-     * Issues a GET request to the Binance Spot REST API and deserializes the response.
+     * Issues a GET to this venue's depth endpoint. Returns the raw body — the sync strategy parses it.
      *
-     * @param path         URI path relative to the spot base URL, e.g. {@code "/api/v3/exchangeInfo"}
-     * @param responseType target deserialization class
-     * @param <T>          response type
-     * @return Mono emitting the deserialized response, or an error Mono on failure
+     * <p>The symbol is passed as a URI variable, never pre-encoded into the template: WebClient
+     * encodes the template itself, so a pre-encoded string would be encoded twice and non-ASCII
+     * symbols (e.g. {@code 牛来USDT}) would reach Binance as {@code %25E7...} → {@code -1121}.
      */
-    public <T> Mono<T> getSpot(String path, Class<T> responseType) {
-        return get(spotClient, path, responseType);
+    public Mono<String> depth(String symbol, int limit) {
+        return get(String.class, paths.depthPath() + "?symbol={symbol}&limit={limit}", symbol, limit);
     }
 
-    /**
-     * Issues a GET request to the Binance Futures REST API and deserializes the response.
-     *
-     * @param path         URI path relative to the futures base URL, e.g. {@code "/fapi/v1/exchangeInfo"}
-     * @param responseType target deserialization class
-     * @param <T>          response type
-     * @return Mono emitting the deserialized response, or an error Mono on failure
-     */
-    public <T> Mono<T> getFutures(String path, Class<T> responseType) {
-        return get(futuresClient, path, responseType);
-    }
-
-    private <T> Mono<T> get(WebClient client, String path, Class<T> responseType) {
-        return client.get()
-                .uri(path)
+    private <T> Mono<T> get(Class<T> responseType, String uriTemplate, Object... uriVariables) {
+        return webClient.get()
+                .uri(uriTemplate, uriVariables)
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, this::toApiException)
                 .bodyToMono(responseType)
-                .doOnError(ex -> log.warn("Binance REST call failed [{}]: {}", path, ex.getMessage()));
+                .doOnError(ex -> log.warn("[{}] REST call failed [{} {}]: {}",
+                        venue, uriTemplate, Arrays.toString(uriVariables), ex.getMessage()));
     }
 
     private Mono<? extends Throwable> toApiException(ClientResponse response) {
         return response.bodyToMono(String.class)
-                .map(body -> new BinanceApiException(response.statusCode(), body));
+                .map(body -> new ExchangeApiException(venue, response.statusCode(), body));
     }
 }

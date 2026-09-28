@@ -31,17 +31,17 @@ import java.util.stream.Collectors;
 @Slf4j
 public class BinanceInstrumentSource implements InstrumentSource {
 
-    static final String SPOT_EXCHANGE_INFO = "/api/v3/exchangeInfo";
-    static final String FUTURES_EXCHANGE_INFO = "/fapi/v1/exchangeInfo";
-
     private static final String TRADING_STATUS = "TRADING";
     private static final Set<Venue> VENUES = Set.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES);
 
-    private final BinanceRestClient restClient;
+    private final BinanceRestClient spotClient;
+    private final BinanceRestClient futuresClient;
     private final BinanceDiscoveryProperties discovery;
 
-    public BinanceInstrumentSource(BinanceRestClient restClient, BinanceDiscoveryProperties discovery) {
-        this.restClient = restClient;
+    public BinanceInstrumentSource(BinanceRestClient spotClient, BinanceRestClient futuresClient,
+                                    BinanceDiscoveryProperties discovery) {
+        this.spotClient = spotClient;
+        this.futuresClient = futuresClient;
         this.discovery = discovery;
     }
 
@@ -62,8 +62,8 @@ public class BinanceInstrumentSource implements InstrumentSource {
     @Override
     public Map<Venue, List<InstrumentCandidate>> fetch() {
         Map<Venue, List<InstrumentCandidate>> result = Mono.zip(
-                restClient.getSpot(SPOT_EXCHANGE_INFO, ExchangeInfoResponse.class),
-                restClient.getFutures(FUTURES_EXCHANGE_INFO, ExchangeInfoResponse.class),
+                spotClient.exchangeInfo(),
+                futuresClient.exchangeInfo(),
                 this::selectCandidates
         ).block();
         if (result == null) {
@@ -75,8 +75,8 @@ public class BinanceInstrumentSource implements InstrumentSource {
     /** Applies the inclusion policy. Pure — runs on a Reactor thread. */
     private Map<Venue, List<InstrumentCandidate>> selectCandidates(ExchangeInfoResponse spot,
                                                                    ExchangeInfoResponse futures) {
-        List<BinanceSymbolDto> spotAll = requireSymbols(spot, SPOT_EXCHANGE_INFO);
-        List<BinanceSymbolDto> futuresAll = requireSymbols(futures, FUTURES_EXCHANGE_INFO);
+        List<BinanceSymbolDto> spotAll = requireSymbols(spot, "spot exchangeInfo");
+        List<BinanceSymbolDto> futuresAll = requireSymbols(futures, "futures exchangeInfo");
         Set<String> excluded = discovery.excludedSymbols() == null ? Set.of() : discovery.excludedSymbols();
 
         List<BinanceSymbolDto> futuresSymbols = futuresAll.stream()
@@ -104,9 +104,9 @@ public class BinanceInstrumentSource implements InstrumentSource {
     }
 
     /** A missing list is a changed response shape, not "Binance lists nothing" — fail loudly. */
-    private static List<BinanceSymbolDto> requireSymbols(ExchangeInfoResponse response, String path) {
+    private static List<BinanceSymbolDto> requireSymbols(ExchangeInfoResponse response, String label) {
         if (response.getSymbols() == null) {
-            throw new IllegalStateException("Binance " + path + " response has no symbols array");
+            throw new IllegalStateException("Binance " + label + " response has no symbols array");
         }
         return response.getSymbols();
     }

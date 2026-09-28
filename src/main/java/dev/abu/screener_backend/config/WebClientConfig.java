@@ -1,26 +1,15 @@
 package dev.abu.screener_backend.config;
 
-import dev.abu.screener_backend.exchange.Venue;
-import dev.abu.screener_backend.exchange.binance.WeightGuard;
-import dev.abu.screener_backend.exchange.binance.WeightLimitFilter;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /**
- * Configures {@link WebClient} beans for Binance REST API communication.
- *
- * <p>Two named clients are provided — one for the Spot API and one for the Futures API —
- * each pre-configured with the appropriate base URL and a generous in-memory codec buffer.
- *
- * <h3>Why the codec buffer must be enlarged</h3>
- * Binance's {@code /exchangeInfo} endpoint returns 1–2 MB of JSON covering all listed symbols.
- * The default WebClient codec buffer (256 KB) throws {@link reactor.core.publisher.Mono}
- * {@code DataBufferLimitException} without this override.
+ * Configures the non-exchange {@link WebClient} beans. The Binance REST clients live in
+ * {@code BinanceAdapterConfig} instead — see {@code ExchangeWebClientFactory}.
  *
  * <h3>Why {@code spring.main.web-application-type: servlet} is required</h3>
  * Adding {@code spring-boot-starter-webflux} alongside {@code spring-boot-starter-webmvc}
@@ -49,53 +38,6 @@ public class WebClientConfig {
                 .baseUrl(props.multicard().baseUrl())
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .build();
-    }
-
-    /**
-     * WebClient pre-configured for the Binance Spot REST API.
-     *
-     * @param exchanges venue configuration supplying the REST base URL and codec buffer size
-     * @return spot WebClient bean
-     */
-    @Bean("spotWebClient")
-    public WebClient spotWebClient(ExchangesProperties exchanges) {
-        WeightLimitFilter filter = new WeightLimitFilter(
-                new WeightGuard(exchanges.venue(Venue.BINANCE_SPOT).weightThreshold()), "SPOT");
-
-        return buildWebClient(
-                exchanges.venue(Venue.BINANCE_SPOT).restUrl(),
-                exchanges.venue(Venue.BINANCE_SPOT).codecBufferSizeMb(),
-                filter);
-    }
-
-    /**
-     * WebClient pre-configured for the Binance Futures REST API.
-     *
-     * @param exchanges venue configuration supplying the REST base URL and codec buffer size
-     * @return futures WebClient bean
-     */
-    @Bean("futuresWebClient")
-    public WebClient futuresWebClient(ExchangesProperties exchanges) {
-        WeightLimitFilter filter = new WeightLimitFilter(
-                new WeightGuard(exchanges.venue(Venue.BINANCE_FUTURES).weightThreshold()), "FUTURES");
-
-        return buildWebClient(
-                exchanges.venue(Venue.BINANCE_FUTURES).restUrl(),
-                exchanges.venue(Venue.BINANCE_FUTURES).codecBufferSizeMb(),
-                filter);
-    }
-
-    private WebClient buildWebClient(String baseUrl, int codecBufferSizeMb, WeightLimitFilter weightFilter) {
-        ExchangeStrategies strategies = ExchangeStrategies.builder()
-                .codecs(config -> config.defaultCodecs()
-                        .maxInMemorySize(codecBufferSizeMb * 1024 * 1024))
-                .build();
-        return WebClient.builder()
-                .baseUrl(baseUrl)
-                .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-                .exchangeStrategies(strategies)
-                .filter(weightFilter)
                 .build();
     }
 }

@@ -3,6 +3,7 @@ package dev.abu.screener_backend.exchange.stream;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.Instrument;
@@ -38,8 +39,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class StreamManagerTest {
 
+    private static final RestProperties REST =
+            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
     private static final VenueProperties PROPS =
-            new VenueProperties("wss://x", "https://x", "{symbol}@depth", 1024, 1, 1000, 1, 1, 400, 120);
+            new VenueProperties("wss://x", REST, "{symbol}@depth", 1024, 1000, 1, 1, 400, 120);
     private static final WebSocketProperties WS = new WebSocketProperties(100, 1000);
     private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
         @Override public void publishFrame(int instrumentId, String payload) { }

@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.exchange.stream;
 
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.Venue;
@@ -73,8 +74,9 @@ class StreamConnectionTest {
     }
 
     private static StreamConnection connection(StreamProtocol protocol, DepthEventPublisher publisher) {
-        VenueProperties props = new VenueProperties("ws://localhost:1", "https://x", "{symbol}@depth",
-                1024, 1, 1000, 1, 1, 400, 120);
+        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
+        VenueProperties props = new VenueProperties("ws://localhost:1", rest, "{symbol}@depth",
+                1024, 1000, 1, 1, 400, 120);
         // The reconnect scheduler is only touched from onOpen/onClose, which these tests never reach.
         return new StreamConnection(URI.create(props.streamUrl()), Venue.BINANCE_SPOT, instruments(3),
                 protocol, publisher, null, props, new WebSocketProperties(100, 1000));
