@@ -25,8 +25,11 @@ public class DefaultClassificationRule implements ClassificationRule {
     /**
      * High-liquidity tickers use tighter notional/distance thresholds due to deeper books
      * and tighter spreads — standard thresholds would classify nearly everything as tier-4.
+     * Normalized {@code BASEQUOTE} symbols, exchange-independent. The list keeps the order
+     * advertised by {@link #toResponse}; the set is its O(1) lookup twin.
      */
-    private static final Set<String> HIGH_LIQUIDITY_TICKERS = Set.of("BTCUSDT", "ETHUSDT", "SOLUSDT");
+    private static final List<String> HIGH_LIQUIDITY_SYMBOLS = List.of("BTCUSDT", "ETHUSDT", "SOLUSDT");
+    private static final Set<String> HIGH_LIQUIDITY_TICKERS = Set.copyOf(HIGH_LIQUIDITY_SYMBOLS);
 
     private static final List<TierDto> NORMAL_TIERS = List.of(
             new TierDto(4, 10_000_000,  0.05),
@@ -54,7 +57,12 @@ public class DefaultClassificationRule implements ClassificationRule {
         return ThresholdClassificationRule.of(bands);
     }
 
-    /** True if {@code symbol} uses the tighter high-liquidity threshold table. */
+    /**
+     * True if {@code symbol} uses the tighter high-liquidity threshold table.
+     *
+     * @param symbol the normalized {@code BASEQUOTE} symbol ({@code Instrument.symbol()}), not the
+     *               exchange-native spelling
+     */
     public boolean isHighLiquidity(String symbol) {
         return HIGH_LIQUIDITY_TICKERS.contains(symbol);
     }
@@ -78,6 +86,6 @@ public class DefaultClassificationRule implements ClassificationRule {
 
     /** Returns both threshold tables and the high-liquidity symbol list for client display. */
     public DefaultRuleResponse toResponse() {
-        return new DefaultRuleResponse(NORMAL_TIERS, List.of("BTCUSDT", "ETHUSDT", "SOLUSDT"), HIGH_LIQUIDITY_TIERS);
+        return new DefaultRuleResponse(NORMAL_TIERS, HIGH_LIQUIDITY_SYMBOLS, HIGH_LIQUIDITY_TIERS);
     }
 }

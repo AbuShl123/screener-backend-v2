@@ -8,13 +8,13 @@ import java.util.Map;
 import static dev.abu.screener_backend.analysis.OrderBookClassifier.TOP_LEVELS;
 
 /**
- * Per-{@code (symbol, market)} activity state for one classification context (the global default
- * or one user). Extracted out of {@link OrderBookClassifier} (Phase C) so a
+ * Per-instrument activity state for one classification context (the global default or one user),
+ * held under the instrument's {@link dev.abu.screener_backend.exchange.Instrument#feedKey() feedKey}. Extracted out of {@link OrderBookClassifier} (Phase C) so a
  * {@link UserClassificationContext} can declare its own {@code Map<String, SymbolState>}; the
  * behavior is unchanged from when it was a private inner class.
  *
  * <h2>Threading</h2>
- * A given key is pinned to exactly one Disruptor shard (hash-stable), so each {@code SymbolState}
+ * A given key identifies one instrument, which is pinned to exactly one Disruptor shard, so each {@code SymbolState}
  * instance is only ever touched by that one shard's consumer thread — no synchronization is
  * needed on the fields here. (The <em>map</em> holding these states may be a
  * {@code ConcurrentHashMap} when a context is shared across shards; that concurrency lives on the

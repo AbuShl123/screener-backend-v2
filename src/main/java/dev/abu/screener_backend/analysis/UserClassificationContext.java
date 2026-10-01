@@ -14,8 +14,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h2>Threading</h2>
  * One context is shared across every Disruptor shard, because a user's configured symbols hash
  * across shards. {@link #states} is therefore a {@link ConcurrentHashMap} — multiple shard threads
- * insert into it (one per configured symbol). Each {@link SymbolState} <em>value</em> is still
- * single-threaded, since its key is pinned to a single shard. {@link #feedStore} is a plain
+ * insert into it (one per configured instrument). It is keyed by
+ * {@link dev.abu.screener_backend.exchange.Instrument#feedKey() feedKey}
+ * ({@code "EXCHANGE:MARKET:SYMBOL"}), so one rule matching the same symbol on two exchanges yields
+ * two states. Each {@link SymbolState} <em>value</em> is still single-threaded, since a
+ * {@code feedKey} identifies exactly one instrument and an instrument is pinned to a single shard. {@link #feedStore} is a plain
  * {@code new} instance of the dependency-free {@link OrderBookFeedStore}, reusing its existing
  * multi-writer / single-drainer coalescing.
  */

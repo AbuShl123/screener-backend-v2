@@ -43,7 +43,7 @@ public class TickerController {
                 .sorted(Comparator
                         .comparing((Instrument i) -> i.venue().ordinal())
                         .thenComparing(Instrument::nativeSymbol))
-                .map(i -> new InstrumentView(i.id(), i.venue(), i.nativeSymbol(), i.canonical()))
+                .map(i -> new InstrumentView(i.id(), i.venue(), i.nativeSymbol()))
                 .toList();
 
         Map<Venue, Integer> byVenue = new EnumMap<>(Venue.class);
@@ -69,7 +69,6 @@ public class TickerController {
      * @param id        process-local runtime index — debugging only, never durable
      * @param venue     the venue this instrument trades on
      * @param symbol    the exchange's native symbol
-     * @param canonical cross-venue pair name, e.g. {@code "BTC/USDT"}
      */
-    public record InstrumentView(int id, Venue venue, String symbol, String canonical) {}
+    public record InstrumentView(int id, Venue venue, String symbol) {}
 }

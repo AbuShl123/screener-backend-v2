@@ -172,6 +172,8 @@ public class ClassificationRuleService {
             return Optional.empty();
         }
 
+        // The key must match Instrument.ruleKey byte-for-byte ("BASEQUOTE:MARKET"), or the
+        // classifier never finds the rule and the user silently falls back to default tiers.
         Map<String, List<ClassificationRuleEntity>> grouped = new LinkedHashMap<>();
         for (ClassificationRuleEntity row : rows) {
             grouped.computeIfAbsent(row.getSymbol() + ":" + row.getMarket(), k -> new ArrayList<>())

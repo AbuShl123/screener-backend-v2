@@ -32,17 +32,23 @@ import java.util.TreeMap;
  * <ol>
  *   <li><b>Default pass</b> — always — against {@link #defaultStates}, {@link #defaultRule},
  *       and the global {@link #feedStore}.</li>
- *   <li><b>Per-user passes</b> — only for contexts that have this {@code (symbol, market)} key
- *       configured — against that context's own state map, override leaf rule, and personal feed
- *       store.</li>
+ *   <li><b>Per-user passes</b> — only for contexts that have a rule for this instrument's
+ *       {@link Instrument#ruleKey() ruleKey} configured — against that context's own state map,
+ *       override leaf rule, and personal feed store.</li>
  * </ol>
  * The shared per-context work lives in {@link #classifyOne}; the default and user passes differ
  * only in the {@code (state, rule, feedStore)} triple they operate on. When no custom users are
  * connected, the user loop body never executes, so the only added cost is one {@code volatile}
  * read and an emptiness check.
  *
- * <h2>Per-symbol activity state machine</h2>
- * Each {@code (symbol, market)} pair is tracked by a {@link SymbolState} that alternates
+ * <h2>Keys</h2>
+ * Rules are looked up by the venue-agnostic {@link Instrument#ruleKey() ruleKey}
+ * ({@code BTCUSDT:SPOT}), so one user rule applies on every exchange. State and feed entries are
+ * keyed by the venue-specific {@link Instrument#feedKey() feedKey} ({@code BINANCE:SPOT:BTCUSDT}),
+ * so the same symbol on two exchanges is classified and delivered independently.
+ *
+ * <h2>Per-instrument activity state machine</h2>
+ * Each instrument is tracked by a {@link SymbolState} that alternates
  * between two activity levels:
  * <ul>
  *   <li><b>LOW</b> — the order book has no tier-&ge;1 levels or is not yet synchronised.
@@ -104,21 +110,23 @@ public class OrderBookClassifier {
 
     /// Entry point called by DepthEventHandler after every ring buffer event.
     public void process(Instrument inst, OrderBook ob) {
-        String key = inst.feedKey();                                          // precomputed — no concat per message
-        boolean highLiquidity = defaultRule.isHighLiquidity(inst.nativeSymbol()); // computed ONCE per book
+        String stateKey = inst.feedKey();                                  // venue-specific, precomputed
+        String ruleKey  = inst.ruleKey();                                  // venue-agnostic, precomputed
+        boolean highLiquidity = defaultRule.isHighLiquidity(inst.symbol()); // computed ONCE per book
 
         // TODO: parallel classification for default and per-user rules
 
         // Pass 1 — default, always.
-        SymbolState defaultState = defaultStates.computeIfAbsent(key, k -> new SymbolState());
+        SymbolState defaultState = defaultStates.computeIfAbsent(stateKey, k -> new SymbolState());
         classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity);
 
-        // Pass 2 — per user, only if any context is active.
+        // Pass 2 — per user, only if any context is active. A rule applies on every exchange,
+        // but each exchange's book keeps its own state and feed entry.
         UserClassificationContext[] ctxs = activeUserContexts;
         for (UserClassificationContext ctx : ctxs) {
-            if (ctx.rule().configuredKeys().contains(key)) {
-                ThresholdClassificationRule rule = ctx.rule().ruleFor(key);
-                SymbolState state = ctx.states().computeIfAbsent(key, k -> new SymbolState());
+            ThresholdClassificationRule rule = ctx.rule().ruleFor(ruleKey);
+            if (rule != null) {
+                SymbolState state = ctx.states().computeIfAbsent(stateKey, k -> new SymbolState());
                 classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity);
             }
         }
@@ -302,21 +310,21 @@ public class OrderBookClassifier {
 
     private void submitDropUpdate(OrderBookFeedStore feedStore, Instrument inst) {
         feedStore.submit(inst.feedKey(), new OrderBookUpdate(
-                inst.nativeSymbol(), inst.market(),
+                inst,
                 FeedEventType.DROP,
                 null, null));
     }
 
     private void submitAddUpdate(OrderBookFeedStore feedStore, Instrument inst, SymbolState state) {
         feedStore.submit(inst.feedKey(), new OrderBookUpdate(
-                inst.nativeSymbol(), inst.market(),
+                inst,
                 FeedEventType.ADD,
                 state.workBids.clone(), state.workAsks.clone()));
     }
 
     private void submitModifyUpdate(OrderBookFeedStore feedStore, Instrument inst, SymbolState state) {
         feedStore.submit(inst.feedKey(), new OrderBookUpdate(
-                inst.nativeSymbol(), inst.market(),
+                inst,
                 FeedEventType.UPDATE,
                 state.workBids.clone(), state.workAsks.clone()));
     }

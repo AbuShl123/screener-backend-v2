@@ -23,9 +23,8 @@ public class BinanceSymbolDto {
     private String symbol;
 
     /**
-     * Base asset of this symbol, e.g. {@code "BTC"}. Carried onto {@code Instrument} so the
-     * canonical {@code "BTC/USDT"} pair name is available for cross-venue grouping later — free to
-     * populate at discovery time, expensive to backfill afterwards.
+     * Base asset of this symbol, e.g. {@code "BTC"}. Carried onto {@code Instrument}, which builds
+     * its exchange-independent {@code symbol} ({@code base + quote}) from it.
      */
     private String baseAsset;
 

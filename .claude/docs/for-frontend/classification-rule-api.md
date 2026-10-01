@@ -85,6 +85,11 @@ A user can define their own thresholds for any `(symbol, market)` combination. K
   back to the default for the rest.
 - `(symbol, market)` is the unit of granularity: a user can have different thresholds for
   `BTCUSDT SPOT` vs `BTCUSDT FUTURES`.
+- **Rules are exchange-independent.** `symbol` is always the normalized `BASEQUOTE` form (e.g.
+  `BTCUSDT`), never an exchange-native spelling such as `BTC_USDT`. One rule for `BTCUSDT SPOT`
+  applies to `BTCUSDT` spot on **every** exchange the screener tracks; the WebSocket feed still
+  delivers each exchange's book separately (see `websocket-feed-api.md` §3.7). Only Binance is
+  tracked today.
 - The same rule body can be applied to multiple tickers in one request.
 - **Live effect**: rule edits apply immediately to any already-connected WebSocket session — no
   reconnect needed. Writing a rule (`PUT`/`DELETE`) rebuilds the affected user's classification

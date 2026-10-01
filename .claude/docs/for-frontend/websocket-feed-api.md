@@ -15,7 +15,7 @@
 A single WebSocket connection that streams **classified order-book levels** for many tickers at once.
 The server pushes; the client (almost) only listens. Every ~100ms the server sends whatever changed
 in that window, per ticker. The client's job is to maintain a local map of
-`(symbol, market) → order book` and re-render it as messages arrive.
+`(exchange, market, symbol) → order book` and re-render it as messages arrive.
 
 Each connected user gets the feed shaped by their own classification rules (if they've configured
 any via the rules API); otherwise they get the global default feed. This is transparent to the
@@ -82,7 +82,7 @@ Every message also carries a leading `seq` field — **you can ignore it entirel
 ### 3.1 `SNAPSHOT` — the full current state
 
 Sent automatically once on connect, and again whenever you send a `SNAPSHOT_REQUEST` (§6). It is the
-complete set of currently-active `(symbol, market)` order books in one message.
+complete set of currently-active order books in one message.
 
 ```json
 {
@@ -90,12 +90,14 @@ complete set of currently-active `(symbol, market)` order books in one message.
   "type": "SNAPSHOT",
   "data": [
     {
+      "exchange": "BINANCE",
       "symbol": "BTCUSDT",
       "market": "FUTURES",
       "bids": [ /* level objects */ ],
       "asks": [ /* level objects */ ]
     },
     {
+      "exchange": "BINANCE",
       "symbol": "ETHUSDT",
       "market": "SPOT",
       "bids": [ ... ],
@@ -106,7 +108,8 @@ complete set of currently-active `(symbol, market)` order books in one message.
 ```
 
 **How to treat it**: replace your entire local state. Clear whatever you had and rebuild the map from
-`data`. Every entry in `data` is one order book keyed by the `(symbol, market)` pair. Anything you
+`data`. Every entry in `data` is one order book identified by its `(exchange, market, symbol)`
+triple (see §3.7). Anything you
 were previously tracking that is **not** in the new `data` should be dropped — a fresh snapshot is
 authoritative and complete.
 
@@ -119,6 +122,7 @@ treat them identically**. See §4 for the full rule.
 {
   "seq": 2,
   "type": "UPDATE",
+  "exchange": "BINANCE",
   "symbol": "BTCUSDT",
   "market": "FUTURES",
   "bids": [ /* level objects */ ],
@@ -128,10 +132,9 @@ treat them identically**. See §4 for the full rule.
 
 `ADD` looks the same, just with `"type": "ADD"`. Each such message is the **current top levels for
 that one ticker** (up to 5 per side — see §3.5). It is a *replacement* for that ticker's book, not a
-delta to merge: overwrite your stored `bids`/`asks` for that `(symbol, market)` with the arrays in
-the message.
+delta to merge: overwrite your stored `bids`/`asks` for that book with the arrays in the message.
 
-**How to treat it**: upsert. Look up `(symbol, market)` in your local map. If present, replace its
+**How to treat it**: upsert. Look up `(exchange, market, symbol)` in your local map. If present, replace its
 `bids`/`asks`. If **not** present, create it — render a new order book. (Do not discard an `UPDATE`
 just because you never saw an `ADD` for it — see §4.)
 
@@ -141,15 +144,16 @@ just because you never saw an `ADD` for it — see §4.)
 {
   "seq": 3,
   "type": "DROP",
+  "exchange": "BINANCE",
   "symbol": "BTCUSDT",
   "market": "FUTURES"
 }
 ```
 
-A `DROP` has **no `bids`/`asks`** — just the identifying `symbol` + `market`. It means this ticker is
-no longer part of the screener (delisted, went non-`TRADING`, lost sync, etc.).
+A `DROP` has **no `bids`/`asks`** — just the identifying `exchange` + `symbol` + `market`. It means
+this ticker is no longer part of the screener (delisted, went non-`TRADING`, lost sync, etc.).
 
-**How to treat it**: remove that `(symbol, market)` from your local map **immediately** and stop
+**How to treat it**: remove that `(exchange, market, symbol)` book from your local map **immediately** and stop
 rendering it. There is no "coming back soon" implied — if it returns later, you'll get a fresh `ADD`
 / `UPDATE` for it.
 
@@ -198,6 +202,24 @@ const pct = (level.distance * 100).toFixed(2); // "1.23"  →  render as "1.23%"
 So: **multiply by 100, then round to 2 decimals** for a percent string. Do this at render time; keep
 the raw value if you need it for anything numeric.
 
+### 3.7 Book identity — `exchange`, `market`, `symbol`
+
+Every message that names a book (`ADD`, `UPDATE`, `DROP`, and each `SNAPSHOT` entry) carries all
+three fields, in the order `exchange`, `symbol`, `market`:
+
+| Field | Values | Notes |
+|---|---|---|
+| `exchange` | `"BINANCE"` today | More exchanges will be added. Treat it as an open string set, not a fixed enum. |
+| `symbol` | e.g. `"BTCUSDT"` | Normalized `BASEQUOTE` form — **the same spelling the rules API uses**, never an exchange-native spelling such as `BTC_USDT`. |
+| `market` | `"SPOT"` or `"FUTURES"` | |
+
+The same `symbol` + `market` can appear on several exchanges as **independent books**. Key your
+local state on all three — a key of `symbol` + `market` alone will merge two exchanges' books into
+one row that flickers between them.
+
+A user's custom rule for `BTCUSDT` / `SPOT` (rules API) applies to `BTCUSDT` spot on **every**
+exchange, so `symbol` + `market` is the right pair to relate a feed row to a rule.
+
 ---
 
 ## 4. The core rendering rule: ADD ≡ UPDATE, and UPDATE-without-ADD is normal
@@ -219,36 +241,37 @@ function onOrderBookMessage(msg) {
     case "SNAPSHOT":
       state.clear();
       for (const book of msg.data) {
-        state.set(key(book.symbol, book.market), book);
+        state.set(key(book), book);
       }
       break;
 
     case "ADD":
     case "UPDATE": {                       // ← identical handling, intentionally
-      const k = key(msg.symbol, msg.market);
       // If it's missing, create it; if present, replace its levels.
-      state.set(k, { symbol: msg.symbol, market: msg.market, bids: msg.bids, asks: msg.asks });
+      state.set(key(msg), {
+        exchange: msg.exchange, symbol: msg.symbol, market: msg.market,
+        bids: msg.bids, asks: msg.asks,
+      });
       break;
     }
 
     case "DROP":
-      state.delete(key(msg.symbol, msg.market));   // remove immediately
+      state.delete(key(msg));                      // remove immediately
       break;
   }
 }
 
-const key = (symbol, market) => `${symbol}:${market}`;
+const key = (m) => `${m.exchange}:${m.market}:${m.symbol}`;
 ```
 
 In short:
-- **`ADD` / `UPDATE`** → if the `(symbol, market)` book is missing, render it; if it exists, replace
+- **`ADD` / `UPDATE`** → if the `(exchange, market, symbol)` book is missing, render it; if it exists, replace
   its levels. Never drop an `UPDATE` for lack of a prior `ADD`.
 - **`DROP`** → remove the book immediately.
 - **`SNAPSHOT`** → wipe and rebuild everything.
 
-`market` is always one of exactly two string values: **`"SPOT"`** or **`"FUTURES"`**. Always key your
-local state on the `(symbol, market)` pair — the same symbol can exist in both markets simultaneously
-as two independent books.
+Always key your local state on the `(exchange, market, symbol)` triple (§3.7) — the same symbol can
+exist in both markets, and on several exchanges, simultaneously as independent books.
 
 ---
 
@@ -341,14 +364,15 @@ function connect() {
 | Type | Has `bids`/`asks`? | Client action |
 |---|---|---|
 | `SNAPSHOT` | Yes (array under `data[]`) | Clear all local state, rebuild from `data`. |
-| `ADD` | Yes | Upsert `(symbol, market)` — create if missing, replace levels if present. |
+| `ADD` | Yes | Upsert `(exchange, market, symbol)` — create if missing, replace levels if present. |
 | `UPDATE` | Yes | **Identical to `ADD`.** Upsert. Normal to arrive with no prior `ADD`. |
-| `DROP` | No | Remove `(symbol, market)` immediately. |
+| `DROP` | No | Remove `(exchange, market, symbol)` immediately. |
 
 **Level fields**: `price`, `quantity`, `tier` (whole number 0–4), `firstSeenMillis` (epoch ms),
 `distance` (**fraction** — do `×100`, `.toFixed(2)` for a `%`).
 
-**`market`**: always `"SPOT"` or `"FUTURES"`. Key local state on `(symbol, market)`.
+**Identity**: `exchange` (`"BINANCE"` today), `symbol` (normalized `BASEQUOTE`), `market`
+(`"SPOT"` / `"FUTURES"`). Key local state on all three.
 
 **`seq`**: ignore it.
 

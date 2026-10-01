@@ -10,6 +10,9 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Shared data structure between the classifier (consumer threads) and the broadcaster (sender thread).
  * All access goes through the three public methods — internal maps are never exposed directly.
+ *
+ * <p>Keyed by {@link dev.abu.screener_backend.exchange.Instrument#feedKey() feedKey}
+ * ({@code "EXCHANGE:MARKET:SYMBOL"}), so the same symbol on two exchanges holds two entries.
  */
 @Component
 public class OrderBookFeedStore {
@@ -20,7 +23,7 @@ public class OrderBookFeedStore {
 
     /**
      * Called by the classifier (consumer thread) after every classification cycle.
-     * Coalesces multiple writes within the same 100ms window to a single net result per ticker,
+     * Coalesces multiple writes within the same 100ms window to a single net result per instrument,
      * then syncs snapshotMap.
      */
     public void submit(String key, OrderBookUpdate update) {
@@ -49,7 +52,7 @@ public class OrderBookFeedStore {
     }
 
     /**
-     * Coalescing table — determines the net effect of two events for the same ticker
+     * Coalescing table — determines the net effect of two events for the same instrument
      * within one 100ms window. Returning {@code null} causes {@link java.util.concurrent.ConcurrentHashMap#merge} to remove the key.
      *
      * <table border="1">

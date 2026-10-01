@@ -9,7 +9,9 @@ what is built, how it is built, and what is left before a second exchange can be
 **Scope reminder**: the target is *"every tracked instrument on every enabled exchange has an
 accurate, in-sync local order book, and adding an exchange is a new package plus a YAML block."*
 Classification, per-user rules, the feed and the client WebSocket server are out of scope as
-features — they are only touched where identity re-keying forced it.
+features, except for venue-aware keying (`.claude/plans/venue-aware-classification.md`, done):
+the same symbol on two exchanges gets separate state, feed entries and payloads, while a user rule
+still applies on every exchange.
 
 Where this document and the code disagree, the code is right.
 
@@ -51,9 +53,12 @@ reach `SYNCED` in roughly 6 minutes** and hold. That is the designed ramp — th
 - **`Venue = (Exchange, Market)`** is the adapter unit: `Venue.BINANCE_SPOT`, `Venue.BINANCE_FUTURES`.
   `Market` remains the persistence- and API-facing type; `Venue.of(exchange, market)` bridges the two.
   This is what let identity land without a Flyway migration or a frontend contract change.
-- **`Instrument`** is a record carrying `id`, `venue`, `nativeSymbol`, `base`, `quote`, `canonical`,
-  plus two precomputed strings: `feedKey` (`SYMBOL:MARKET`, byte-identical to the old key because the
-  per-user rule map is keyed on it) and `logName` (`VENUE/SYMBOL`, log lines only).
+- **`Instrument`** is a record carrying `id`, `venue`, `nativeSymbol`, `base`, `quote`, plus four
+  precomputed strings: `symbol` (`base + quote`, the normalized `BASEQUOTE` spelling), `ruleKey`
+  (`BTCUSDT:SPOT`, venue-agnostic, byte-identical to the stored rule format — for Binance
+  `base + quote == nativeSymbol`), `feedKey` (`BINANCE:SPOT:BTCUSDT`, one instrument; keys
+  classification state and feed stores) and `logName` (`VENUE/SYMBOL`, log lines only). The unread
+  `canonical` (`BTC/USDT`) field was removed.
 - **`InstrumentRegistry`** hands out dense ids: stable across refreshes, never transferred to a
   different instrument (a delisting leaves a hole), never persisted. `describe(int)` is the cold-path
   name lookup that keeps logs readable without putting `String symbol` back on the hot path.
@@ -462,6 +467,7 @@ and a YAML block.* Measured against that, here is what is already additive and w
 | Snapshot fetching | `SnapshotFetchQueue` hardcodes `/api/v3/depth` and `/fapi/v1/depth` and has a `dispatchSpot`/`dispatchFutures` pair | One `SnapshotRequestQueue` class parameterised per model-A venue behind a `SnapshotSource` (P2 step 3) |
 | Request budget | `WeightGuard` / `WeightLimitFilter` assume Binance's `x-mbx-used-weight-1m` header and a wall-clock-minute reset | `RequestBudget` with `HeaderFeedbackBudget` + `LocalTokenBucketBudget`, one instance per venue (P2 step 4) |
 | Config | `screener.orderbook.*` and `screener.websocket.*` still sit outside `screener.exchanges.*`; the snapshot queue sizes are read via `@Value` rather than through `OrderbookProperties` | Fold in under the venue block (P2 step 6) |
+| Rule validation | `ClassificationRuleService.validateTrackedTicker` checks `Venue.of(Exchange.BINANCE, market)` by native symbol, so a rule for a symbol tracked only on another exchange (or spelled differently there) is rejected | Check "tracked on any exchange for this market" by `Instrument.symbol()` — needs a registry lookup by `ruleKey` |
 
 Once those three land, Bybit becomes a new package plus YAML. Bybit is venue #2 deliberately: it is
 model B (in-stream snapshot, resubscribe-to-recover, application-level heartbeat, topic routing), so
@@ -550,6 +556,16 @@ Settled, with the reasoning, so they are not relitigated:
 11. **No endpoint reads a full order book.** `/api/monitoring/orderbook` is abandoned; observability
     comes from aggregate state, not level dumps.
 12. **Bybit is venue #2**, not MEXC — model B exercises every axis on which the SPI could be wrong.
+13. **User rules are exchange-independent.** Keyed `(symbol, market)`; one rule applies on every
+    exchange. Per-venue rules, if ever wanted, are an additive nullable `exchange` column.
+14. **The rule key is built from `base + quote`**, not `nativeSymbol`, so it means the same thing on
+    every exchange. No migration: for Binance the two are equal.
+15. **Classification state and feed entries are keyed by `feedKey`** (`EXCHANGE:MARKET:SYMBOL`), so two
+    exchanges' books never share a `SymbolState` or overwrite each other's feed entry.
+16. **String keys, not dense arrays,** in the classifier and feed stores — precomputed once per
+    instrument; growth semantics for cross-shard user contexts aren't worth it.
+17. **The WebSocket payload carries `exchange`**, and `symbol` is the normalized `BASEQUOTE` form
+    matching the rule API. Clients key books on `(exchange, market, symbol)`.
 
 ---
 

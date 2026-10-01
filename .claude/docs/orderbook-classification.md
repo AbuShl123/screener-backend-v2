@@ -19,6 +19,17 @@ pass** for every connected user who has custom rules for that `(symbol, market)`
 write into two different feed stores, and the broadcaster merges them per session so that every
 client receives exactly one authoritative message per ticker per tick.
 
+**Two keys, two jobs.** Every `Instrument` carries precomputed strings for each:
+
+| Key | Example | Scope | Used for |
+|---|---|---|---|
+| `ruleKey` | `BTCUSDT:SPOT` | venue-agnostic (`base + quote` + market) | finding a user's rule (`UserClassificationRules`), the broadcaster's "configured" filter |
+| `feedKey` | `BINANCE:SPOT:BTCUSDT` | one instrument | `SymbolState` maps (default + per user), both kinds of `OrderBookFeedStore` |
+
+So a user's rule applies to a symbol on **every** exchange, while each exchange's book is
+classified, stored and delivered separately. `isHighLiquidity` takes `Instrument.symbol()`
+(`BTCUSDT`), never the native spelling.
+
 Packages involved:
 
 | Package | Role in classification |
@@ -192,10 +203,10 @@ broadcaster (§6.2).
 ### 3.1 `UserClassificationRules` — the per-user lookup table
 
 `analysis/UserClassificationRules.java` is a `Map<String, ThresholdClassificationRule>` keyed by
-`"SYMBOL:MARKET"` plus a cached `keySet()`. It deliberately does **not** implement
-`ClassificationRule`: the classifier does an O(1) `configuredKeys().contains(key)` membership test
-first, and only then fetches the leaf rule for that key. Keys absent from the map are never touched
-by the user pass.
+`ruleKey` (`"BASEQUOTE:MARKET"`) plus a cached `keySet()`. It deliberately does **not** implement
+`ClassificationRule`: the classifier does one `ruleFor(ruleKey)` lookup and treats `null` as "not
+configured"; the broadcaster uses `configuredKeys()` for filtering. Keys absent from the map are
+never touched by the user pass.
 
 ### 3.2 `UserClassificationContext` — a user's classification session
 
@@ -223,21 +234,21 @@ because its key is pinned to one shard.
 ### 4.1 Two-pass `process(OrderBook)`
 
 ```java
-public void process(OrderBook ob) {
-    String key = ob.getSymbol() + ":" + ob.getMarket();
-    boolean highLiquidity = defaultRule.isHighLiquidity(ob.getSymbol());   // once per book
+public void process(Instrument inst, OrderBook ob) {
+    String stateKey = inst.feedKey();                                   // venue-specific
+    String ruleKey  = inst.ruleKey();                                   // venue-agnostic
+    boolean highLiquidity = defaultRule.isHighLiquidity(inst.symbol()); // once per book
 
     // Pass 1 — default, always
-    SymbolState defaultState = defaultStates.computeIfAbsent(key, k -> new SymbolState());
-    classifyOne(ob, key, defaultState, defaultRule, feedStore, highLiquidity);
+    SymbolState defaultState = defaultStates.computeIfAbsent(stateKey, k -> new SymbolState());
+    classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity);
 
-    // Pass 2 — per user, only for contexts that configured this key
+    // Pass 2 — per user, only for contexts with a rule for this ruleKey
     for (UserClassificationContext ctx : activeUserContexts) {
-        if (ctx.rule().configuredKeys().contains(key)) {
-            classifyOne(ob, key,
-                        ctx.states().computeIfAbsent(key, k -> new SymbolState()),
-                        ctx.rule().ruleFor(key),
-                        ctx.feedStore(), highLiquidity);
+        ThresholdClassificationRule rule = ctx.rule().ruleFor(ruleKey);
+        if (rule != null) {
+            SymbolState state = ctx.states().computeIfAbsent(stateKey, k -> new SymbolState());
+            classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity);
         }
     }
 }
@@ -319,7 +330,7 @@ This is the rule that decides which order books are transmitted at all:
 
 ### 4.4 The per-symbol activity state machine
 
-Each `(symbol, market)` key, **per classification context**, carries a `SymbolState`
+Each instrument (`feedKey`), **per classification context**, carries a `SymbolState`
 (`analysis/SymbolState.java`) that is either `LOW` or `HIGH`:
 
 | Current | Condition | Emitted |
@@ -371,7 +382,8 @@ the classifier can keep mutating its own arrays without racing the broadcaster.
 `@Component` (default classification) and one plain `new` instance per active
 `UserClassificationContext`.
 
-It holds two maps of `"SYMBOL:MARKET" → OrderBookUpdate`:
+It holds two maps of `feedKey → OrderBookUpdate` (`"EXCHANGE:MARKET:SYMBOL"`; the update itself
+carries its `Instrument`):
 
 - **`snapshotMap`** — the current live state of every visible ticker. Used to build a `SNAPSHOT`
   for a newly connected client. `DROP` removes the key; `ADD`/`UPDATE` overwrite it.
@@ -443,26 +455,31 @@ sb.append("{\"seq\":").append(seq).append(',').append(body, 1, body.length());
 
 ### 6.2 The per-user merge
 
-This is where default and custom classification come back together. Bodies are built **keyed** by
-`"SYMBOL:MARKET"` precisely so they can be filtered per session:
+This is where default and custom classification come back together. Each body is built once and
+paired with its instrument's `ruleKey` (`KeyedBody(ruleKey, body)`) precisely so it can be filtered
+per session:
 
 - A **default session** (`context == null`) receives the global bodies verbatim.
 - A **custom session** receives:
   1. every body from its **personal** feed (its configured keys, with its custom tiers), plus
-  2. every body from the **global** feed whose key it has **not** configured.
+  2. every body from the **global** feed whose `ruleKey` it has **not** configured.
 
 ```java
 Set<String> configured = ctx.rule().configuredKeys();
-for (String body : personalBodies.values()) batch.add(injectSeq(body, seq++));
-for (var e : globalBodies.entrySet())
-    if (!configured.contains(e.getKey())) batch.add(injectSeq(e.getValue(), seq++));
+for (KeyedBody kb : personalBodies) batch.add(injectSeq(kb.body(), seq++));
+for (KeyedBody kb : globalBodies)
+    if (!configured.contains(kb.ruleKey())) batch.add(injectSeq(kb.body(), seq++));
 ```
 
-This guarantees **exactly one authoritative update per `(symbol, market)` per session per tick** —
-custom tiers where the user configured them, default tiers everywhere else, and never both.
+This guarantees **exactly one authoritative update per instrument per session per tick** —
+custom tiers where the user configured them, default tiers everywhere else, and never both. Because
+the filter tests `ruleKey`, a `BTCUSDT:SPOT` rule removes `BTCUSDT` spot from the global feed on
+every exchange, and the personal feed supplies one entry per exchange instead.
 
-Snapshots use the same rule via `mergedSnapshot(ctx)`: the global snapshot minus the user's
-configured keys, unioned with the user's personal snapshot. Snapshots are rare (connect / explicit
+Snapshots use the same rule via `mergedSnapshot(ctx)`: the global snapshot minus every entry whose
+`ruleKey` the user configured, unioned with the user's personal snapshot (both keyed by `feedKey`).
+Every message — `ADD`, `UPDATE`, `DROP` and each `SNAPSHOT` entry — carries `exchange`, `symbol`
+(normalized `BASEQUOTE`) and `market`. Snapshots are rare (connect / explicit
 `SNAPSHOT_REQUEST`), so building a small per-session `LinkedHashMap` there is acceptable.
 
 **Known cold-start gap:** a user connecting mid-drain may appear in the session list for a context
@@ -665,17 +682,17 @@ Binance depth diff (spot 1/s, futures 2/s)
   → DepthEventPublisher → Disruptor ring buffer, shard = instrumentId & (shardCount - 1)
   → DepthEventHandler.onEvent  [consumer thread, one per shard]
       → OrderBookProcessor.process → OrderBook (TreeMap update, distance recompute, price filter)
-      → OrderBookClassifier.process(ob)
+      → OrderBookClassifier.process(inst, ob)
           ├─ Pass 1  default rule  → selectTopK ×2 → visibility gate → LOW/HIGH machine
-          │                        → globalFeed.submit(key, ADD|UPDATE|DROP)
-          └─ Pass 2  for each active user context that configured this key
+          │                        → globalFeed.submit(feedKey, ADD|UPDATE|DROP)
+          └─ Pass 2  for each active user context with a rule for this ruleKey
                                    → same machine with the user's ThresholdClassificationRule
-                                   → ctx.feedStore().submit(key, …)
+                                   → ctx.feedStore().submit(feedKey, …)
   → OrderBookFeedStore: coalesce into pendingRef, mirror into snapshotMap
   → OrderBookBroadcaster.drain()  [@Scheduled, every 100ms, single thread]
       → drain global + each context's pending
-      → build JSON bodies once, keyed by SYMBOL:MARKET
-      → per session: personal bodies + global bodies for unconfigured keys, seq injected
+      → build JSON bodies once, each paired with its ruleKey
+      → per session: personal bodies + global bodies for unconfigured ruleKeys, seq injected
       → session.enqueueBatch(...)   (non-blocking; false ⇒ evict)
   → UserWebSocketSession virtual thread: queue.take() → sendText(...)
   → Client
