@@ -64,7 +64,6 @@ screener:
           stream-url: wss://stream.binance.com/ws
           stream-topic: "{symbol}@depth"
           max-streams-per-connection: 1024
-          weight-threshold: 5800
           min-connections: 2
           max-connections: 8
           subscribe-chunk-size: 400
@@ -79,7 +78,6 @@ screener:
           stream-url: wss://fstream.binance.com/ws
           stream-topic: "{symbol}@depth@500ms"
           max-streams-per-connection: 1024
-          weight-threshold: 2200
           min-connections: 3
           max-connections: 8
           subscribe-chunk-size: 400

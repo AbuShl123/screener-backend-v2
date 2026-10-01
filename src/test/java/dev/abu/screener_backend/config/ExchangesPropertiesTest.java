@@ -21,7 +21,7 @@ class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
         RestProperties rest = new RestProperties("https://example", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1000, 1, 1, 100, 120);
+        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1, 1, 100, 120);
     }
 
     private static ExchangesProperties binance(boolean enabled, Market... markets) {

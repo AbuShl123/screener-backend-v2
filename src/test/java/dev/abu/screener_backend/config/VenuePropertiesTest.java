@@ -17,7 +17,7 @@ class VenuePropertiesTest {
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
     private static VenueProperties props(String topic, int chunkSize, int heartbeatSeconds) {
-        return new VenueProperties("wss://x", REST, topic, 1024, 1000, 1, 1, chunkSize, heartbeatSeconds);
+        return new VenueProperties("wss://x", REST, topic, 1024, 1, 1, chunkSize, heartbeatSeconds);
     }
 
     @Test

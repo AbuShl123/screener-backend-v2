@@ -97,7 +97,6 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
             RestProperties rest,
             String streamTopic,
             int maxStreamsPerConnection,
-            long weightThreshold,
             int minConnections,
             int maxConnections,
             int subscribeChunkSize,

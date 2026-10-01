@@ -67,7 +67,7 @@ public class BinanceAdapterConfig {
     @Bean
     BinanceRestClient binanceSpotRestClient(ExchangeWebClientFactory webClientFactory, ExchangesProperties exchanges) {
         ExchangesProperties.VenueProperties props = exchanges.venue(Venue.BINANCE_SPOT);
-        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(props.weightThreshold()), "SPOT");
+        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(5800), "SPOT");
         WebClient webClient = webClientFactory.create(props.rest(), filter);
         return new BinanceRestClient(Venue.BINANCE_SPOT, webClient, BinancePaths.SPOT);
     }
@@ -75,7 +75,7 @@ public class BinanceAdapterConfig {
     @Bean
     BinanceRestClient binanceFuturesRestClient(ExchangeWebClientFactory webClientFactory, ExchangesProperties exchanges) {
         ExchangesProperties.VenueProperties props = exchanges.venue(Venue.BINANCE_FUTURES);
-        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(props.weightThreshold()), "FUTURES");
+        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(2200), "FUTURES");
         WebClient webClient = webClientFactory.create(props.rest(), filter);
         return new BinanceRestClient(Venue.BINANCE_FUTURES, webClient, BinancePaths.FUTURES);
     }

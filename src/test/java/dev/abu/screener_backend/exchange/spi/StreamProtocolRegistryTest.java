@@ -36,7 +36,7 @@ class StreamProtocolRegistryTest {
     private static ExchangesProperties enabled(Market... markets) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
         for (Market m : markets) {
-            venues.put(m, new VenueProperties("wss://x", REST, "{symbol}@depth", 1024, 1000, 1, 1, 400, 120));
+            venues.put(m, new VenueProperties("wss://x", REST, "{symbol}@depth", 1024, 1, 1, 400, 120));
         }
         return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues)));
     }

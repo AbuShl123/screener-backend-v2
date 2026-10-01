@@ -90,8 +90,8 @@ class BinanceAdapterConfigTest {
     void everyBinanceVenueHasStreamBinding() {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties spot = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1000, 1, 1, 400, 120);
-        VenueProperties futures = new VenueProperties("wss://x", rest, "{symbol}@depth@500ms", 1024, 1000, 1, 1, 400, 120);
+        VenueProperties spot = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 400, 120);
+        VenueProperties futures = new VenueProperties("wss://x", rest, "{symbol}@depth@500ms", 1024, 1, 1, 400, 120);
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures))));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
