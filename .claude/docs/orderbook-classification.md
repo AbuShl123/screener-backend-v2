@@ -272,10 +272,11 @@ monotonically** as the iteration proceeds. For each level:
 ```java
 double notional = price * quantity;
 int tier = rule.computeTier(notional, distance, highLiquidity);
+if (tier == 0) continue;   // tier-0 levels are never selected
 tryInsert(scratch, entry, tier, notional, distance);
 ```
 
-Levels are ranked by:
+Only tier ≥ 1 levels enter the buffer. Among them, levels are ranked by:
 
 ```
 tier DESC, notional DESC, distance ASC
@@ -288,24 +289,23 @@ elements shift right in place until the sorted position is found. **No heap allo
 The monotonic distance ordering enables an early break:
 
 ```java
-if (s.topCount == TOP_LEVELS && distance > maxDist) break;
+if (distance > maxDist) break;
 ```
 
-Once the buffer holds 5 entries and the iteration has passed the rule's widest `maxDistance`,
-everything remaining is necessarily tier 0 and already out-ranked — so most books are only partially
-scanned rather than fully walked.
+Once the iteration has passed the rule's widest `maxDistance`, everything remaining is necessarily
+tier 0 and can never be selected — so books are scanned only out to `maxDistance` (typically
+2.5–5%) rather than fully walked to the price filter.
 
 ### 4.3 The visibility gate — which books reach the user
 
 `selectTopK` returns:
 
 ```java
-return s.topCount > 0 && s.topTiers[0] >= 1;   // visible iff the best slot is tier ≥ 1
+return s.topCount > 0;   // visible iff any tier ≥ 1 level was selected
 ```
 
-Because the scratch buffer is sorted tier-descending, slot 0 holds the highest tier present anywhere
-in that side of the book. So a side is **visible** iff the book contains at least one level of
-tier ≥ 1.
+Since only tier ≥ 1 levels enter the buffer, a side is **visible** iff it contains at least one
+level of tier ≥ 1.
 
 This is the rule that decides which order books are transmitted at all:
 
@@ -314,19 +314,17 @@ This is the rule that decides which order books are transmitted at all:
   user's feed. Across ~1000 tracked streams, this is the overwhelming majority of books at any given
   moment.
 - **Visibility is evaluated per side, but emission is per book.** Both sides are *selected* before
-  either is *applied*, because a visible ask side forces the (possibly tier-0) bid side to be sent
-  too — the client needs both sides of the book to render it:
+  either is *applied*: when one side is visible, the other is still applied so that a side which
+  lost its last qualifying level clears its stale slots and ships as an empty array:
 
   ```java
   boolean bidVisible = selectTopK(bids, state.bidScratch, rule, highLiquidity);
   boolean askVisible = selectTopK(asks, state.askScratch, rule, highLiquidity);
   if (!bidVisible && !askVisible) { /* LOW: skip entirely */ }
   ```
-- **Tier-0 levels are used as filler.** Once a book is visible, the top-5 buffer is filled
-  regardless of tier, so clients do receive `"tier": 0` entries — they pad out the 5 slots when
-  fewer than 5 qualifying levels exist. Tier 0 on the wire means "shown for context, cleared no
-  threshold".
-- **`tier` on the wire is bounded to `0..4`.**
+- **Tier-0 levels are never sent.** Each side carries 0–5 levels, all tier ≥ 1. A visible book may
+  ship one side as `[]`.
+- **`tier` on the wire is bounded to `1..4`.**
 
 ### 4.4 The per-symbol activity state machine
 
@@ -528,7 +526,7 @@ Each level:
 {"price": 65432.1, "quantity": 0.85, "tier": 2, "firstSeenMillis": 1716680000000, "distance": 0.0123}
 ```
 
-- `tier` — `0..4`, as classified for **this** user (custom if configured, default otherwise).
+- `tier` — `1..4`, as classified for **this** user (custom if configured, default otherwise).
 - `distance` — raw fraction at full float precision; clients do `×100` and round for display.
 - `bids`/`asks` — best-first, **at most 5**, possibly fewer.
 - `ADD` and `UPDATE` are structurally identical and clients should treat both as an upsert; because
@@ -733,8 +731,8 @@ The tier tables, `TOP_LEVELS`, and the broadcaster interval are **not** external
 
 - **A book with only tier-0 levels never reaches any client**, and never allocates a
   `ClassifiedLevel`. This is the normal state for most of the ~1000 tracked streams.
-- **A visible book always ships both sides**, even when one side is entirely tier 0.
-- **Tier 0 appears on the wire** as filler in the top-5 slots.
+- **Tier 0 never appears on the wire.** A visible book ships both `bids` and `asks` keys, but
+  each holds only tier ≥ 1 levels — so a side can have fewer than 5 entries, or be `[]`.
 - **The same ticker can be `HIGH` for one user and `LOW` for another** — activity state is per
   context, not per book.
 - **Stricter user rules can hide a ticker the default feed shows.** Since the broadcaster excludes

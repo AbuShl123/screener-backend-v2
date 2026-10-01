@@ -4,6 +4,7 @@ import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.InstrumentTest;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.book.OrderBook;
+import dev.abu.screener_backend.feed.ClassifiedLevel;
 import dev.abu.screener_backend.feed.FeedEventType;
 import dev.abu.screener_backend.feed.OrderBookFeedStore;
 import dev.abu.screener_backend.feed.OrderBookUpdate;
@@ -17,12 +18,13 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Venue-awareness of {@link OrderBookClassifier}: state and feed entries are keyed by
- * {@code feedKey}, user rules are matched by {@code ruleKey}.
+ * Venue-awareness of {@link OrderBookClassifier} (state and feed entries are keyed by
+ * {@code feedKey}, user rules are matched by {@code ruleKey}) and the tier-0 exclusion.
  */
 class OrderBookClassifierTest {
 
@@ -96,5 +98,52 @@ class OrderBookClassifierTest {
 
         assertTrue(ctx.states().isEmpty());
         assertTrue(ctx.feedStore().getSnapshot().isEmpty());
+    }
+
+    @Test
+    @DisplayName("tier-0 levels are never emitted, and a side with none ships empty")
+    void tierZeroLevelsAreNeverEmitted() {
+        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule());
+        UserClassificationContext ctx = contextWithRule("BTCUSDT:SPOT");
+        classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
+
+        // One ~$10M tier-1 bid; every other level is ~$1K and tier 0 under the 100K/1% rule.
+        OrderBook ob = syncedBook();
+        ob.applyLevel(true, 99_980.0, 0.01, T0);
+        ob.applyLevel(true, 99_970.0, 0.01, T0);
+        ob.applyLevel(false, 100_020.0, 0.01, T0);
+        ob.computeDistance();
+
+        classifier.process(BINANCE_BTC, ob);
+
+        OrderBookUpdate update = ctx.feedStore().getSnapshot().get(BINANCE_BTC.feedKey());
+        assertEquals(FeedEventType.ADD, update.type());
+        assertEquals(99_990.0, update.bids()[0].price());
+        assertEquals(1, update.bids()[0].tier());
+        for (int i = 1; i < OrderBookClassifier.TOP_LEVELS; i++) assertNull(update.bids()[i]);
+        for (ClassifiedLevel ask : update.asks()) assertNull(ask);
+    }
+
+    @Test
+    @DisplayName("a side losing its last tier-1+ level is cleared by an UPDATE")
+    void sideLosingLastQualifyingLevelIsCleared() {
+        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule());
+        UserClassificationContext ctx = contextWithRule("BTCUSDT:SPOT");
+        classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
+
+        OrderBook ob = syncedBook();
+        ob.applyLevel(false, 100_010.0, 100.0, T0); // ask becomes ~$10M, tier 1
+        ob.computeDistance();
+        classifier.process(BINANCE_BTC, ob);
+        assertEquals(1, ctx.feedStore().getSnapshot().get(BINANCE_BTC.feedKey()).asks()[0].tier());
+
+        ob.applyLevel(false, 100_010.0, 0.01, T0);  // back to ~$1K, tier 0
+        ob.computeDistance();
+        classifier.process(BINANCE_BTC, ob);
+
+        OrderBookUpdate update = ctx.feedStore().getSnapshot().get(BINANCE_BTC.feedKey());
+        assertEquals(FeedEventType.UPDATE, update.type());
+        assertEquals(1, update.bids()[0].tier());
+        for (ClassifiedLevel ask : update.asks()) assertNull(ask);
     }
 }

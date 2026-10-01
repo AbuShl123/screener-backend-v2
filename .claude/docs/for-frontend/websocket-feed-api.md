@@ -175,7 +175,7 @@ Each element of a `bids` or `asks` array:
 |---|---|---|
 | `price` | number | Price level. |
 | `quantity` | number | Size resting at that price (base asset units). |
-| `tier` | integer | A whole number bound to the range **0–4 inclusive**. Use it to drive visual emphasis (color/weight). |
+| `tier` | integer | A whole number bound to the range **1–4 inclusive** — tier 0 is never sent. Use it to drive visual emphasis (color/weight). |
 | `firstSeenMillis` | integer | Unix epoch **milliseconds** — the time this order was first detected. Treat it as the order's age: `Date.now() - firstSeenMillis`. |
 | `distance` | number | **Fractional** distance from mid-price. `0.0123` means **1.23%**. See §3.6 — you must format this yourself. |
 
@@ -368,7 +368,7 @@ function connect() {
 | `UPDATE` | Yes | **Identical to `ADD`.** Upsert. Normal to arrive with no prior `ADD`. |
 | `DROP` | No | Remove `(exchange, market, symbol)` immediately. |
 
-**Level fields**: `price`, `quantity`, `tier` (whole number 0–4), `firstSeenMillis` (epoch ms),
+**Level fields**: `price`, `quantity`, `tier` (whole number 1–4), `firstSeenMillis` (epoch ms),
 `distance` (**fraction** — do `×100`, `.toFixed(2)` for a `%`).
 
 **Identity**: `exchange` (`"BINANCE"` today), `symbol` (normalized `BASEQUOTE`), `market`

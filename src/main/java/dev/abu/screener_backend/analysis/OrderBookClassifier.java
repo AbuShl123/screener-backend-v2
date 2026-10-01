@@ -65,25 +65,26 @@ import java.util.TreeMap;
  *
  * <h2>Classification</h2>
  * Every level in the book is assigned a tier (0–4, where 4 is most important and 0 is
- * the default fall-through). The top {@value #TOP_LEVELS} levels are selected by
- * {@code (tier DESC, notional DESC, distance ASC)}. A symbol is visible only if at least
- * one of its top levels has tier &ge; 1; tier-0 levels fill remaining slots when fewer
- * than {@value #TOP_LEVELS} qualifying levels exist.
+ * the default fall-through). Up to {@value #TOP_LEVELS} tier-&ge;1 levels per side are selected
+ * by {@code (tier DESC, notional DESC, distance ASC)}. <b>Tier-0 levels are never sent</b>: a
+ * side with fewer qualifying levels ships fewer entries (possibly none), and a symbol is visible
+ * only if at least one side has a tier-&ge;1 level.
  *
  * <h2>Select / apply split and the LOW-skip</h2>
  * {@link #classifyOne} runs in two stages per side:
  * <ol>
  *   <li>{@link #selectTopK selectTopK} walks the {@link TreeMap} from best (closest to spread)
- *       outward and fills a pre-allocated top-K {@link SymbolState.Scratch} buffer, returning
- *       whether that side is visible (best slot has tier &ge; 1). Because both maps iterate in
- *       monotonically increasing distance order, it early-breaks once the buffer is full and the
- *       level is beyond {@link ClassificationRule#maxDistance}.</li>
+ *       outward and fills a pre-allocated top-K {@link SymbolState.Scratch} buffer with tier-&ge;1
+ *       levels only, returning whether that side is visible (anything was selected). Because both
+ *       maps iterate in monotonically increasing distance order, it early-breaks at the first
+ *       level beyond {@link ClassificationRule#maxDistance}, past which every level is tier 0.</li>
  *   <li>{@link #applyNewOrders applyNewOrders} writes the selected entries into the persistent
  *       {@code workBids}/{@code workAsks} arrays, allocating a {@link ClassifiedLevel} only when
  *       a slot's value actually changed.</li>
  * </ol>
  * Both sides are <b>selected</b> before either is <b>applied</b>, because a visible ask side
- * forces us to still emit the (tier-0) bids and vice-versa. When neither side is visible the
+ * still requires the bid side to be applied (and vice-versa) — an emptied side must clear its
+ * stale slots so the client receives an empty array for it. When neither side is visible the
  * book is LOW and the apply stage is skipped entirely — <b>no {@link ClassifiedLevel} is
  * allocated for the LOW majority of books</b>, which is the dominant GC win.
  */
@@ -189,8 +190,9 @@ public class OrderBookClassifier {
 
     /**
      * Iterates all entries in {@code levels} (best→worst by distance) and selects the top
-     * {@value #TOP_LEVELS} by (tier DESC, notional DESC, distance ASC) into {@code s}.
-     * Returns {@code true} if the side is visible, i.e. its best selected slot has tier &ge; 1.
+     * {@value #TOP_LEVELS} tier-&ge;1 levels by (tier DESC, notional DESC, distance ASC) into
+     * {@code s}. Tier-0 levels are never selected. Returns {@code true} if the side is visible,
+     * i.e. at least one level was selected.
      */
     private boolean selectTopK(
             TreeMap<Double, PriceLevelEntry> levels,
@@ -204,16 +206,17 @@ public class OrderBookClassifier {
             double distance = e.getValue().distance;
 
             // Distance increases monotonically as we iterate both TreeMaps (bids from best bid
-            // outward, asks from best ask outward). Once the buffer is full, nothing further can
-            // place; everything beyond maxDist is tier-0.
-            if (s.topCount == TOP_LEVELS && distance > maxDist) break;
+            // outward, asks from best ask outward). Everything beyond maxDist is tier-0, so
+            // nothing further can be selected.
+            if (distance > maxDist) break;
 
             double notional = e.getKey() * e.getValue().quantity;
             int tier = rule.computeTier(notional, distance, highLiquidity);
+            if (tier == 0) continue; // tier-0 levels are never sent to clients
             tryInsert(s, e, tier, notional, distance);
         }
 
-        return s.topCount > 0 && s.topTiers[0] >= 1; // visible iff best slot is tier ≥ 1
+        return s.topCount > 0; // visible iff any tier ≥ 1 level was selected
     }
 
     /**
