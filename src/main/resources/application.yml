@@ -54,6 +54,13 @@ screener:
           - USD1USDT
           - XAUTUSDT
           - PAXGUSDT
+      # Core snapshot request queue, one per Binance venue, all shaped alike. max-batch-size also
+      # caps how many books buffer diffs at once. batch-timeout is a safety net for a batch that
+      # never completes and must exceed every venue's rest.response-timeout.
+      snapshot-queue:
+        max-batch-size: 10
+        flush-interval: PT0.25S
+        batch-timeout: PT30S
       venues:
         SPOT:
           rest:
@@ -61,13 +68,20 @@ screener:
             codec-buffer-size-mb: 18
             connect-timeout: PT5S
             response-timeout: PT10S
+          # How Binance prices and paces this venue's snapshot requests. depth-limit must be 100,
+          # 500 or 1000. weight-reserve is left unspent for discovery calls, which the snapshot
+          # fetcher does not see. ban-fallback applies to a 418 without Retry-After.
+          snapshot:
+            depth-limit: 1000
+            weight-limit-per-minute: 6000
+            weight-reserve: 200
+            ban-fallback: PT2M
           stream-url: wss://stream.binance.com/ws
           stream-topic: "{symbol}@depth"
           max-streams-per-connection: 1024
           min-connections: 2
           max-connections: 8
           subscribe-chunk-size: 400
-          # How often to send a WebSocket PING, preventing a server-side idle close (1006).
           heartbeat-interval-seconds: 120
         FUTURES:
           rest:
@@ -75,13 +89,17 @@ screener:
             codec-buffer-size-mb: 18
             connect-timeout: PT5S
             response-timeout: PT10S
+          snapshot:
+            depth-limit: 1000
+            weight-limit-per-minute: 2400
+            weight-reserve: 200
+            ban-fallback: PT2M
           stream-url: wss://fstream.binance.com/ws
           stream-topic: "{symbol}@depth@500ms"
           max-streams-per-connection: 1024
           min-connections: 3
           max-connections: 8
           subscribe-chunk-size: 400
-          # How often to send a WebSocket PING, preventing a server-side idle close (1006).
           heartbeat-interval-seconds: 120
 
   discovery:

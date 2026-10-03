@@ -1,64 +1,112 @@
 package dev.abu.screener_backend.exchange.binance;
 
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
+
 /**
- * Tracks Binance API weight usage for one market (spot or futures) and calculates
- * how long to delay the next request when the budget is nearly exhausted.
+ * Binance request-weight and ban state for one venue. Owned by that venue's
+ * {@link BinanceSnapshotFetcher} and shared with nothing else; it only records, it never delays.
  *
- * <p>Binance resets the weight counter at the wall-clock minute boundary, not on a
- * rolling 60-second window. The delay formula exploits this: once we know the server
- * send time we can compute the exact reset instant without relying on local clock skew.
+ * <p><b>The window.</b> Binance resets {@code x-mbx-used-weight-1m} at the server's wall-clock
+ * minute, not on a rolling 60s window. The window counts as rolled once the <em>local time elapsed
+ * since the response was received</em> covers what was left of its server minute according to its
+ * {@code Date} header. Only durations are compared, so clock skew cancels out — comparing local
+ * {@code now} against a server-minute boundary instead let a local clock running ahead send a full
+ * batch into the old window (seen live: 2.3s of skew, a 429 one second into each minute). Both
+ * error terms err on the safe side: {@code Date} is truncated to the second and receipt trails the
+ * send by the network latency, so the roll is seen up to about a second late, never early.
  *
- * <p>Thread-safe via {@code volatile} — sufficient for a safety-net guard where an
- * occasional torn read under heavy concurrency is preferable to lock overhead.
+ * <p><b>Thread safety.</b> {@link #remaining} and {@link #isBanned} run on shard consumer threads
+ * (through {@code isAcceptingRequests()}), so they are a volatile read each — no lock, no
+ * allocation. Writers come from HTTP threads and are rare, so they synchronize; an observation is
+ * one immutable record so a reader never pairs one response's weight with another's timestamp.
  */
+@Slf4j
 public class WeightGuard {
 
-    private volatile long lastObservedWeight = 0;
-    private volatile long lastObservedAtMs = 0;
-    private final long threshold;
-
-    public WeightGuard(long threshold) {
-        this.threshold = threshold;
-    }
+    static final String WEIGHT_HEADER = "x-mbx-used-weight-1m";
 
     /**
-     * Returns the number of milliseconds the caller should delay before sending
-     * the next request, or {@code 0} if the request may proceed immediately.
-     *
-     * <p>Algorithm:
-     * <ol>
-     *   <li>If the wall-clock minute has already flipped since the last observation,
-     *       Binance has reset the counter — no delay needed.</li>
-     *   <li>If the last observed weight is below the threshold — no delay needed.</li>
-     *   <li>Otherwise wait until the next minute boundary plus a 1-second safety buffer.</li>
-     * </ol>
+     * @param atMs         server send time, from {@code Date}
+     * @param receivedAtMs local time the response was received
      */
-    public long delayMillisRequired() {
-        long now = System.currentTimeMillis();
-        long nextMinuteBoundaryMs = (lastObservedAtMs / 60_000L + 1L) * 60_000L;
-        if (now >= nextMinuteBoundaryMs) return 0L;
-        if (lastObservedWeight < threshold) return 0L;
-        return (nextMinuteBoundaryMs - now) + 1_000L;
+    private record Observation(long atMs, long receivedAtMs, long weight) {
+
+        boolean windowRolled(long nowMs) {
+            return nowMs - receivedAtMs >= nextMinuteBoundary(atMs) - atMs;
+        }
     }
 
+    /** {@code null} until the first response with a weight header. */
+    private volatile Observation last;
+    private volatile long bannedUntilMs;
+
     /**
-     * Records the weight value from a Binance response.
+     * Records the weight counter from a Binance response, success or error. Headers without a
+     * weight are ignored; an absent or unparseable {@code Date} falls back to local time.
      *
-     * <p>{@code sentTimeMs} must be the server-side send time from the HTTP {@code Date}
-     * header — not {@code System.currentTimeMillis()} — so that minute boundary detection
-     * is anchored to Binance's clock rather than local receive time.
-     *
-     * <p>Out-of-order responses are discarded when both conditions hold:
-     * the response was sent earlier than the last recorded observation AND its weight
-     * is lower. Within a single minute window Binance's counter is strictly non-decreasing,
-     * so a response that is both older and lighter is genuinely stale and carries no new
-     * information.
+     * @param receivedAtMs local time the response was received
      */
-    public void observe(long sentTimeMs, long weight) {
-        if (sentTimeMs < lastObservedAtMs && weight < lastObservedWeight) {
+    public void observe(HttpHeaders headers, long receivedAtMs) {
+        String raw = headers == null ? null : headers.getFirst(WEIGHT_HEADER);
+        if (raw == null) return;
+        long weight;
+        try {
+            weight = Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            log.warn("Unparseable {} header value: '{}'", WEIGHT_HEADER, raw);
             return;
         }
-        lastObservedAtMs = sentTimeMs;
-        lastObservedWeight = weight;
+        observe(serverTimeMs(headers, receivedAtMs), receivedAtMs, weight);
+    }
+
+    /**
+     * Within one server minute Binance's counter never decreases, so a lighter reading from the
+     * same minute — or any reading from an earlier one — is a response that arrived out of order,
+     * and is discarded. A batch's responses come back in any order; without this the last one to
+     * land, not the heaviest, would set the budget.
+     */
+    synchronized void observe(long sentAtMs, long receivedAtMs, long weight) {
+        Observation prev = last;
+        if (prev != null) {
+            long minute = sentAtMs / 60_000L;
+            long prevMinute = prev.atMs / 60_000L;
+            if (minute < prevMinute || (minute == prevMinute && weight < prev.weight)) return;
+        }
+        last = new Observation(sentAtMs, receivedAtMs, weight);
+    }
+
+    /**
+     * @return {@code limit} minus the last observed weight while its server minute is current;
+     *         the whole {@code limit} once that minute has rolled or before any observation. May be
+     *         negative when usage overshot the limit.
+     */
+    public long remaining(long limit, long nowMs) {
+        Observation obs = last;
+        if (obs == null || obs.windowRolled(nowMs)) return limit;
+        return limit - obs.weight;
+    }
+
+    /** Extends the ban to {@code untilMs} (local clock). Never shortens a ban already in force. */
+    public synchronized void ban(long untilMs) {
+        if (untilMs > bannedUntilMs) bannedUntilMs = untilMs;
+    }
+
+    public boolean isBanned(long nowMs) {
+        return nowMs < bannedUntilMs;
+    }
+
+    static long nextMinuteBoundary(long ms) {
+        return (ms / 60_000L + 1L) * 60_000L;
+    }
+
+    /** The server's send time from the {@code Date} header, or {@code fallbackMs} if absent or malformed. */
+    static long serverTimeMs(HttpHeaders headers, long fallbackMs) {
+        try {
+            long date = headers.getFirstDate(HttpHeaders.DATE);
+            return date == -1 ? fallbackMs : date;
+        } catch (IllegalArgumentException e) {
+            return fallbackMs;
+        }
     }
 }

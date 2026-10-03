@@ -507,4 +507,84 @@ class BinanceDepthSyncStrategyTest {
             assertTrue(h.book().getAsks().containsKey(110.0));
         }
     }
+
+    @Nested
+    @DisplayName("a failed snapshot request (REST_FAILED)")
+    class SnapshotFailure {
+
+        @Test
+        @DisplayName("RECOVERING goes back to PENDING with an empty buffer and context")
+        void recoveringBookReturnsToPending() {
+            Harness h = new Harness(FUTURES, FILTER);
+            h.wsMsg(diff(FUTURES, 100, 110, 99, levels(lvl(99, 1)), ""));
+            h.wsMsg(diff(FUTURES, 111, 120, 110, "", ""));
+            assertEquals(OrderBookState.RECOVERING, h.book().getState());
+            assertEquals(2, h.bufferSize());
+
+            h.restFailed();
+
+            // Invariant: a PENDING book has empty levels and an empty context.
+            assertEquals(OrderBookState.PENDING, h.book().getState());
+            assertEquals(0, h.bufferSize(), "buffered diffs are useless without the snapshot");
+            assertEquals(-1, h.ctx().lastUpdateId);
+            assertFalse(h.ctx().syncPointFound);
+            assertTrue(h.book().getBids().isEmpty());
+            assertTrue(h.book().getAsks().isEmpty());
+        }
+
+        @Test
+        @DisplayName("is ignored on a SYNCED book — a late failure must not knock a healthy book back")
+        void ignoredWhenSynced() {
+            Harness h = synced(SPOT, levels(lvl(99, 1)), levels(lvl(101, 1)));
+
+            h.restFailed();
+
+            assertEquals(OrderBookState.SYNCED, h.book().getState());
+            assertEquals(120, h.ctx().lastUpdateId, "the cursor is untouched");
+            assertTrue(h.book().getBids().containsKey(99.0));
+            assertEquals(1, h.requests(), "no new request");
+        }
+
+        @Test
+        @DisplayName("is ignored on a PENDING book")
+        void ignoredWhenPending() {
+            Harness h = new Harness(SPOT, FILTER);
+            h.sink.accepts = false;
+            h.wsMsg(diff(SPOT, 100, 110, 0, "", ""));
+            assertEquals(OrderBookState.PENDING, h.book().getState());
+
+            h.restFailed();
+
+            assertEquals(OrderBookState.PENDING, h.book().getState());
+            assertEquals(1, h.requests(), "a failure never asks the sink itself");
+        }
+
+        @Test
+        @DisplayName("does not re-request at once — the next diff does, through the PENDING path")
+        void nextDiffReRequests() {
+            Harness h = new Harness(SPOT, FILTER);
+            h.wsMsg(diff(SPOT, 100, 110, 0, "", ""));
+            assertEquals(1, h.requests());
+
+            h.restFailed();
+            assertEquals(1, h.requests(), "REST_FAILED itself must not call the sink");
+
+            h.wsMsg(diff(SPOT, 111, 120, 0, "", ""));
+
+            assertEquals(2, h.requests());
+            assertEquals(OrderBookState.RECOVERING, h.book().getState());
+            assertEquals(1, h.bufferSize(), "only the diff that re-asked is buffered");
+        }
+
+        @Test
+        @DisplayName("is not counted as a resync")
+        void notCountedAsResync() {
+            Harness h = new Harness(FUTURES, FILTER);
+            h.wsMsg(diff(FUTURES, 100, 110, 99, "", ""));
+
+            h.restFailed();
+
+            assertEquals(0, h.metrics.resyncs(FUTURES), "nothing de-synced: the request just failed");
+        }
+    }
 }

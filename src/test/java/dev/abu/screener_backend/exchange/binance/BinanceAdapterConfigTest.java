@@ -2,20 +2,29 @@ package dev.abu.screener_backend.exchange.binance;
 
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.exchange.binance.BinanceSnapshotProperties.MarketSnapshot;
+import dev.abu.screener_backend.exchange.binance.BinanceSnapshotProperties.VenueBlock;
 import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.health.PipelineMetrics;
+import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.exchange.recovery.SnapshotQueueFactory;
+import dev.abu.screener_backend.exchange.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.exchange.spi.StreamProtocolRegistry;
 import dev.abu.screener_backend.exchange.spi.SyncStrategyRegistry;
 import dev.abu.screener_backend.exchange.spi.VenueStrategyBinding;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -93,7 +102,7 @@ class BinanceAdapterConfigTest {
         VenueProperties spot = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 400, 120);
         VenueProperties futures = new VenueProperties("wss://x", rest, "{symbol}@depth@500ms", 1024, 1, 1, 400, 120);
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
-                new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures))));
+                new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), null)));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
                 config.binanceSpotStreamBinding(exchanges),
                 config.binanceFuturesStreamBinding(exchanges)), exchanges);
@@ -127,5 +136,94 @@ class BinanceAdapterConfigTest {
         assertThrows(IllegalStateException.class, () -> new SyncStrategyRegistry(List.of(
                 config.binanceSpotStrategyBinding(sink, metrics),
                 new VenueStrategyBinding(Venue.BINANCE_SPOT, new BinanceSpotSyncStrategy(sink, metrics)))));
+    }
+
+    // --- Snapshot recovery wiring --------------------------------------------------------------
+
+    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
+        @Override public void publishFrame(int instrumentId, String payload) { }
+        @Override public void publishSnapshot(int instrumentId, String payload) { }
+        @Override public void publishSnapshotFailure(int instrumentId) { }
+    };
+
+    private final List<SnapshotQueueFactory> factories = new ArrayList<>();
+
+    @AfterEach
+    void stopQueues() {
+        factories.forEach(SnapshotQueueFactory::shutdown);
+    }
+
+    private SnapshotQueueFactory queues(SnapshotQueueProperties snapshotQueue, Duration responseTimeout) {
+        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), responseTimeout);
+        VenueProperties spot = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 400, 120);
+        VenueProperties futures = new VenueProperties("wss://x", rest, "{symbol}@depth@500ms", 1024, 1, 1, 400, 120);
+        ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
+                new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), snapshotQueue)));
+        SnapshotQueueFactory factory = new SnapshotQueueFactory(NO_OP_PUBLISHER, new PipelineMetrics(), exchanges);
+        factories.add(factory);
+        return factory;
+    }
+
+    private static final SnapshotQueueProperties QUEUE =
+            new SnapshotQueueProperties(10, Duration.ofMillis(250), Duration.ofSeconds(30));
+
+    private static final BinanceSnapshotProperties BINANCE_SNAPSHOT = new BinanceSnapshotProperties(Map.of(
+            Market.SPOT, new VenueBlock(new MarketSnapshot(1000, 6000, 200, Duration.ofMinutes(2))),
+            Market.FUTURES, new VenueBlock(new MarketSnapshot(1000, 2400, 200, Duration.ofMinutes(2)))));
+
+    private static BinanceRestClient restClient(Venue venue) {
+        BinancePaths paths = venue == Venue.BINANCE_SPOT ? BinancePaths.SPOT : BinancePaths.FUTURES;
+        return new BinanceRestClient(venue, WebClient.create("https://x"), paths);
+    }
+
+    @Test
+    @DisplayName("each Binance venue recovers through its own snapshot queue")
+    void eachVenueHasItsOwnQueue() {
+        BinanceAdapterConfig config = new BinanceAdapterConfig();
+        SnapshotQueueFactory queues = queues(QUEUE, Duration.ofSeconds(10));
+
+        SnapshotRequestQueue spot = config.binanceSpotSnapshotQueue(queues,
+                restClient(Venue.BINANCE_SPOT), BINANCE_SNAPSHOT);
+        SnapshotRequestQueue futures = config.binanceFuturesSnapshotQueue(queues,
+                restClient(Venue.BINANCE_FUTURES), BINANCE_SNAPSHOT);
+
+        // A shared queue would let one venue's batch close the other's, and price spot requests
+        // against the futures weight limit.
+        assertEquals(Venue.BINANCE_SPOT, spot.venue());
+        assertEquals(Venue.BINANCE_FUTURES, futures.venue());
+        assertNotSame(spot, futures);
+    }
+
+    @Test
+    @DisplayName("Binance without a snapshot-queue block fails at startup")
+    void missingSnapshotQueueBlockThrows() {
+        BinanceAdapterConfig config = new BinanceAdapterConfig();
+        SnapshotQueueFactory queues = queues(null, Duration.ofSeconds(10));
+
+        assertThrows(IllegalStateException.class, () -> config.binanceSpotSnapshotQueue(queues,
+                restClient(Venue.BINANCE_SPOT), BINANCE_SNAPSHOT));
+    }
+
+    @Test
+    @DisplayName("a Binance venue without its own snapshot block fails at startup")
+    void missingVenueSnapshotBlockThrows() {
+        BinanceAdapterConfig config = new BinanceAdapterConfig();
+        SnapshotQueueFactory queues = queues(QUEUE, Duration.ofSeconds(10));
+        BinanceSnapshotProperties spotOnly = new BinanceSnapshotProperties(Map.of(
+                Market.SPOT, new VenueBlock(new MarketSnapshot(1000, 6000, 200, Duration.ofMinutes(2)))));
+
+        assertThrows(IllegalStateException.class, () -> config.binanceFuturesSnapshotQueue(queues,
+                restClient(Venue.BINANCE_FUTURES), spotOnly));
+    }
+
+    @Test
+    @DisplayName("batch-timeout must exceed rest.response-timeout")
+    void batchTimeoutMustExceedResponseTimeout() {
+        BinanceAdapterConfig config = new BinanceAdapterConfig();
+        SnapshotQueueFactory queues = queues(
+                new SnapshotQueueProperties(10, Duration.ofMillis(250), Duration.ofSeconds(10)), Duration.ofSeconds(10));
+
+        assertThrows(IllegalStateException.class, () -> config.binanceFuturesSnapshotQueue(queues,
+                restClient(Venue.BINANCE_FUTURES), BINANCE_SNAPSHOT));
     }
 }

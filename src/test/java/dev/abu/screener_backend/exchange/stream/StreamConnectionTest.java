@@ -65,6 +65,11 @@ class StreamConnectionTest {
         public void publishSnapshot(int instrumentId, String payload) {
             throw new AssertionError("the transport never publishes snapshots");
         }
+
+        @Override
+        public void publishSnapshotFailure(int instrumentId) {
+            throw new AssertionError("the transport never publishes snapshot failures");
+        }
     }
 
     private static List<Instrument> instruments(int n) {

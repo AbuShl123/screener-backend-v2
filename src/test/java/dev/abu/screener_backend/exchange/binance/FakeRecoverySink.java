@@ -4,7 +4,7 @@ import dev.abu.screener_backend.exchange.book.BookSlot;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
 
 /**
- * Stands in for {@code SnapshotFetchQueue}.
+ * Stands in for a venue's {@code SnapshotRequestQueue}.
  *
  * <p>The refusal verdict is first-class rather than an afterthought: with
  * a snapshot queue capped at 10 per market against ~1400 books, a refused

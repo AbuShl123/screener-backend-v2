@@ -17,9 +17,11 @@ import java.util.Map;
  * binding maps the YAML key {@code binance} onto {@code Exchange.BINANCE}, and {@code SPOT} /
  * {@code FUTURES} onto {@link Market}.
  *
- * <p>Deliberately <b>not</b> present: {@code budget: {type: …}} and {@code snapshot: {mode: …}}
- * discriminators. Those select between implementations that do not exist until the sync SPI lands,
- * and binding config for absent abstractions guarantees a rewrite.
+ * <p>An exchange's {@code snapshot-queue} block shapes core's snapshot request queue, one per
+ * REST-recovering venue of that exchange. It is required only by an adapter that builds such a
+ * queue. How a venue prices and paces those requests (weights, bans) is exchange-shaped: the adapter
+ * binds it from the venue block itself, e.g. {@code BinanceSnapshotProperties} reads
+ * {@code venues.<market>.snapshot}, which this record ignores.
  */
 @ConfigurationProperties(prefix = "screener")
 public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
@@ -69,14 +71,41 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
      * policy is exchange-shaped, so each adapter binds its own record to
      * {@code screener.exchanges.<exchange>.discovery} (e.g. {@code BinanceDiscoveryProperties}).
      *
-     * @param enabled safe-rollout switch — an adapter can ship dark and be turned on independently.
-     *                Read through {@link ExchangesProperties#isEnabled}
-     * @param venues  per-market transport config
+     * @param enabled       safe-rollout switch — an adapter can ship dark and be turned on
+     *                      independently. Read through {@link ExchangesProperties#isEnabled}
+     * @param venues        per-market transport config
+     * @param snapshotQueue core snapshot request queue shape, shared by the exchange's venues;
+     *                      {@code null} when none of them recovers from REST snapshots
      */
     public record ExchangeProperties(
             boolean enabled,
-            Map<Market, VenueProperties> venues
+            Map<Market, VenueProperties> venues,
+            SnapshotQueueProperties snapshotQueue
     ) {}
+
+    /**
+     * Core's {@code SnapshotRequestQueue}. How a venue paces a batch is the adapter's business; this
+     * only shapes the queue.
+     *
+     * @param maxBatchSize  most requests one batch holds — and so the cap on books buffering diffs
+     *                      at once
+     * @param flushInterval how often the queue drains its pending requests as one batch
+     * @param batchTimeout  safety net for a fetcher that never completes its batch: unreported slots
+     *                      are failed and the queue reopens. Must exceed each venue's
+     *                      {@code rest.response-timeout}, which bounds a single request — checked by
+     *                      {@code SnapshotQueueFactory}
+     */
+    public record SnapshotQueueProperties(int maxBatchSize, Duration flushInterval, Duration batchTimeout) {
+        public SnapshotQueueProperties {
+            if (maxBatchSize <= 0) throw new IllegalArgumentException("snapshot-queue.max-batch-size must be > 0");
+            if (flushInterval == null || !flushInterval.isPositive()) {
+                throw new IllegalArgumentException("snapshot-queue.flush-interval must be positive");
+            }
+            if (batchTimeout == null || !batchTimeout.isPositive()) {
+                throw new IllegalArgumentException("snapshot-queue.batch-timeout must be positive");
+            }
+        }
+    }
 
     /**
      * @param streamUrl                WebSocket endpoint for this venue

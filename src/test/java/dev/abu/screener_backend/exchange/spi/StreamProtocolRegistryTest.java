@@ -38,7 +38,7 @@ class StreamProtocolRegistryTest {
         for (Market m : markets) {
             venues.put(m, new VenueProperties("wss://x", REST, "{symbol}@depth", 1024, 1, 1, 400, 120));
         }
-        return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues)));
+        return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues, null)));
     }
 
     @Test

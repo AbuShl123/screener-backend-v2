@@ -57,7 +57,6 @@ public final class BinanceStreamProtocol implements StreamProtocol {
         // separates "e" from "error".
         char c2 = frame.charAt(2);
         if (c2 == 'r') {
-            log.debug("[{}] SUBSCRIBE ack received", venue);
             return IGNORED;
         }
         if (c2 == 'e' && frame.charAt(3) == 'r') {

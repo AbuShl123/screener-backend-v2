@@ -47,6 +47,7 @@ class StreamManagerTest {
     private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
         @Override public void publishFrame(int instrumentId, String payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
+        @Override public void publishSnapshotFailure(int instrumentId) { }
     };
 
     private static final class StubProtocol implements StreamProtocol {
@@ -91,7 +92,7 @@ class StreamManagerTest {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
         for (Market m : enabledMarkets) venues.put(m, PROPS);
         ExchangesProperties exchanges = new ExchangesProperties(
-                Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues)));
+                Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues, null)));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
                 new VenueStreamBinding(Venue.BINANCE_SPOT, new StubProtocol()),
                 new VenueStreamBinding(Venue.BINANCE_FUTURES, new StubProtocol())), exchanges);

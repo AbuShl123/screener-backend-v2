@@ -26,6 +26,8 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li><b>resyncs</b> — churn. Near zero at steady state; a steady trickle against a flat synced
  *       count means books are cycling, not settled.</li>
+ *   <li><b>snapshot failures</b> — the venue's REST side. Non-zero during the startup ramp, when
+ *       requests the weight budget cannot afford are failed; near zero after it.</li>
  *   <li><b>msgs/s per shard</b> — throughput, and shard balance. The two shards should track each
  *       other closely; a skew would undermine the {@code id & mask} routing assumption.</li>
  *   <li><b>ring free</b> — whether consumers keep up with producers. A persistent dip is the signal
@@ -51,6 +53,7 @@ public class PipelineHealthLogger {
     private final OrderBookBroadcaster broadcaster;
 
     private final long[] lastResyncs = new long[Venue.values().length];
+    private final long[] lastSnapshotFailures = new long[Venue.values().length];
     private long[] lastProcessed;
     private long lastSampleNanos;
 
@@ -64,6 +67,7 @@ public class PipelineHealthLogger {
         line.append("pipeline:");
         appendBookCounts(line);
         appendResyncs(line);
+        appendSnapshotFailures(line);
         appendThroughput(line, elapsedSec);
         appendRingFree(line);
         appendDrain(line);
@@ -95,6 +99,16 @@ public class PipelineHealthLogger {
             long total = metrics.resyncs(venue);
             long delta = total - lastResyncs[venue.ordinal()];
             lastResyncs[venue.ordinal()] = total;
+            line.append(' ').append(shortName(venue)).append('=').append(delta);
+        }
+    }
+
+    private void appendSnapshotFailures(StringBuilder line) {
+        line.append(" | snapshot failures");
+        for (Venue venue : Venue.values()) {
+            long total = metrics.snapshotFailures(venue);
+            long delta = total - lastSnapshotFailures[venue.ordinal()];
+            lastSnapshotFailures[venue.ordinal()] = total;
             line.append(' ').append(shortName(venue)).append('=').append(delta);
         }
     }

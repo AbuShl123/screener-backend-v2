@@ -27,6 +27,11 @@ public class DisruptorDepthEventPublisher implements DepthEventPublisher {
         publish(EventType.REST_MSG, instrumentId, payload);
     }
 
+    @Override
+    public void publishSnapshotFailure(int instrumentId) {
+        publish(EventType.REST_FAILED, instrumentId, null);
+    }
+
     private void publish(EventType type, int instrumentId, String payload) {
         RingBuffer<DepthEvent> rb = shardManager.getRingBuffer(instrumentId);
         long seq = rb.next();

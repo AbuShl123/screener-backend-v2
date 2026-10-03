@@ -22,4 +22,14 @@ public interface DepthEventPublisher {
      * @param payload      the REST response body as received
      */
     void publishSnapshot(int instrumentId, String payload);
+
+    /**
+     * Snapshot-fetch completion threads. A failed request is published rather than handled on the
+     * HTTP thread for the same reason a successful one is: only the shard's consumer may change
+     * the book's state and its sync context, and it must see the failure <em>after</em> it marked
+     * the book {@code RECOVERING}.
+     *
+     * @param instrumentId the instrument whose snapshot request ended without a usable body
+     */
+    void publishSnapshotFailure(int instrumentId);
 }

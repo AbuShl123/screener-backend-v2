@@ -84,6 +84,19 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
             return;
         }
 
+        if (event.type == EventType.REST_FAILED) {
+            // Not recover(): that would re-request at once and count as a resync. The book re-asks
+            // on its next diff through the PENDING path, like any refused request. No clearLevels()
+            // either — a RECOVERING book is already empty. A failure reaching a book that is not
+            // RECOVERING is late or superseded, and is dropped like a late REST_MSG.
+            if (state == OrderBookState.RECOVERING) {
+                ctx.reset();
+                slot.book().markPending();
+                log.debug("[{}] snapshot request failed - back to PENDING", slot.instrument().logName());
+            }
+            return;
+        }
+
         if (state == OrderBookState.SYNCED) {
             if (!handleDiff(slot, event.rawJson)) {
                 recover(slot, ctx);

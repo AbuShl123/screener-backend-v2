@@ -1,6 +1,7 @@
 # Multi-Exchange Migration — State of Play
 
-**Last updated**: 2026-09-27, P2 step 5 (stream transport) on top of commit `28d0d84`, branch
+**Last updated**: 2026-10-02, P2 steps 3–4 (snapshot request queue + per-venue fetcher, plan
+`.claude/plans/snapshot-source-and-request-budget.md`) on top of commit `625beeb`, branch
 `feature/multi-exchange`.
 
 **What this file is**: the single accurate record of where the multi-exchange migration stands —
@@ -34,17 +35,18 @@ Where this document and the code disagree, the code is right.
 | **P2 step 1** | Package move to `exchange/{stream,ingress,book,recovery}` | **Done** |
 | **P2 step 1b** | `EventType` → `WS_MSG` / `REST_MSG` (provenance, not semantics) | **Done** |
 | **P2 step 2** | Sync SPI (`DepthSyncStrategy` / `BookSyncContext` / `RecoverySink`); Binance spot + futures strategies; `OrderBook` reduced to pure storage; `SyncStrategyRegistry` + `BinanceAdapterConfig` wiring; sync test suite | **Done — builds green, verified live** |
-| **P2 step 3** | Per-venue `SnapshotRequestQueue` + `SnapshotSource` abstraction | Not started |
-| **P2 step 4** | `RequestBudget` (`HeaderFeedbackBudget` / `LocalTokenBucketBudget`); WebClients keyed by venue | Not started |
+| **P2 step 3** | Per-venue core `SnapshotRequestQueue` behind a `SnapshotFetcher` SPI; `REST_FAILED` outcome event | **Done** |
+| **P2 step 4** | Request budget per venue — realised as the adapter's `BinanceSnapshotFetcher` + `WeightGuard` (no core `RequestBudget` type); filter-less WebClients per venue; `WeightLimitFilter` deleted | **Done** |
 | **P2 step 5** | `StreamProtocol` / `Heartbeat` / `VenueStreamBinding` SPI; venue-agnostic `StreamManager` / `ConnectionPool` / `StreamConnection`; `BinanceStreamProtocol`; single `DepthEventPublisher` ingress for both producers; per-venue pool start | **Done — verified live** |
 | **P2 step 6** | Config consolidation — fold `screener.orderbook.*` / `screener.websocket.*` into `screener.exchanges.*` | Partially pre-done (`ExchangesProperties` carries per-venue stream/REST/connection config, stream topic and heartbeat interval; `screener.websocket.*` is down to reconnect backoff) |
 | **P3** | Reset lane, `tryNext()` backpressure, dynamic subscribe/unsubscribe, staleness watchdog, venue health surface, read-side storage seam | Not started |
 | **P4** | Bybit — the first real second venue | Not started |
 | **P5–P6** | MEXC/Bitget breadth; primitive-array book | Not started |
 
-**Live verification of the current tree**: run against real Binance, **353 spot + 525 futures books
-reach `SYNCED` in roughly 6 minutes** and hold. That is the designed ramp — the snapshot queue is
-10 deep per market, dispatching every 6s with a 5s settle delay per response — not a stall.
+**Live verification** (before P2 steps 3–4): run against real Binance, 353 spot + 525 futures books
+reached `SYNCED` in roughly 6 minutes and held. The ramp is now weight-limited rather than
+timer-limited: a batch of up to 10 per venue flushes every 250ms, and the venue's weight budget per
+minute is what paces it (§3).
 
 ---
 
@@ -134,9 +136,10 @@ event.clear();
 ```
 
 **Bean cycle.** `BookSlotTable → SyncStrategyRegistry → VenueStrategyBinding beans
-(BinanceAdapterConfig) → SnapshotFetchQueue → DepthEventPublisher → DisruptorShardManager →
-BookSlotTable`, closed by the `@Lazy` on `SnapshotFetchQueue`'s `DepthEventPublisher`. The comment there names the current cycle;
-removing that `@Lazy` fails the context at startup.
+(BinanceAdapterConfig) → SnapshotQueueFactory → DepthEventPublisher → DisruptorShardManager →
+BookSlotTable`, closed by the `@Lazy` on `SnapshotQueueFactory`'s `DepthEventPublisher` — the one
+place in core, and adapters never see the publisher. Removing that `@Lazy` fails the context at
+startup.
 
 **`OrderBook` is now pure storage.** It holds `volatile OrderBookState state`, `filterThreshold` and
 the two `TreeMap`s, exposing `applyLevel(isBid, price, qty, millis)`, `clearLevels()`,
@@ -144,10 +147,66 @@ the two `TreeMap`s, exposing `applyLevel(isBid, price, qty, millis)`, `clearLeve
 no `lastUpdateId`, no diff buffer, no JSON parsing, no knowledge of Binance. `OrderBookState` is
 `PENDING → RECOVERING → SYNCED`.
 
-**`SnapshotFetchQueue implements RecoverySink`.** Two maps keyed by instrument id, `@Scheduled`
-drain, 5s settle delay, response published through `DepthEventPublisher.publishSnapshot` (as
-`REST_MSG`) rather than written to the book from the HTTP thread. Still Binance-shaped (hardcoded `/api/v3/depth` and `/fapi/v1/depth`,
-`dispatchSpot`/`dispatchFutures` pair) — that is P2 step 3.
+### 3.1 Snapshot recovery — core queues, the venue paces
+
+Venues that recover from REST snapshots share one core class; everything venue-shaped sits behind
+a two-method SPI in `exchange/spi/`:
+
+```java
+public interface SnapshotFetcher {
+    boolean isAcceptingRequests();                                        // hot: volatile reads only
+    CompletionStage<Void> fetchAll(List<BookSlot> batch, SnapshotOutcome outcome);
+}
+public interface SnapshotOutcome {                                         // implemented by core
+    void delivered(BookSlot slot, String body);
+    void failed(BookSlot slot);
+}
+```
+
+**`SnapshotRequestQueue implements RecoverySink`** (`exchange/recovery/`, one per venue, not a
+`@Component`):
+
+- `requestRecovery` refuses while a batch is in flight, at `max-batch-size`, or while the fetcher
+  is not accepting (banned / out of budget). A refusal keeps the book `PENDING` with no buffer — it
+  asks again on its next diff. **Lock-free and allocation-free** (it runs on shard consumer
+  threads): one `AtomicInteger` holds either the reserved-slot count or `CLOSED`, so every refusal
+  is a single volatile read, and an accept is one CAS reserving an index in a preallocated
+  `AtomicReferenceArray` plus one store into it.
+- `tick()` CASes the count to `CLOSED`, then drains the reserved indexes — spinning, on its own
+  thread, for any consumer that won its CAS but has not stored yet — and dedupes by instrument id
+  there, off the hot path. The queue stays closed until every request has an outcome. No request
+  is retried or dispatched twice.
+- **`BatchOutcome`** turns each slot's first report into exactly one ring event — `REST_MSG` or
+  `REST_FAILED` — and seals the batch when the fetcher's stage completes, fails, throws or exceeds
+  `batch-timeout`: unreported slots are failed by core, later or duplicate reports are dropped.
+  Every failure also increments `PipelineMetrics.recordSnapshotFailure(venue)`.
+
+**`SnapshotQueueFactory`** (core `@Component`) holds the `@Lazy` publisher and one daemon
+`snapshot-queue` thread that ticks every queue at its `flush-interval` — deliberately not Boot's
+shared `@Scheduled` thread, which the ticker refresh can block for up to `source-timeout`.
+
+Config: one `snapshot-queue` block per exchange (`max-batch-size`, `flush-interval`,
+`batch-timeout`), bound by core's `ExchangeProperties` and shared by that exchange's queues. It is
+required only when an adapter actually creates a queue. `SnapshotQueueFactory` checks that
+`batch-timeout` exceeds each venue's `rest.response-timeout`.
+
+**The Binance side** (`exchange/binance/`): `BinanceSnapshotFetcher`, one per venue, is the only
+component that tracks Binance weight. It owns a `WeightGuard` fed from its own depth responses'
+`x-mbx-used-weight-1m` + `Date` headers (success *and* error — `ExchangeApiException` now carries
+headers), clamps each batch to what the remaining budget affords (the rest are failed at once),
+sends the affordable prefix in parallel, and on 429/418 bans itself for `Retry-After` (fallback:
+next server minute for 429, `ban-fallback` for 418). Per-venue pricing lives in
+`BinanceSnapshotProperties` (`screener.exchanges.binance.venues.<market>.snapshot`: `depth-limit` ∈
+{100, 500, 1000}, `weight-limit-per-minute`, `weight-reserve`, `ban-fallback`), with the cost table
+in `BinanceDepthLimit`. It binds the same `venues` subtree as core's `ExchangesProperties`: each
+record takes only its own keys, as with `discovery`. The REST clients carry no filters.
+
+**The weight window is measured in elapsed time, not wall-clock time.** It counts as rolled once the
+local time since a response was received covers what was left of its server minute per `Date`. The
+plan's first version compared local `now` with the server-minute boundary and relied on the reserve
+to absorb skew. It can't: with the local clock 2.3s ahead of Binance (measured on the dev box), the
+guard called the window rolled while the server was still at :58, sent a full batch, and got a 429
+one second into every minute. `WeightGuardTest` pins the skewed cases.
 
 ---
 
@@ -206,6 +265,8 @@ One flat if-chain at the top of `BinanceDepthSyncStrategy.onEvent`, and **the on
 |---|---|---|
 | *not* `RECOVERING` | `REST_MSG` | **Dropped silently.** A late, duplicate or superseded snapshot must never touch a book that is not waiting for one. |
 | `RECOVERING` | `REST_MSG` | `handleSnapshot()`. Success → `markSynced()`. Failure → `recover()`. |
+| *not* `RECOVERING` | `REST_FAILED` | **Dropped**, by the same rule. |
+| `RECOVERING` | `REST_FAILED` | `ctx.reset()` → `markPending()`. **No `recover()`** (it would re-request at once and count a resync) and no `clearLevels()` (already empty). The next diff re-asks through the `PENDING` row. |
 | `SYNCED` | `WS_MSG` | `handleDiff()`. Failure → `recover()`. |
 | `RECOVERING` | `WS_MSG` | `ctx.bufferDiff()`. Buffer full → `recover()`. |
 | `PENDING` | `WS_MSG` | `requestRecovery()`. Accepted → `markRecovering()` **and buffer the triggering diff**. Refused → drop the diff, stay `PENDING`, retry on the next one. |
@@ -214,8 +275,9 @@ Two properties are load-bearing:
 
 1. **At most one recovery request per event.** Every helper returns `boolean` and none of them
    touches the sink.
-2. **`PENDING` retries on every diff.** With queue size 10 against ~880 books, refusal is the
-   *normal* startup path. A book that could not get into the queue must re-ask on its next diff or it
+2. **`PENDING` retries on every diff.** With a batch cap of 10 against ~880 books, refusal is the
+   *normal* startup path — and the only form of back-off: nothing in the system delays or retries
+   a snapshot request. A book that could not get into the queue must re-ask on its next diff or it
    parks forever. This is what makes the 6-minute ramp work rather than strand books.
 
 ### 4.4 `check()` — the one thing each venue implements
@@ -401,6 +463,12 @@ instrument name passed in. All lazy `{}` placeholders at `debug`/`warn`, per hot
 5. `check()` leaves the parser positioned before `b`/`a`.
 6. `lastUpdateId == -1` means "no sync point"; on futures that must coincide with
    `syncPointFound == false`.
+7. **A `PENDING` book has an empty context** (empty buffer, `lastUpdateId == -1`,
+   `syncPointFound == false`) as well as empty levels. `recover()` and the `REST_FAILED` branch both
+   reset the context before writing `PENDING`.
+8. A request the queue accepted gets **exactly one** outcome event in its shard — enforced by
+   `BatchOutcome`, not trusted to the fetcher. Losing one would strand the book in `RECOVERING`, so
+   neither REST event type may ever be dropped under backpressure.
 
 ### 4.11 Worked traces
 
@@ -410,7 +478,11 @@ drained (stale entries `IGNORE`d, the first in-range one establishes the sync po
 
 **Cold start, queue full.** First diff → refused → diff dropped, book stays `PENDING`. The next diff
 (≤1s on spot, ≤500ms on futures) asks again. Repeats until the queue drains. No book is stranded.
-This is the dominant path for the first several minutes of the ramp.
+This is the dominant path for the first several minutes of the ramp. Once the venue's weight budget
+for the minute is spent, `isAcceptingRequests()` refuses every book until the minute rolls.
+
+**Snapshot request fails** (5xx, timeout, skipped for budget, 429). `REST_FAILED` → context reset,
+`PENDING`. The next diff asks again; on a 429 the fetcher's ban refuses it until `Retry-After`.
 
 **Steady state (spot).** Every diff: `check` → `U <= lastUpdateId + 1` and `u >= lastUpdateId` →
 apply → sweep → cursor advances to `u`.
@@ -458,18 +530,17 @@ and a YAML block.* Measured against that, here is what is already additive and w
 | Event provenance | `EventType` says where bytes came from, not what they mean |
 | Per-venue transport config | `screener.exchanges.<exchange>.venues.<market>.*` via `ExchangesProperties`; connection count is derived from stream count and the venue's own cap |
 | Discovery | An `InstrumentSource` bean from the adapter's config, with its own policy record under `screener.exchanges.<exchange>.discovery.*` |
+| Snapshot fetching + request budget | A `SnapshotFetcher` per venue handed to core's `SnapshotQueueFactory` from the adapter config, plus a `snapshot-queue` block on the exchange (and whatever pricing keys the adapter binds under its venues); pricing, pacing and bans are entirely the fetcher's |
 | Transport | `StreamProtocol` (subscribe frames, frame routing, `Heartbeat` kind) bound via a `VenueStreamBinding` bean; core `StreamManager` / `ConnectionPool` / `StreamConnection` own lifecycle, reconnect, fan-out, chunking and heartbeat scheduling. The topic template and heartbeat interval are per-venue config. `StreamProtocolRegistry` fails startup if an enabled venue has no binding |
 
 **Not yet additive** — these still name Binance in core and are the remaining P2 work:
 
 | Seam | Current state | Needed |
 |---|---|---|
-| Snapshot fetching | `SnapshotFetchQueue` hardcodes `/api/v3/depth` and `/fapi/v1/depth` and has a `dispatchSpot`/`dispatchFutures` pair | One `SnapshotRequestQueue` class parameterised per model-A venue behind a `SnapshotSource` (P2 step 3) |
-| Request budget | `WeightGuard` / `WeightLimitFilter` assume Binance's `x-mbx-used-weight-1m` header and a wall-clock-minute reset | `RequestBudget` with `HeaderFeedbackBudget` + `LocalTokenBucketBudget`, one instance per venue (P2 step 4) |
-| Config | `screener.orderbook.*` and `screener.websocket.*` still sit outside `screener.exchanges.*`; the snapshot queue sizes are read via `@Value` rather than through `OrderbookProperties` | Fold in under the venue block (P2 step 6) |
+| Config | `screener.orderbook.*` and `screener.websocket.*` still sit outside `screener.exchanges.*` | Fold in under the venue block (P2 step 6) |
 | Rule validation | `ClassificationRuleService.validateTrackedTicker` checks `Venue.of(Exchange.BINANCE, market)` by native symbol, so a rule for a symbol tracked only on another exchange (or spelled differently there) is rejected | Check "tracked on any exchange for this market" by `Instrument.symbol()` — needs a registry lookup by `ruleKey` |
 
-Once those three land, Bybit becomes a new package plus YAML. Bybit is venue #2 deliberately: it is
+Once those land, Bybit becomes a new package plus YAML. Bybit is venue #2 deliberately: it is
 model B (in-stream snapshot, resubscribe-to-recover, application-level heartbeat, topic routing), so
 it exercises every axis on which the SPI could be wrong. MEXC spot would pass a Binance-shaped
 abstraction by luck and validate nothing.
@@ -491,20 +562,21 @@ abstraction by luck and validate nothing.
   venue appears in a universe event; for venues that already have a pool it logs *"dynamic
   re-subscription not yet implemented"* per venue — the 4-hourly refresh updates the registry but not
   live subscriptions. Needs the reverse `instrumentId → (connection, topic)` routing direction.
+- **No per-instrument snapshot cooldown.** A symbol whose REST snapshot fails persistently while its
+  stream stays alive re-asks on every diff. Add one only if the snapshot-failure counter shows it.
 - **No staleness watchdog.** A subscription that silently stops delivering is invisible: the book
   sits `SYNCED` with frozen data indefinitely.
 - **Health surface is a log line, not a registry.** `PipelineHealthLogger` emits one line every 30s
-  — synced/tracked per venue, resyncs per interval per venue, msgs/s and free ring slots per shard,
+  — synced/tracked per venue, resyncs and snapshot failures per interval per venue, msgs/s and free ring slots per shard,
   and the feed drain's worst tick — backed by `exchange/health/PipelineMetrics`. That covers churn,
   throughput, backpressure and delivery, which is enough to tell the current failure modes apart.
-  Still missing: connections up/down and reconnect counts, snapshot queue depth and dispatch
-  latency, dropped-event counters, and oldest `lastMessageAtMs` per venue — and none of it is
+  Still missing: connections up/down and reconnect counts, snapshot batch latency, dropped-event counters, and oldest `lastMessageAtMs` per venue — and none of it is
   queryable, only logged. `PipelineMetrics` is the seam those grow into.
 - **No read-side storage seam.** `OrderBookClassifier` reaches straight into `getBids()`/`getAsks()`.
   Until reads go through accessors, swapping `TreeMap<Double,…>` for primitive parallel arrays (P6)
   is a multi-class rewrite rather than a one-class change.
-- **No snapshot request generation/epoch.** A superseded in-flight snapshot can be consumed by a book
-  that has since recovered and re-queued. It self-corrects — the buffer replay validates the sequence
+- **No snapshot request generation/epoch.** A stale `REST_MSG` or `REST_FAILED` still in the ring
+  can reach a book that has since recovered and re-queued. It self-corrects — the buffer replay validates the sequence
   either way — but it is a real ordering hazard and belongs with the reset lane.
 
 ### 6.2 `/api/monitoring/orderbook` — deliberately abandoned
@@ -566,6 +638,14 @@ Settled, with the reasoning, so they are not relitigated:
     instrument; growth semantics for cross-shard user contexts aren't worth it.
 17. **The WebSocket payload carries `exchange`**, and `symbol` is the normalized `BASEQUOTE` form
     matching the rule API. Clients key books on `(exchange, market, symbol)`.
+18. **Snapshot requests are never retried or delayed.** A failure becomes `REST_FAILED` → `PENDING`,
+    and back-off happens only by refusing at `requestRecovery`.
+19. **Every book state change happens on the shard thread** — including a snapshot *failure*, which
+    is a ring event rather than an HTTP-thread write (that write would race `markRecovering()` and
+    could not reach the consumer-owned diff buffer).
+20. **No core `RequestBudget` type.** Core queues; the venue's fetcher prices and paces. Binance's
+    weight accounting lives entirely in `BinanceSnapshotFetcher` + `WeightGuard`, read from its own
+    depth responses; discovery traffic is covered by the reserve.
 
 ---
 
@@ -573,12 +653,9 @@ Settled, with the reasoning, so they are not relitigated:
 
 1. **Startup retry for discovery** (generalization review §1 #4) — retry on a short interval while
    any enabled venue has never had a successful fetch, instead of waiting out the 4h refresh.
-2. **P2 step 3** — `SnapshotRequestQueue` parameterised per venue behind a `SnapshotSource`; drop the
-   `dispatchSpot`/`dispatchFutures` fork and the hardcoded depth paths.
-3. **P2 step 4** — `RequestBudget` per venue; generalise `WeightLimitFilter`; WebClients keyed by venue.
-4. **P2 step 6** — fold `screener.orderbook.*` and `screener.websocket.*` into the venue config, and
-   move the snapshot queue sizes off `@Value` onto a properties record.
-5. **P3** — reset lane and `tryNext()` backpressure first (they are coupled), then dynamic
+2. **P2 step 6** — fold `screener.orderbook.*` and `screener.websocket.*` the rest of the way into
+   the venue config.
+3. **P3** — reset lane and `tryNext()` backpressure first (they are coupled), then dynamic
    subscribe/unsubscribe, the staleness watchdog, and the venue health surface.
-6. **Rewrite or prune `.claude/docs/orderbook-sync-algorithm.md`.**
-7. **P4 — Bybit.** The real test: if it lands as a new package plus a YAML block, the abstraction held.
+4. **Rewrite or prune `.claude/docs/orderbook-sync-algorithm.md`.**
+5. **P4 — Bybit.** The real test: if it lands as a new package plus a YAML block, the abstraction held.

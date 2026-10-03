@@ -26,13 +26,15 @@ import java.util.concurrent.atomic.LongAdder;
 @Component
 public class PipelineMetrics {
 
-    private final LongAdder[] resyncs;
+    private final LongAdder[] resyncs = perVenue();
+    private final LongAdder[] snapshotFailures = perVenue();
 
-    public PipelineMetrics() {
-        this.resyncs = new LongAdder[Venue.values().length];
-        for (int i = 0; i < resyncs.length; i++) {
-            resyncs[i] = new LongAdder();
+    private static LongAdder[] perVenue() {
+        LongAdder[] adders = new LongAdder[Venue.values().length];
+        for (int i = 0; i < adders.length; i++) {
+            adders[i] = new LongAdder();
         }
+        return adders;
     }
 
     /**
@@ -48,5 +50,19 @@ public class PipelineMetrics {
     /** Monotonic total since startup. Subtract two samples for a rate. */
     public long resyncs(Venue venue) {
         return resyncs[venue.ordinal()].sum();
+    }
+
+    /**
+     * One snapshot request ended without a body — an HTTP error, a timeout, or a request the venue
+     * skipped for budget. The only signal that a venue's REST side is unhealthy: near zero in
+     * steady state, non-zero during the startup ramp when the weight budget runs short.
+     */
+    public void recordSnapshotFailure(Venue venue) {
+        snapshotFailures[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total since startup. Subtract two samples for a rate. */
+    public long snapshotFailures(Venue venue) {
+        return snapshotFailures[venue.ordinal()].sum();
     }
 }

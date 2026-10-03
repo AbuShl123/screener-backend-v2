@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.config;
 
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.exchange.Exchange;
@@ -14,9 +15,13 @@ import java.util.EnumMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** {@link ExchangesProperties#isEnabled} — the single chokepoint for the {@code enabled} switch. */
+/**
+ * {@link ExchangesProperties#isEnabled} — the single chokepoint for the {@code enabled} switch — and
+ * the exchange-level {@code snapshot-queue} validation.
+ */
 class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
@@ -27,7 +32,7 @@ class ExchangesPropertiesTest {
     private static ExchangesProperties binance(boolean enabled, Market... markets) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
         for (Market m : markets) venues.put(m, venueProps());
-        return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(enabled, venues)));
+        return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(enabled, venues, null)));
     }
 
     @Test
@@ -62,5 +67,17 @@ class ExchangesPropertiesTest {
 
         assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
         assertFalse(props.isEnabled(Venue.BINANCE_FUTURES));
+    }
+
+    @Test
+    @DisplayName("a snapshot-queue block with a non-positive batch size or duration is rejected")
+    void badSnapshotQueueBlock() {
+        Duration ok = Duration.ofMillis(250);
+        new SnapshotQueueProperties(10, ok, Duration.ofSeconds(30));
+
+        assertThrows(IllegalArgumentException.class, () -> new SnapshotQueueProperties(0, ok, ok));
+        assertThrows(IllegalArgumentException.class, () -> new SnapshotQueueProperties(10, Duration.ZERO, ok));
+        assertThrows(IllegalArgumentException.class, () -> new SnapshotQueueProperties(10, ok, Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class, () -> new SnapshotQueueProperties(10, null, ok));
     }
 }

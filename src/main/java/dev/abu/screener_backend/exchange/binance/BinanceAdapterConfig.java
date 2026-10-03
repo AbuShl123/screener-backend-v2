@@ -3,6 +3,8 @@ package dev.abu.screener_backend.exchange.binance;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.exchange.health.PipelineMetrics;
+import dev.abu.screener_backend.exchange.recovery.SnapshotQueueFactory;
+import dev.abu.screener_backend.exchange.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.exchange.rest.ExchangeWebClientFactory;
 import dev.abu.screener_backend.exchange.spi.InstrumentSource;
 import dev.abu.screener_backend.exchange.spi.RecoverySink;
@@ -30,19 +32,47 @@ import org.springframework.web.reactive.function.client.WebClient;
  * {@link BinanceDepthSyncStrategy} as a base and {@link BinanceStreamProtocol} as a class — the
  * seam is already there for the first config value that diverges. Discovery is the exception: one
  * source spans both venues, because spot inclusion depends on the futures list.
+ *
+ * <p>Each venue recovers through its own core {@link SnapshotRequestQueue}, fed by its own
+ * {@link BinanceSnapshotFetcher} — which alone tracks that venue's request weight. The queue's shape
+ * is {@code binance.snapshot-queue}; each fetcher's pricing is its venue's {@code snapshot} block.
+ * The REST clients carry no filters.
  */
 @Configuration
-@EnableConfigurationProperties(BinanceDiscoveryProperties.class)
+@EnableConfigurationProperties({BinanceDiscoveryProperties.class, BinanceSnapshotProperties.class})
 public class BinanceAdapterConfig {
 
     @Bean
-    VenueStrategyBinding binanceSpotStrategyBinding(RecoverySink recoverySink, PipelineMetrics metrics) {
+    VenueStrategyBinding binanceSpotStrategyBinding(@Qualifier("binanceSpotSnapshotQueue") RecoverySink recoverySink,
+                                                    PipelineMetrics metrics) {
         return new VenueStrategyBinding(Venue.BINANCE_SPOT, new BinanceSpotSyncStrategy(recoverySink, metrics));
     }
 
     @Bean
-    VenueStrategyBinding binanceFuturesStrategyBinding(RecoverySink recoverySink, PipelineMetrics metrics) {
+    VenueStrategyBinding binanceFuturesStrategyBinding(@Qualifier("binanceFuturesSnapshotQueue") RecoverySink recoverySink,
+                                                       PipelineMetrics metrics) {
         return new VenueStrategyBinding(Venue.BINANCE_FUTURES, new BinanceFuturesSyncStrategy(recoverySink, metrics));
+    }
+
+    @Bean
+    SnapshotRequestQueue binanceSpotSnapshotQueue(SnapshotQueueFactory queues,
+                                                  @Qualifier("binanceSpotRestClient") BinanceRestClient client,
+                                                  BinanceSnapshotProperties snapshot) {
+        return snapshotQueue(queues, client, snapshot);
+    }
+
+    @Bean
+    SnapshotRequestQueue binanceFuturesSnapshotQueue(SnapshotQueueFactory queues,
+                                                     @Qualifier("binanceFuturesRestClient") BinanceRestClient client,
+                                                     BinanceSnapshotProperties snapshot) {
+        return snapshotQueue(queues, client, snapshot);
+    }
+
+    private static SnapshotRequestQueue snapshotQueue(SnapshotQueueFactory queues, BinanceRestClient client,
+                                                      BinanceSnapshotProperties snapshot) {
+        Venue venue = client.venue();
+        BinanceSnapshotFetcher fetcher = new BinanceSnapshotFetcher(client, snapshot.forMarket(venue.market()));
+        return queues.create(venue, fetcher);
     }
 
     @Bean
@@ -66,17 +96,13 @@ public class BinanceAdapterConfig {
 
     @Bean
     BinanceRestClient binanceSpotRestClient(ExchangeWebClientFactory webClientFactory, ExchangesProperties exchanges) {
-        ExchangesProperties.VenueProperties props = exchanges.venue(Venue.BINANCE_SPOT);
-        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(5800), "SPOT");
-        WebClient webClient = webClientFactory.create(props.rest(), filter);
+        WebClient webClient = webClientFactory.create(exchanges.venue(Venue.BINANCE_SPOT).rest());
         return new BinanceRestClient(Venue.BINANCE_SPOT, webClient, BinancePaths.SPOT);
     }
 
     @Bean
     BinanceRestClient binanceFuturesRestClient(ExchangeWebClientFactory webClientFactory, ExchangesProperties exchanges) {
-        ExchangesProperties.VenueProperties props = exchanges.venue(Venue.BINANCE_FUTURES);
-        WeightLimitFilter filter = new WeightLimitFilter(new WeightGuard(2200), "FUTURES");
-        WebClient webClient = webClientFactory.create(props.rest(), filter);
+        WebClient webClient = webClientFactory.create(exchanges.venue(Venue.BINANCE_FUTURES).rest());
         return new BinanceRestClient(Venue.BINANCE_FUTURES, webClient, BinancePaths.FUTURES);
     }
 }

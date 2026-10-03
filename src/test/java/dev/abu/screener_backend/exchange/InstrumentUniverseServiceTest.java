@@ -291,7 +291,7 @@ class InstrumentUniverseServiceTest {
         VenueProperties props = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 100, 120);
         if (spot) venues.put(Market.SPOT, props);
         if (futures) venues.put(Market.FUTURES, props);
-        return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(enabled, venues)));
+        return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(enabled, venues, null)));
     }
 
     private static Map<Venue, List<InstrumentCandidate>> both(List<InstrumentCandidate> spot,

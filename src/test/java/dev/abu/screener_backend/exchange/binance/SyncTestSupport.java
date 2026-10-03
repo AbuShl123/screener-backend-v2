@@ -86,6 +86,11 @@ final class SyncTestSupport {
             fire(EventType.REST_MSG, rawJson);
         }
 
+        /** Report the book's snapshot request as failed — the {@code REST_FAILED} lane, no body. */
+        void restFailed() {
+            fire(EventType.REST_FAILED, null);
+        }
+
         /** Reuses one event instance, exactly as the ring buffer does. */
         private void fire(EventType type, String rawJson) {
             event.type = type;

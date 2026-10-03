@@ -21,8 +21,8 @@ import java.util.Arrays;
  * time a request spends waiting on a request budget, understating how long the network call
  * itself took.
  *
- * <p>Adapter-supplied filters (weight accounting, budget accounting, error mapping) are appended
- * in the given order; this factory does not know what they do.
+ * <p>Adapter-supplied filters, if any, are appended in the given order; this factory does not know
+ * what they do. Binance passes none: its weight accounting lives in its snapshot fetcher.
  */
 @Component
 public class ExchangeWebClientFactory {

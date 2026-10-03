@@ -5,6 +5,7 @@ import dev.abu.screener_backend.exchange.binance.dto.ExchangeInfoResponse;
 import dev.abu.screener_backend.exchange.rest.ExchangeApiException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -34,34 +35,50 @@ public class BinanceRestClient {
         this.paths = paths;
     }
 
+    public Venue venue() {
+        return venue;
+    }
+
     /** Issues a GET to this venue's {@code exchangeInfo} endpoint. */
     public Mono<ExchangeInfoResponse> exchangeInfo() {
-        return get(ExchangeInfoResponse.class, paths.exchangeInfoPath());
+        String uriTemplate = paths.exchangeInfoPath();
+        return logErrors(retrieve(uriTemplate).bodyToMono(ExchangeInfoResponse.class), uriTemplate);
     }
 
     /**
-     * Issues a GET to this venue's depth endpoint. Returns the raw body — the sync strategy parses it.
+     * Issues a GET to this venue's depth endpoint. Returns the raw body — the sync strategy parses
+     * it — together with the response headers, which carry Binance's weight counter.
      *
      * <p>The symbol is passed as a URI variable, never pre-encoded into the template: WebClient
      * encodes the template itself, so a pre-encoded string would be encoded twice and non-ASCII
      * symbols (e.g. {@code 牛来USDT}) would reach Binance as {@code %25E7...} → {@code -1121}.
      */
-    public Mono<String> depth(String symbol, int limit) {
-        return get(String.class, paths.depthPath() + "?symbol={symbol}&limit={limit}", symbol, limit);
+    public Mono<ResponseEntity<String>> depth(String symbol, int limit) {
+        String uriTemplate = paths.depthPath() + "?symbol={symbol}&limit={limit}";
+        return logErrors(retrieve(uriTemplate, symbol, limit).toEntity(String.class), uriTemplate, symbol, limit);
     }
 
-    private <T> Mono<T> get(Class<T> responseType, String uriTemplate, Object... uriVariables) {
+    private WebClient.ResponseSpec retrieve(String uriTemplate, Object... uriVariables) {
         return webClient.get()
                 .uri(uriTemplate, uriVariables)
                 .retrieve()
-                .onStatus(HttpStatusCode::isError, this::toApiException)
-                .bodyToMono(responseType)
-                .doOnError(ex -> log.warn("[{}] REST call failed [{} {}]: {}",
-                        venue, uriTemplate, Arrays.toString(uriVariables), ex.getMessage()));
+                .onStatus(HttpStatusCode::isError, this::toApiException);
     }
 
+    private <T> Mono<T> logErrors(Mono<T> call, String uriTemplate, Object... uriVariables) {
+        return call.doOnError(ex -> log.warn("[{}] REST call failed [{} {}]: {}",
+                venue, uriTemplate, Arrays.toString(uriVariables), ex.getMessage()));
+    }
+
+    /**
+     * {@code defaultIfEmpty} matters: an error status with an empty body would otherwise map to an
+     * empty {@code Mono}, which {@code onStatus} treats as "not an error" — and a bodiless 429
+     * would then be handed to the caller as a success.
+     */
     private Mono<? extends Throwable> toApiException(ClientResponse response) {
         return response.bodyToMono(String.class)
-                .map(body -> new ExchangeApiException(venue, response.statusCode(), body));
+                .defaultIfEmpty("")
+                .map(body -> new ExchangeApiException(venue, response.statusCode(),
+                        response.headers().asHttpHeaders(), body));
     }
 }
