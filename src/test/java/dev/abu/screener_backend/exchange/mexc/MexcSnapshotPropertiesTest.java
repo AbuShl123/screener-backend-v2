@@ -23,6 +23,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class MexcSnapshotPropertiesTest {
 
@@ -72,8 +73,11 @@ class MexcSnapshotPropertiesTest {
     @ValueSource(strings = {"application.yml", "application-local.yml"})
     @DisplayName("the shipped YAML binds, and its batch-timeout covers a paced batch")
     void shippedYaml(String file) throws IOException {
+        ClassPathResource resource = new ClassPathResource(file);
+        // application-local.yml is gitignored: present on a dev box, absent on a fresh checkout.
+        assumeTrue(resource.exists(), file + " not on the classpath");
         MutablePropertySources sources = new MutablePropertySources();
-        new YamlPropertySourceLoader().load(file, new ClassPathResource(file)).forEach(sources::addLast);
+        new YamlPropertySourceLoader().load(file, resource).forEach(sources::addLast);
         Binder binder = new Binder(ConfigurationPropertySources.from(sources), new PropertySourcesPlaceholdersResolver(sources));
 
         MarketSnapshot snapshot = binder.bind("screener.exchanges.mexc", MexcSnapshotProperties.class).get()
