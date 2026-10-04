@@ -92,8 +92,9 @@ screener:
 
     mexc:
       # Futures only — MEXC spot streams Protobuf and has no adapter. Dark until the adapter is
-      # complete (.claude/plans/mexc-impl-plan.md, Phase 5): enabling it earlier fails startup,
-      # because MEXC_FUTURES has no stream protocol bound yet. snapshot-queue arrives with Phase 4b.
+      # complete (.claude/plans/mexc-impl-plan.md, Phase 5). Enabling it earlier streams and counts
+      # frames, but books stay PENDING under the placeholder strategy. snapshot-queue arrives with
+      # Phase 4b.
       enabled: ${MEXC_ENABLED:false}
       venues:
         FUTURES:

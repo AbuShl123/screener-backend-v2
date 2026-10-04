@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
  * <p>Replaces the {@code sync count: spot=… fut=…} line that {@code BookSlotTable} used to emit.
  * A synced count alone has a blind spot big enough to hide a broken sequence rule: a book that
  * de-syncs and recovers continuously still reports {@code SYNCED} most of the time, so the count
- * sits flat and looks healthy. Each of the other four numbers exists to make one specific failure
+ * sits flat and looks healthy. Each of the other numbers exists to make one specific failure
  * distinguishable from the others:
  *
  * <ul>
@@ -28,6 +28,9 @@ import org.springframework.stereotype.Component;
  *       count means books are cycling, not settled.</li>
  *   <li><b>snapshot failures</b> — the venue's REST side. Non-zero during the startup ramp, when
  *       requests the weight budget cannot afford are failed; near zero after it.</li>
+ *   <li><b>frames/s per venue</b> — what each venue's WebSocket delivers, before sync state is
+ *       known. A venue at zero has a dead or never-subscribed stream; it is also the only rate that
+ *       moves for a venue whose books cannot sync yet.</li>
  *   <li><b>msgs/s per shard</b> — throughput, and shard balance. The two shards should track each
  *       other closely; a skew would undermine the {@code id & mask} routing assumption.</li>
  *   <li><b>ring free</b> — whether consumers keep up with producers. A persistent dip is the signal
@@ -54,6 +57,7 @@ public class PipelineHealthLogger {
 
     private final long[] lastResyncs = new long[Venue.values().length];
     private final long[] lastSnapshotFailures = new long[Venue.values().length];
+    private final long[] lastFrames = new long[Venue.values().length];
     private long[] lastProcessed;
     private long lastSampleNanos;
 
@@ -68,6 +72,7 @@ public class PipelineHealthLogger {
         int[] tracked = appendBookCounts(line);
         appendResyncs(line, tracked);
         appendSnapshotFailures(line, tracked);
+        appendFrameRates(line, tracked, elapsedSec);
         appendThroughput(line, elapsedSec);
         appendRingFree(line);
         appendDrain(line);
@@ -118,6 +123,18 @@ public class PipelineHealthLogger {
             lastSnapshotFailures[venue.ordinal()] = total;
             if (tracked[venue.ordinal()] == 0) continue;
             line.append(' ').append(shortName(venue)).append('=').append(delta);
+        }
+    }
+
+    private void appendFrameRates(StringBuilder line, int[] tracked, double elapsedSec) {
+        line.append(" | frames/s");
+        for (Venue venue : Venue.values()) {
+            long total = metrics.frames(venue);
+            long delta = total - lastFrames[venue.ordinal()];
+            lastFrames[venue.ordinal()] = total;
+            if (tracked[venue.ordinal()] == 0) continue;
+            line.append(' ').append(shortName(venue)).append('=')
+                    .append(elapsedSec <= 0 ? "-" : String.valueOf(Math.round(delta / elapsedSec)));
         }
     }
 

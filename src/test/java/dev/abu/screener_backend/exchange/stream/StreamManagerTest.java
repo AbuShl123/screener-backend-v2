@@ -10,6 +10,7 @@ import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.InstrumentUniverseChangedEvent;
 import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.spi.Heartbeat;
 import dev.abu.screener_backend.exchange.spi.StreamProtocol;
@@ -64,7 +65,7 @@ class StreamManagerTest {
         boolean shutDown;
 
         RecordingPool(Venue venue, StreamProtocol protocol) {
-            super(venue, PROPS, WS, protocol, NO_OP_PUBLISHER);
+            super(venue, PROPS, WS, protocol, NO_OP_PUBLISHER, new PipelineMetrics());
             this.venue = venue;
         }
 

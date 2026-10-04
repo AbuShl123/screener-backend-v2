@@ -4,6 +4,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.spi.Heartbeat;
 import dev.abu.screener_backend.exchange.spi.StreamProtocol;
@@ -12,6 +13,7 @@ import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
 
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
@@ -30,13 +32,14 @@ import java.util.concurrent.atomic.AtomicLong;
 @Slf4j
 public class StreamConnection extends WebSocketClient {
 
-    private static final long UNKNOWN_FRAME_LOG_INTERVAL_MS = 60_000;
+    private static final long ANOMALY_LOG_INTERVAL_MS = 60_000;
     private static final int UNKNOWN_FRAME_LOG_CHARS = 120;
 
     private final Venue venue;
     private final List<Instrument> instruments;
     private final StreamProtocol protocol;
     private final DepthEventPublisher publisher;
+    private final PipelineMetrics metrics;
     private final ScheduledExecutorService reconnectScheduler;
     private final VenueProperties venueProps;
     private final WebSocketProperties wsProps;
@@ -55,12 +58,17 @@ public class StreamConnection extends WebSocketClient {
     private final AtomicLong unknownFrames = new AtomicLong();
     private final AtomicLong unknownFramesLoggedAt = new AtomicLong();
 
+    /** Should be permanently zero — see {@link #onMessage(ByteBuffer)}. */
+    private final AtomicLong binaryFrames = new AtomicLong();
+    private final AtomicLong binaryFramesLoggedAt = new AtomicLong();
+
     public StreamConnection(
             URI serverUri,
             Venue venue,
             List<Instrument> instruments,
             StreamProtocol protocol,
             DepthEventPublisher publisher,
+            PipelineMetrics metrics,
             ScheduledExecutorService reconnectScheduler,
             VenueProperties venueProps,
             WebSocketProperties wsProps
@@ -71,6 +79,7 @@ public class StreamConnection extends WebSocketClient {
         this.instruments = List.copyOf(instruments);
         this.protocol = protocol;
         this.publisher = publisher;
+        this.metrics = metrics;
         this.reconnectScheduler = reconnectScheduler;
         this.venueProps = venueProps;
         this.wsProps = wsProps;
@@ -108,11 +117,27 @@ public class StreamConnection extends WebSocketClient {
         int instrumentId = protocol.route(message, index);
         if (instrumentId >= 0) {
             publisher.publishFrame(instrumentId, message);
+            metrics.recordFrame(venue);
         } else if (instrumentId == StreamProtocol.UNKNOWN) {
             // Venues only push what was subscribed, so this should never fire; a partial
             // resubscribe after a reconnect is the one plausible source. Routing an unresolved
             // key onward would be exactly the mis-identification this design exists to prevent.
             noteUnknownFrame(message);
+        }
+    }
+
+    /**
+     * Every supported venue streams text JSON, so a binary frame means the venue switched encoding
+     * (a gzip-compressed push, or Protobuf) — without this override java-websocket would drop it
+     * silently, and the only symptom would be books that never sync. Rate-limited, since a venue
+     * that switches does so for every frame.
+     */
+    @Override
+    public void onMessage(ByteBuffer bytes) {
+        long total = binaryFrames.incrementAndGet();
+        if (dueForLog(binaryFramesLoggedAt)) {
+            log.warn("[{}] Binary frame of {} bytes — dropped, no venue streams binary ({} total)",
+                    venue, bytes.remaining(), total);
         }
     }
 
@@ -175,11 +200,16 @@ public class StreamConnection extends WebSocketClient {
 
     private void noteUnknownFrame(String message) {
         long total = unknownFrames.incrementAndGet();
-        long now = System.currentTimeMillis();
-        long last = unknownFramesLoggedAt.get();
-        if (now - last >= UNKNOWN_FRAME_LOG_INTERVAL_MS && unknownFramesLoggedAt.compareAndSet(last, now)) {
+        if (dueForLog(unknownFramesLoggedAt)) {
             log.warn("[{}] Data frame for an unsubscribed routing key — dropped ({} total): {}",
                     venue, total, message.substring(0, Math.min(message.length(), UNKNOWN_FRAME_LOG_CHARS)));
         }
+    }
+
+    /** True at most once per {@value #ANOMALY_LOG_INTERVAL_MS} ms per {@code loggedAt}, across threads. */
+    private static boolean dueForLog(AtomicLong loggedAt) {
+        long now = System.currentTimeMillis();
+        long last = loggedAt.get();
+        return now - last >= ANOMALY_LOG_INTERVAL_MS && loggedAt.compareAndSet(last, now);
     }
 }

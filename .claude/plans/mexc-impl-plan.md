@@ -147,27 +147,40 @@ MEXC source does not affect Binance's universe (failure isolation is per source)
 → Unit-tested (`MexcInstrumentSourceTest`, `MexcFuturesRestClientTest`, `MexcAdapterConfigTest`), plus a
 one-off live fetch through the production WebClient: **1052** contracts selected (1055 eligible − 3
 excluded), contract sizes from `1e-5` to `1e7`. The `/api/tickers` check needs MEXC enabled, which
-`StreamProtocolRegistry` refuses until Phase 2 binds the stream protocol — do it then.
+`StreamProtocolRegistry` refused until Phase 2 bound the stream protocol — moved to Phase 2's verify.
 
-### Phase 2 — WebSocket transport
+### Phase 2 — WebSocket transport — DONE
 
-- [ ] `MexcFuturesStreamProtocol` — the current SPI should fit without changes:
+- [x] `MexcFuturesStreamProtocol` — the SPI fit without changes:
   - `subscribeFrame`: `{"method":"sub.depth","param":{"symbol":"<nativeSymbol>"}}`, with
-    `subscribe-chunk-size: 1` so core emits one frame per instrument.
+    `subscribe-chunk-size: 1` so core emits one frame per instrument. The constructor rejects any
+    other chunk size, and any `stream-topic` but the bare `{symbol}` (pushes are routed by the
+    echoed native symbol).
   - `routingKey`: `nativeSymbol`.
-  - `route`: discriminate on the leading `"channel"` value (`push.depth` vs `rs.sub.depth`, `pong`,
-    `rs.error`), then resolve `"symbol":"…"` through `SubscriptionIndex`. Error frames → `warn`.
-  - `heartbeat`: `Heartbeat.TextPing({"method":"ping"}, ~15s)` — already supported by
-    `StreamConnection`.
-- [ ] Sub acks don't echo the symbol: log at debug for now. Ack counting belongs to the P3 health
-      surface.
-- [ ] Moderate `max-streams-per-connection` (~300 → ~4 connections) so one dropped socket doesn't
-      resync every MEXC book at once.
-- [ ] `StreamConnection` has no binary `onMessage` override — add one that logs at warn, so a
-      gzip/binary frame cannot be silently dropped.
+  - `route`: **not** on a leading `"channel"` — V1 showed depth pushes arrive as
+    `{"symbol":…,"data":…,"channel":"push.depth",…}`, channel *last*. A frame starting
+    `{"symbol":"` is a depth push with its symbol at a fixed offset; a frame starting
+    `{"channel":"` is a control frame (`rs.sub.depth`, `pong`, `rs.error`) or a depth push in the
+    documented order, which is still routed. A non-`success` ack or `rs.error` → `warn`.
+  - `heartbeat`: `Heartbeat.TextPing(15s, {"method":"ping"})`.
+- [x] Sub acks don't echo the symbol: logged at debug. Ack counting belongs to the P3 health surface.
+- [x] `max-streams-per-connection: 300` (set in Phase 0) → 3 connections for ~680 contracts.
+- [x] `StreamConnection.onMessage(ByteBuffer)` → rate-limited `warn`, so a gzip/binary frame is never
+      silently dropped.
+- [x] Per-venue frame counter, `PipelineMetrics.recordFrame(venue)`, incremented in
+      `StreamConnection` for each routed frame and logged by `PipelineHealthLogger` as
+      `frames/s <venue>=…`. Needed because the existing `msgs/s` is per shard and mixes venues; the
+      placeholder strategy stays a pure no-op.
 
-**Verify**: the no-op strategy counts frames; `PipelineHealthLogger` shows ~1.1k msg/s for MEXC
-(full universe); no 60s idle disconnects over a long run; Binance throughput unaffected.
+**Verify** (needs `MEXC_ENABLED=true`): `frames/s mexc/futures` ≈ 1k (V1 measured ~1.1k msg/s for the
+full 1106; the stock exclusion leaves ~680); no 60s idle disconnects over a long run; no
+`Binary frame` / `sub.depth rejected` / `Stream error frame` warnings; Binance throughput unaffected;
+`/api/tickers` lists the MEXC universe (the Phase 1 check deferred to here).
+→ Live local run, 2026-10-04, ~10 min: 681 selected, 678 streamed after core exclusions, on 3
+connections; `frames/s mexc/futures` steady at 640–740; zero MEXC disconnects (so the 15s ping
+holds the socket well past the 60s idle cutoff); none of the three warnings. Binance reached
+354/354 spot + 525/525 futures with the ring untouched (`drain max=0ms`). The only disconnects
+were Binance 1006s, which happen on local runs only. `/api/tickers` lists the MEXC universe.
 
 ### Phase 3 — Sync strategy (unit-tested in isolation)
 

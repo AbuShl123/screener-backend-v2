@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.LongAdder;
 @Component
 public class PipelineMetrics {
 
+    private final LongAdder[] frames = perVenue();
     private final LongAdder[] resyncs = perVenue();
     private final LongAdder[] snapshotFailures = perVenue();
 
@@ -35,6 +36,23 @@ public class PipelineMetrics {
             adders[i] = new LongAdder();
         }
         return adders;
+    }
+
+    /**
+     * One data frame arrived on a venue's WebSocket and was routed to an instrument. The only
+     * per-venue throughput number: the Disruptor counts per shard, and every shard mixes venues.
+     *
+     * <p><b>Hot path</b> — called on the WebSocket reader thread for every routed frame. A
+     * {@link LongAdder} increment is allocation-free once its cells exist, and striping keeps a
+     * venue's several reader threads from contending on one cache line.
+     */
+    public void recordFrame(Venue venue) {
+        frames[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total since startup. Subtract two samples for a rate. */
+    public long frames(Venue venue) {
+        return frames[venue.ordinal()].sum();
     }
 
     /**

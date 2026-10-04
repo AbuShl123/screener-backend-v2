@@ -4,6 +4,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.spi.StreamProtocol;
 import lombok.extern.slf4j.Slf4j;
@@ -28,6 +29,7 @@ public class ConnectionPool {
     private final WebSocketProperties wsProps;
     private final StreamProtocol protocol;
     private final DepthEventPublisher publisher;
+    private final PipelineMetrics metrics;
 
     private final List<StreamConnection> connections = new ArrayList<>();
     private final ScheduledExecutorService reconnectScheduler;
@@ -37,12 +39,14 @@ public class ConnectionPool {
                           VenueProperties venueProps,
                           WebSocketProperties wsProps,
                           StreamProtocol protocol,
-                          DepthEventPublisher publisher) {
+                          DepthEventPublisher publisher,
+                          PipelineMetrics metrics) {
         this.venue = venue;
         this.venueProps = venueProps;
         this.wsProps = wsProps;
         this.protocol = protocol;
         this.publisher = publisher;
+        this.metrics = metrics;
         this.reconnectScheduler = Executors.newSingleThreadScheduledExecutor(
                 r -> new Thread(r, "reconnect-" + venue.name().toLowerCase(Locale.ROOT))
         );
@@ -73,7 +77,7 @@ public class ConnectionPool {
             try {
                 URI uri = new URI(venueProps.streamUrl());
                 StreamConnection connection = new StreamConnection(
-                        uri, venue, batch, protocol, publisher, reconnectScheduler, venueProps, wsProps);
+                        uri, venue, batch, protocol, publisher, metrics, reconnectScheduler, venueProps, wsProps);
                 connection.connect();
                 connections.add(connection);
             } catch (URISyntaxException e) {

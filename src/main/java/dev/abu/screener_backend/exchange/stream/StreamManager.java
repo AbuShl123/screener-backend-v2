@@ -5,6 +5,7 @@ import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.InstrumentUniverseChangedEvent;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.spi.StreamProtocol;
 import dev.abu.screener_backend.exchange.spi.StreamProtocolRegistry;
@@ -56,9 +57,10 @@ public class StreamManager {
 
     @Autowired
     public StreamManager(ExchangesProperties exchanges, WebSocketProperties wsProps,
-                         StreamProtocolRegistry protocols, DepthEventPublisher publisher) {
+                         StreamProtocolRegistry protocols, DepthEventPublisher publisher,
+                         PipelineMetrics metrics) {
         this(exchanges, protocols, (venue, protocol) ->
-                new ConnectionPool(venue, exchanges.venue(venue), wsProps, protocol, publisher));
+                new ConnectionPool(venue, exchanges.venue(venue), wsProps, protocol, publisher, metrics));
     }
 
     StreamManager(ExchangesProperties exchanges, StreamProtocolRegistry protocols, PoolFactory poolFactory) {

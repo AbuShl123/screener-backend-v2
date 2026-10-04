@@ -5,6 +5,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestP
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.exchange.Instrument;
 import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.spi.Heartbeat;
 import dev.abu.screener_backend.exchange.spi.StreamProtocol;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,7 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The venue-agnostic parts of {@link StreamConnection}: subscribe chunking and frame dispatch. No
+ * The venue-agnostic parts of {@link StreamConnection}: subscribe chunking, frame dispatch and frame
+ * counting. No
  * socket is ever opened — the {@code WebSocketClient} constructor does not connect.
  */
 class StreamConnectionTest {
@@ -79,12 +82,17 @@ class StreamConnectionTest {
     }
 
     private static StreamConnection connection(StreamProtocol protocol, DepthEventPublisher publisher) {
+        return connection(protocol, publisher, new PipelineMetrics());
+    }
+
+    private static StreamConnection connection(StreamProtocol protocol, DepthEventPublisher publisher,
+                                               PipelineMetrics metrics) {
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
         VenueProperties props = new VenueProperties("ws://localhost:1", rest, "{symbol}@depth",
                 1024, 1, 1, 400, 120);
         // The reconnect scheduler is only touched from onOpen/onClose, which these tests never reach.
         return new StreamConnection(URI.create(props.streamUrl()), Venue.BINANCE_SPOT, instruments(3),
-                protocol, publisher, null, props, new WebSocketProperties(100, 1000));
+                protocol, publisher, metrics, null, props, new WebSocketProperties(100, 1000));
     }
 
     @Test
@@ -127,5 +135,38 @@ class StreamConnectionTest {
         connection.onMessage("{\"e\":\"depthUpdate\",\"s\":\"NOPE\"}");
 
         assertTrue(publisher.ids.isEmpty());
+    }
+
+    @Test
+    @DisplayName("routed frames are counted against the connection's venue; IGNORED and UNKNOWN are not")
+    void routedFramesCounted() {
+        StubProtocol protocol = new StubProtocol();
+        PipelineMetrics metrics = new PipelineMetrics();
+        StreamConnection connection = connection(protocol, new RecordingPublisher(), metrics);
+
+        protocol.routeResult = 1;
+        connection.onMessage("{\"e\":\"depthUpdate\"}");
+        connection.onMessage("{\"e\":\"depthUpdate\"}");
+        protocol.routeResult = StreamProtocol.IGNORED;
+        connection.onMessage("{\"result\":null,\"id\":0}");
+        protocol.routeResult = StreamProtocol.UNKNOWN;
+        connection.onMessage("{\"e\":\"depthUpdate\",\"s\":\"NOPE\"}");
+
+        assertEquals(2, metrics.frames(Venue.BINANCE_SPOT));
+        assertEquals(0, metrics.frames(Venue.BINANCE_FUTURES));
+    }
+
+    @Test
+    @DisplayName("a binary frame is dropped: never published, never counted, never thrown")
+    void binaryFrameDropped() {
+        PipelineMetrics metrics = new PipelineMetrics();
+        RecordingPublisher publisher = new RecordingPublisher();
+        StreamConnection connection = connection(new StubProtocol(), publisher, metrics);
+
+        connection.onMessage(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08}));
+        connection.onMessage(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08}));
+
+        assertTrue(publisher.ids.isEmpty());
+        assertEquals(0, metrics.frames(Venue.BINANCE_SPOT));
     }
 }
