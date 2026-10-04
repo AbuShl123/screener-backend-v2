@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -40,6 +41,9 @@ public final class InstrumentRegistry {
 
     private final ConcurrentHashMap<String, Instrument> byKey = new ConcurrentHashMap<>();
 
+    /** Every {@link Instrument#ruleKey} ever registered, on any exchange. */
+    private final Set<String> ruleKeys = ConcurrentHashMap.newKeySet();
+
     /** Copy-on-write; index is the instrument id. Holes are {@code null}. */
     private volatile Instrument[] byId = EMPTY;
 
@@ -49,19 +53,32 @@ public final class InstrumentRegistry {
     /**
      * Registers an instrument, or returns the existing one if {@code (venue, nativeSymbol)} was
      * already registered. Idempotent; call only from the discovery thread.
+     *
+     * <p>An existing instrument is returned unchanged, including its {@code quantityMultiplier}. A
+     * contract size changed by the exchange is therefore not picked up until restart — rare enough
+     * to accept, but logged so it is not silent.
      */
-    public synchronized Instrument register(Venue venue, String nativeSymbol, String base, String quote) {
+    public synchronized Instrument register(Venue venue, String nativeSymbol, String base, String quote,
+                                            double quantityMultiplier) {
         String key = key(venue, nativeSymbol);
         Instrument existing = byKey.get(key);
-        if (existing != null) return existing;
+        if (existing != null) {
+            if (existing.quantityMultiplier() != quantityMultiplier) {
+                log.warn("[{}] quantity multiplier changed {} -> {}; keeping {} until restart",
+                        existing.logName(), existing.quantityMultiplier(), quantityMultiplier,
+                        existing.quantityMultiplier());
+            }
+            return existing;
+        }
 
-        Instrument instrument = Instrument.of(nextId++, venue, nativeSymbol, base, quote);
+        Instrument instrument = Instrument.of(nextId++, venue, nativeSymbol, base, quote, quantityMultiplier);
 
         Instrument[] grown = new Instrument[Math.max(instrument.id() + 1, byId.length)];
         System.arraycopy(byId, 0, grown, 0, byId.length);
         grown[instrument.id()] = instrument;
 
         byKey.put(key, instrument);
+        ruleKeys.add(instrument.ruleKey());
         byId = grown; // volatile store publishes both the array and the map entry above it
         return instrument;
     }
@@ -69,6 +86,16 @@ public final class InstrumentRegistry {
     /** Looks up an instrument by its durable identity. Cold path. */
     public Optional<Instrument> find(Venue venue, String nativeSymbol) {
         return Optional.ofNullable(byKey.get(key(venue, nativeSymbol)));
+    }
+
+    /**
+     * Whether {@code symbol} is tracked on {@code market} on <b>any</b> exchange — the question
+     * rule validation asks, since a user rule applies on every exchange. Matches by
+     * {@link Instrument#ruleKey}, so {@code symbol} is the normalized {@code BASEQUOTE} spelling,
+     * not a native one. Cold path.
+     */
+    public boolean isTracked(String symbol, Market market) {
+        return ruleKeys.contains(Instrument.ruleKey(symbol, market));
     }
 
     /** Resolves an id, or {@code null} if the id was never assigned. Cold path. */

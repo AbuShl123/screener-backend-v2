@@ -243,7 +243,7 @@ public class InstrumentUniverseService {
         for (PlacedCandidate pc : candidates) {
             InstrumentCandidate c = pc.candidate();
             boolean isNew = registry.find(pc.venue(), c.nativeSymbol()).isEmpty();
-            Instrument instrument = registry.register(pc.venue(), c.nativeSymbol(), c.base(), c.quote());
+            Instrument instrument = registry.register(pc.venue(), c.nativeSymbol(), c.base(), c.quote(), c.quantityMultiplier());
             current.get(pc.venue()).add(instrument.id());
             if (isNew) {
                 slots.allocate(instrument);

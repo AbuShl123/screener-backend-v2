@@ -102,6 +102,33 @@ screener:
           subscribe-chunk-size: 400
           heartbeat-interval-seconds: 120
 
+    mexc:
+      # Futures only — MEXC spot streams Protobuf and has no adapter. Dark until the adapter is
+      # complete (.claude/plans/mexc-impl-plan.md, Phase 5): enabling it earlier fails startup,
+      # because MEXC_FUTURES has no stream protocol or sync strategy bound yet. discovery and
+      # snapshot-queue arrive with Phases 1 and 4b.
+      enabled: ${MEXC_ENABLED:false}
+      venues:
+        FUTURES:
+          rest:
+            base-url: https://api.mexc.com
+            # /api/v1/contract/detail is ~2.3 MB for ~1100 contracts (measured 2026-10-04).
+            codec-buffer-size-mb: 8
+            connect-timeout: PT5S
+            response-timeout: PT10S
+          stream-url: wss://contract.mexc.com/edge
+          # The symbol travels inside the sub.depth frame's param, so the topic is the bare symbol.
+          stream-topic: "{symbol}"
+          # No per-connection cap observed (1106 on one socket). ~300 keeps one dropped socket from
+          # resyncing every MEXC book at once.
+          max-streams-per-connection: 300
+          min-connections: 1
+          max-connections: 8
+          # sub.depth takes one symbol per frame.
+          subscribe-chunk-size: 1
+          # MEXC disconnects after 60s without a ping; docs recommend 10–20s.
+          heartbeat-interval-seconds: 15
+
   discovery:
     # Per-source wait on each universe refresh. A source that overruns is cancelled and its venues
     # keep their previous universe (no removals).

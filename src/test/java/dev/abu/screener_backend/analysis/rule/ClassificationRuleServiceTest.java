@@ -58,8 +58,10 @@ class ClassificationRuleServiceTest {
 
     private ClassificationRuleService newService() {
         InstrumentRegistry instruments = new InstrumentRegistry();
-        instruments.register(Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT");
-        instruments.register(Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT");
+        instruments.register(Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT", 1.0);
+        instruments.register(Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT", 1.0);
+        // Tracked on MEXC only, under MEXC's native spelling.
+        instruments.register(Venue.MEXC_FUTURES, "PEPE_USDT", "PEPE", "USDT", 1.0);
         ApplicationEventPublisher publisher = published::add;
         return new ClassificationRuleService(
                 stub(ClassificationRuleRepository.class),
@@ -71,13 +73,17 @@ class ClassificationRuleServiceTest {
     }
 
     private static BulkRuleRequest validUpsert() {
+        return upsertFor(new TargetDto("BTCUSDT", Market.FUTURES));
+    }
+
+    private static BulkRuleRequest upsertFor(TargetDto target) {
         return new BulkRuleRequest(List.of(new RuleAssignmentDto(
                 new RuleDto(List.of(
                         new TierDto(1, 100_000, 0.01),
                         new TierDto(2, 50_000, 0.02),
                         new TierDto(3, 25_000, 0.05),
                         new TierDto(4, 10_000, 0.1))),
-                List.of(new TargetDto("BTCUSDT", Market.FUTURES)))));
+                List.of(target))));
     }
 
     @Test
@@ -124,6 +130,30 @@ class ClassificationRuleServiceTest {
 
         assertThrows(ApiException.class,
                 () -> svc.deleteRules(UUID.randomUUID(), new BulkDeleteRequest(List.of())));
+        assertTrue(published.isEmpty());
+    }
+
+    @Test
+    void upsertAcceptsSymbolTrackedOnlyOnAnotherExchange() {
+        ClassificationRuleService svc = newService();
+        UUID user = UUID.randomUUID();
+
+        // Normalized BASEQUOTE spelling, not MEXC's native PEPE_USDT.
+        svc.upsertRules(user, upsertFor(new TargetDto("pepeusdt", Market.FUTURES)));
+
+        assertEquals(List.of(new RuleUpdatedEvent(user)), published);
+    }
+
+    @Test
+    void upsertRejectsSymbolNotTrackedOnThatMarket() {
+        ClassificationRuleService svc = newService();
+
+        // PEPEUSDT is tracked on futures only; the market still has to match.
+        assertThrows(ApiException.class, () -> svc.upsertRules(UUID.randomUUID(),
+                upsertFor(new TargetDto("PEPEUSDT", Market.SPOT))));
+        // A native spelling is not a rule symbol.
+        assertThrows(ApiException.class, () -> svc.upsertRules(UUID.randomUUID(),
+                upsertFor(new TargetDto("PEPE_USDT", Market.FUTURES))));
         assertTrue(published.isEmpty());
     }
 }

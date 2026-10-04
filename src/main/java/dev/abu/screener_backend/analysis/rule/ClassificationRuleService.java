@@ -5,10 +5,8 @@ import dev.abu.screener_backend.analysis.UserClassificationRules;
 import dev.abu.screener_backend.analysis.rule.dto.*;
 import dev.abu.screener_backend.config.OrderbookProperties;
 import dev.abu.screener_backend.error.ApiException;
-import dev.abu.screener_backend.exchange.Exchange;
 import dev.abu.screener_backend.exchange.InstrumentRegistry;
 import dev.abu.screener_backend.exchange.Market;
-import dev.abu.screener_backend.exchange.Venue;
 import dev.abu.screener_backend.user.User;
 import dev.abu.screener_backend.user.UserRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -266,16 +264,17 @@ public class ClassificationRuleService {
     }
 
     /**
-     * A rule may only target an instrument the screener actually tracks.
+     * A rule may only target a {@code (symbol, market)} the screener tracks on at least one
+     * exchange.
      *
-     * <p>Since spot and futures are now separate instruments, the old two-step lookup
-     * (find the ticker, then check its {@code hasSpot}/{@code hasFutures} flag) collapses into a
-     * single registry hit on the {@code (venue, symbol)} identity.
+     * <p>Rules are exchange-independent — one rule applies on every exchange listing the symbol —
+     * so this asks by the normalized {@code BASEQUOTE} symbol, never by an exchange's native
+     * spelling or a fixed venue. A symbol tracked only on MEXC is as valid a target as one tracked
+     * only on Binance.
      */
     private void validateTrackedTicker(TargetDto target) {
         String symbol = normalizeSymbol(target.symbol());
-        Venue venue = Venue.of(Exchange.BINANCE, target.market());
-        if (instrumentRegistry.find(venue, symbol).isEmpty()) {
+        if (!instrumentRegistry.isTracked(symbol, target.market())) {
             throw badRequest(symbol + " is not tracked on market " + target.market());
         }
     }

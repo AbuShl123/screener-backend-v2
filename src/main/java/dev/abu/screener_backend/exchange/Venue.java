@@ -14,7 +14,10 @@ package dev.abu.screener_backend.exchange;
 public enum Venue {
 
     BINANCE_SPOT(Exchange.BINANCE, Market.SPOT),
-    BINANCE_FUTURES(Exchange.BINANCE, Market.FUTURES);
+    BINANCE_FUTURES(Exchange.BINANCE, Market.FUTURES),
+    // MEXC spot is deliberately absent: its stream is Protobuf-encoded and has no adapter. A venue
+    // constant without an adapter is safe only while disabled — add it with its adapter.
+    MEXC_FUTURES(Exchange.MEXC, Market.FUTURES);
 
     private final Exchange exchange;
     private final Market market;
@@ -35,8 +38,9 @@ public enum Venue {
     /**
      * Resolves the venue for an {@code (exchange, market)} pair.
      *
-     * <p>This is the bridge used wherever an API- or DB-facing {@link Market} has to be turned into
-     * a pipeline identity — {@code /api/rules} validation and {@code /api/monitoring/orderbook}.
+     * <p>This is the bridge for turning an API- or DB-facing {@link Market} into a pipeline identity
+     * when the exchange is known. Rule validation does not use it: rules are exchange-independent,
+     * so it asks {@link InstrumentRegistry#isTracked} instead.
      *
      * @throws IllegalArgumentException if the exchange does not serve that market
      */

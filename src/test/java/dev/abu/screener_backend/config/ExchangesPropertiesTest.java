@@ -9,18 +9,26 @@ import dev.abu.screener_backend.exchange.Market;
 import dev.abu.screener_backend.exchange.Venue;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.bind.PropertySourcesPlaceholdersResolver;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.env.MutablePropertySources;
+import org.springframework.core.io.ClassPathResource;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.EnumMap;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link ExchangesProperties#isEnabled} — the single chokepoint for the {@code enabled} switch — and
- * the exchange-level {@code snapshot-queue} validation.
+ * {@link ExchangesProperties#isEnabled} — the single chokepoint for the {@code enabled} switch — the
+ * exchange-level {@code snapshot-queue} validation, and the shipped {@code application.yml}.
  */
 class ExchangesPropertiesTest {
 
@@ -79,5 +87,27 @@ class ExchangesPropertiesTest {
         assertThrows(IllegalArgumentException.class, () -> new SnapshotQueueProperties(10, Duration.ZERO, ok));
         assertThrows(IllegalArgumentException.class, () -> new SnapshotQueueProperties(10, ok, Duration.ofSeconds(-1)));
         assertThrows(IllegalArgumentException.class, () -> new SnapshotQueueProperties(10, null, ok));
+    }
+
+    @Test
+    @DisplayName("the shipped application.yml binds: Binance on, MEXC futures configured but off by default")
+    void shippedYamlBinds() throws IOException {
+        MutablePropertySources sources = new MutablePropertySources();
+        new YamlPropertySourceLoader()
+                .load("application.yml", new ClassPathResource("application.yml"))
+                .forEach(sources::addLast);
+        // Resolves ${MEXC_ENABLED:false} etc. to their defaults — no environment is attached.
+        ExchangesProperties props = new Binder(ConfigurationPropertySources.from(sources),
+                new PropertySourcesPlaceholdersResolver(sources))
+                .bind("screener", ExchangesProperties.class)
+                .get();
+
+        assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
+        assertTrue(props.isEnabled(Venue.BINANCE_FUTURES));
+        assertFalse(props.isEnabled(Venue.MEXC_FUTURES));
+
+        VenueProperties mexc = props.venue(Venue.MEXC_FUTURES);
+        assertEquals("BTC_USDT", mexc.streamTopic("BTC_USDT"));
+        assertEquals(1, mexc.subscribeChunkSize());
     }
 }

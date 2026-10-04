@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 /**
  * Pins the three derived keys built by {@link Instrument#of}.
  *
- * <p>Only one {@link Exchange} exists today, so the cross-exchange case uses a hand-rolled
+ * <p>Only Binance has a spot venue today, so the cross-exchange spot case uses a hand-rolled
  * instrument (the record constructor is public) with a different {@code feedKey}.
  */
 public class InstrumentTest {
@@ -58,13 +58,34 @@ public class InstrumentTest {
         assertEquals(binance.symbol(), other.symbol());
     }
 
+    @Test
+    @DisplayName("MEXC futures: normalized symbol and ruleKey, venue-specific feedKey and logName")
+    void mexcFuturesKeys() {
+        Instrument mexc = Instrument.of(0, Venue.MEXC_FUTURES, "BTC_USDT", "BTC", "USDT", 0.0001);
+        Instrument binance = Instrument.of(1, Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT");
+
+        assertEquals("BTCUSDT", mexc.symbol());
+        assertEquals(binance.ruleKey(), mexc.ruleKey());
+        assertEquals("MEXC:FUTURES:BTCUSDT", mexc.feedKey());
+        assertEquals("MEXC_FUTURES/BTC_USDT", mexc.logName());
+        assertEquals(Exchange.MEXC, mexc.exchange());
+    }
+
+    @Test
+    @DisplayName("quantityMultiplier defaults to 1.0 and is carried as given")
+    void quantityMultiplier() {
+        assertEquals(1.0, Instrument.of(0, Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT").quantityMultiplier());
+        assertEquals(0.0001, Instrument.of(1, Venue.MEXC_FUTURES, "BTC_USDT", "BTC", "USDT", 0.0001)
+                .quantityMultiplier());
+    }
+
     /**
-     * Stand-in for a second exchange's spot instrument until a second {@link Exchange} exists. Its
+     * Stand-in for a second exchange's spot instrument until a second exchange has a spot venue. Its
      * venue (and so its payload {@code exchange}) is still Binance; only the keys differ.
      */
     public static Instrument otherExchangeSpot(int id, String nativeSymbol, String base, String quote) {
         String symbol = base + quote;
-        return new Instrument(id, Venue.BINANCE_SPOT, nativeSymbol, base, quote,
+        return new Instrument(id, Venue.BINANCE_SPOT, nativeSymbol, base, quote, 1.0,
                 symbol, symbol + ":SPOT", "OTHER:SPOT:" + symbol, "OTHER_SPOT/" + nativeSymbol);
     }
 }

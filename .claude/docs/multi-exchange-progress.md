@@ -52,7 +52,8 @@ minute is what paces it (§3).
 
 ## 2. Identity — done and stable
 
-- **`Venue = (Exchange, Market)`** is the adapter unit: `Venue.BINANCE_SPOT`, `Venue.BINANCE_FUTURES`.
+- **`Venue = (Exchange, Market)`** is the adapter unit: `Venue.BINANCE_SPOT`, `Venue.BINANCE_FUTURES`,
+  and `Venue.MEXC_FUTURES` (constant and YAML present, disabled, no adapter yet — MEXC plan Phase 0).
   `Market` remains the persistence- and API-facing type; `Venue.of(exchange, market)` bridges the two.
   This is what let identity land without a Flyway migration or a frontend contract change.
 - **`Instrument`** is a record carrying `id`, `venue`, `nativeSymbol`, `base`, `quote`, plus four
@@ -60,7 +61,12 @@ minute is what paces it (§3).
   (`BTCUSDT:SPOT`, venue-agnostic, byte-identical to the stored rule format — for Binance
   `base + quote == nativeSymbol`), `feedKey` (`BINANCE:SPOT:BTCUSDT`, one instrument; keys
   classification state and feed stores) and `logName` (`VENUE/SYMBOL`, log lines only). The unread
-  `canonical` (`BTC/USDT`) field was removed.
+  `canonical` (`BTC/USDT`) field was removed. It also carries `quantityMultiplier` (from
+  `InstrumentCandidate`, default 1.0): wire quantity → base asset, applied by the strategy at parse
+  time so books always hold base asset. MEXC futures quotes contracts, so there it is the contract size.
+- **Rule validation is exchange-independent**: `ClassificationRuleService` asks
+  `InstrumentRegistry.isTracked(symbol, market)` — any exchange, matched by `ruleKey` — rather than
+  a Binance venue by native symbol.
 - **`InstrumentRegistry`** hands out dense ids: stable across refreshes, never transferred to a
   different instrument (a delisting leaves a hole), never persisted. `describe(int)` is the cold-path
   name lookup that keeps logs readable without putting `String symbol` back on the hot path.
@@ -538,7 +544,6 @@ and a YAML block.* Measured against that, here is what is already additive and w
 | Seam | Current state | Needed |
 |---|---|---|
 | Config | `screener.orderbook.*` and `screener.websocket.*` still sit outside `screener.exchanges.*` | Fold in under the venue block (P2 step 6) |
-| Rule validation | `ClassificationRuleService.validateTrackedTicker` checks `Venue.of(Exchange.BINANCE, market)` by native symbol, so a rule for a symbol tracked only on another exchange (or spelled differently there) is rejected | Check "tracked on any exchange for this market" by `Instrument.symbol()` — needs a registry lookup by `ruleKey` |
 
 Once those land, Bybit becomes a new package plus YAML. Bybit is venue #2 deliberately: it is
 model B (in-stream snapshot, resubscribe-to-recover, application-level heartbeat, topic routing), so

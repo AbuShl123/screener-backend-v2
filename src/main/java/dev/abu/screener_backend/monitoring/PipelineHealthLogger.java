@@ -65,9 +65,9 @@ public class PipelineHealthLogger {
 
         StringBuilder line = new StringBuilder(220);
         line.append("pipeline:");
-        appendBookCounts(line);
-        appendResyncs(line);
-        appendSnapshotFailures(line);
+        int[] tracked = appendBookCounts(line);
+        appendResyncs(line, tracked);
+        appendSnapshotFailures(line, tracked);
         appendThroughput(line, elapsedSec);
         appendRingFree(line);
         appendDrain(line);
@@ -75,8 +75,13 @@ public class PipelineHealthLogger {
         log.info("{}", line);
     }
 
-    /** Synced books per venue against the number tracked, so a shortfall is visible without arithmetic. */
-    private void appendBookCounts(StringBuilder line) {
+    /**
+     * Synced books per venue against the number tracked, so a shortfall is visible without arithmetic.
+     *
+     * @return books tracked per venue, by ordinal. The per-venue sections all skip a venue with
+     *         none, so a disabled venue never appears in the line.
+     */
+    private int[] appendBookCounts(StringBuilder line) {
         int[] synced = new int[Venue.values().length];
         int[] total = new int[Venue.values().length];
         for (BookSlot slot : slots.snapshot()) {
@@ -91,24 +96,27 @@ public class PipelineHealthLogger {
             line.append(' ').append(shortName(venue)).append('=')
                     .append(synced[venue.ordinal()]).append('/').append(total[venue.ordinal()]);
         }
+        return total;
     }
 
-    private void appendResyncs(StringBuilder line) {
+    private void appendResyncs(StringBuilder line, int[] tracked) {
         line.append(" | resyncs");
         for (Venue venue : Venue.values()) {
             long total = metrics.resyncs(venue);
             long delta = total - lastResyncs[venue.ordinal()];
             lastResyncs[venue.ordinal()] = total;
+            if (tracked[venue.ordinal()] == 0) continue;
             line.append(' ').append(shortName(venue)).append('=').append(delta);
         }
     }
 
-    private void appendSnapshotFailures(StringBuilder line) {
+    private void appendSnapshotFailures(StringBuilder line, int[] tracked) {
         line.append(" | snapshot failures");
         for (Venue venue : Venue.values()) {
             long total = metrics.snapshotFailures(venue);
             long delta = total - lastSnapshotFailures[venue.ordinal()];
             lastSnapshotFailures[venue.ordinal()] = total;
+            if (tracked[venue.ordinal()] == 0) continue;
             line.append(' ').append(shortName(venue)).append('=').append(delta);
         }
     }

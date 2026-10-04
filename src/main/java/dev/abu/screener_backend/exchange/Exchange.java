@@ -7,5 +7,6 @@ package dev.abu.screener_backend.exchange;
  * constant names must match the YAML keys (relaxed binding: {@code binance} → {@code BINANCE}).
  */
 public enum Exchange {
-    BINANCE
+    BINANCE,
+    MEXC
 }

@@ -37,8 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * per-source failure isolation. Fake sources only — no Spring context, no network.
  *
  * <p>Two-source cases split Binance into a spot-only and a futures-only source. That is not how
- * the Binance adapter ships, but it is the only way to get two independent sources while
- * {@link Exchange} has a single constant, and core cannot tell the difference.
+ * the Binance adapter ships, but it keeps the fixtures to one exchange's YAML, and core cannot tell
+ * the difference.
  */
 class InstrumentUniverseServiceTest {
 
@@ -70,8 +70,13 @@ class InstrumentUniverseServiceTest {
             assertThrows(IllegalStateException.class, () -> service(List.of(new FakeSource(Set.of()))));
         }
 
-        // "Spans two exchanges" is enforced in the constructor too, but needs a second Exchange
-        // constant to construct. Add the case alongside the first non-Binance Venue.
+        @Test
+        @DisplayName("a source spanning two exchanges throws")
+        void multiExchangeClaimThrows() {
+            FakeSource source = new FakeSource(Set.of(Venue.BINANCE_FUTURES, Venue.MEXC_FUTURES));
+
+            assertThrows(IllegalStateException.class, () -> service(List.of(source)));
+        }
 
         @Test
         @DisplayName("a source whose venues are all disabled is skipped and never fetched")
@@ -115,6 +120,19 @@ class InstrumentUniverseServiceTest {
             assertEquals(2, id(Venue.BINANCE_FUTURES, "BTCUSDT"));
             assertEquals(3, id(Venue.BINANCE_FUTURES, "ETHUSDT"));
             assertEquals(4, events.getFirst().getAdded().size());
+        }
+
+        @Test
+        @DisplayName("a candidate's quantity multiplier reaches the registered instrument")
+        void quantityMultiplierCarried() {
+            FakeSource source = new FakeSource(BOTH).returning(() -> both(
+                    candidates("BTCUSDT"),
+                    List.of(new InstrumentCandidate("ETHUSDT", "ETH", "USDT", 0.01))));
+
+            service(List.of(source)).refresh();
+
+            assertEquals(1.0, registry.find(Venue.BINANCE_SPOT, "BTCUSDT").orElseThrow().quantityMultiplier());
+            assertEquals(0.01, registry.find(Venue.BINANCE_FUTURES, "ETHUSDT").orElseThrow().quantityMultiplier());
         }
 
         @Test

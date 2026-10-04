@@ -99,22 +99,31 @@ New package `exchange/mexc/`, registered via `MexcAdapterConfig`, mirroring `bin
 
 ## 3. Phases
 
-### Phase 0 — Core prep and verification
+### Phase 0 — Core prep and verification — DONE
 
 Mostly the non-additive edits, done once.
 
-- [ ] `Exchange.MEXC`; `Venue.MEXC_FUTURES`. Do **not** add `MEXC_SPOT` until it is implemented, so no
+- [x] `Exchange.MEXC`; `Venue.MEXC_FUTURES`. Do **not** add `MEXC_SPOT` until it is implemented, so no
       registry ever sees an unbound venue.
-- [ ] Quantity multiplier on `InstrumentCandidate` and `Instrument` (default 1.0; Binance unchanged).
-- [ ] Fix `ClassificationRuleService.validateTrackedTicker`: it hardcodes `Venue.of(Exchange.BINANCE, …)`
+- [x] Quantity multiplier on `InstrumentCandidate` and `Instrument` (default 1.0; Binance unchanged).
+      Validated positive and finite at the candidate; `InstrumentRegistry.register` warns if a
+      refresh reports a different value for an existing instrument (kept until restart, §5).
+- [x] Fix `ClassificationRuleService.validateTrackedTicker`: it hardcodes `Venue.of(Exchange.BINANCE, …)`
       and would reject rules on MEXC-only symbols. Validate "tracked on any exchange for this market"
-      by `symbol` / `ruleKey`.
-- [ ] `screener.exchanges.mexc` YAML block, `enabled: ${MEXC_ENABLED:false}` until Phase 5.
-- [ ] **V1 — empirical version capture.** Record ~1 minute of `push.depth` for a few liquid and a few
+      by `symbol` / `ruleKey`. → `InstrumentRegistry.isTracked(symbol, market)`, backed by a set
+      of every registered `ruleKey`.
+- [x] `screener.exchanges.mexc` YAML block, `enabled: ${MEXC_ENABLED:false}` until Phase 5. Carries
+      the `FUTURES` transport block (REST, stream URL, `stream-topic: "{symbol}"`, chunk size 1,
+      300 streams/connection, 15s heartbeat, 8 MB codec buffer for the ~2.3 MB `/contract/detail`);
+      `discovery` and `snapshot-queue` arrive with Phases 1 and 4b.
+- [x] **V1 — empirical version capture.** Record ~1 minute of `push.depth` for a few liquid and a few
       illiquid contracts, plus a couple of REST snapshots taken mid-stream. Confirm:
       (a) push `version` increments by exactly 1, (b) snapshot `version` lines up with the push
       counter, (c) `vol` is in contracts (BTC_USDT top-of-book quantities should look like contract
       counts, not BTC). Save findings under `external-docs/mexc/`.
+      → `external-docs/mexc/mexc-depth-versioning-empirical.md`. **(a) failed**: pushes are
+      aggregated, but carry undocumented `begin`/`end` fields that are contiguous. (b) and (c) hold.
+      Phase 3's `check()` changes accordingly — see the note there.
 
 ### Phase 1 — Universe discovery
 
@@ -159,6 +168,11 @@ invariants.
 
 - [ ] `MexcSyncContext`: `ArrayDeque<String>` buffer (bounded), `long lastVersion` (-1 = no sync point),
       single `reset()`.
+> **Superseded by V1.** The `+1` predicate below would desync on most pushes. Use the
+> Binance-spot-shaped predicate over `begin`/`end` from
+> `external-docs/mexc/mexc-depth-versioning-empirical.md` ("Implications for the sync strategy"),
+> and locate `begin`/`end` rather than `version` in the §1.2 pre-scan.
+
 - [ ] `check()` (assuming V1 confirms +1 semantics):
       - `version <= lastVersion` → `IGNORE`
       - `version == lastVersion + 1` → `OK`, advance cursor

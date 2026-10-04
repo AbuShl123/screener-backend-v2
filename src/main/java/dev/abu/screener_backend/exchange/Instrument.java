@@ -17,6 +17,11 @@ package dev.abu.screener_backend.exchange;
  *                     be {@code "BTC_USDT"})
  * @param base         base asset, e.g. {@code "BTC"}
  * @param quote        quote asset, e.g. {@code "USDT"}
+ * @param quantityMultiplier wire quantity → base-asset quantity; the sync strategy multiplies every
+ *                     level by it at parse time, so the {@code OrderBook} and everything downstream
+ *                     see base asset. {@code 1.0} on Binance; the contract size on MEXC futures.
+ *                     Fixed at registration — a value changed by a later refresh is not picked up
+ *                     until restart (see {@link InstrumentRegistry#register})
  * @param symbol       precomputed {@code base + quote}, e.g. {@code "BTCUSDT"} — the normalized,
  *                     exchange-independent spelling used by the rule API, the high-liquidity set
  *                     and the WebSocket payload
@@ -33,6 +38,7 @@ public record Instrument(
         String nativeSymbol,
         String base,
         String quote,
+        double quantityMultiplier,
         String symbol,
         String ruleKey,
         String feedKey,
@@ -52,7 +58,8 @@ public record Instrument(
      * two instruments sharing one would share classification state and overwrite each other's
      * feed entry.
      */
-    public static Instrument of(int id, Venue venue, String nativeSymbol, String base, String quote) {
+    public static Instrument of(int id, Venue venue, String nativeSymbol, String base, String quote,
+                                double quantityMultiplier) {
         String symbol = base + quote;
         String market = venue.market().name();
         return new Instrument(
@@ -61,11 +68,25 @@ public record Instrument(
                 nativeSymbol,
                 base,
                 quote,
+                quantityMultiplier,
                 symbol,
-                symbol + ":" + market,
+                ruleKey(symbol, venue.market()),
                 venue.exchange().name() + ":" + market + ":" + symbol,
                 venue.name() + "/" + nativeSymbol
         );
+    }
+
+    /** An instrument whose wire quantities are already in base asset. */
+    public static Instrument of(int id, Venue venue, String nativeSymbol, String base, String quote) {
+        return of(id, venue, nativeSymbol, base, quote, 1.0);
+    }
+
+    /**
+     * The {@code ruleKey} format, {@code SYMBOL:MARKET}. The one place it is spelled, so the registry's
+     * tracked-rule-key lookup cannot drift from the key instruments carry.
+     */
+    public static String ruleKey(String symbol, Market market) {
+        return symbol + ":" + market.name();
     }
 
     public Market market() {
