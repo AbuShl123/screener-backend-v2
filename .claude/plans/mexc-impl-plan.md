@@ -133,7 +133,8 @@ Mostly the non-additive edits, done once.
 - [x] `MexcInstrumentSource` for `MEXC_FUTURES` only. Filter: `quoteCoin == USDT`,
       `futureType == 1` (perpetual), `state == 0`, `apiAllowed == true`. **Hardcoded**, not YAML —
       see decision 1 (§6). Exclusions are applied by core afterwards — decision 2 (§6).
-      D1 (§4) still open — no stock / turnover filter yet.
+      Tokenized stocks (`*STOCK_USDT`) excluded since — decision 4 (§6); the turnover part of D1
+      (§4) is still open.
 - [x] Mapping: `BTC_USDT` → `nativeSymbol=BTC_USDT`, `base=BTC`, `quote=USDT`, so
       `symbol=BTCUSDT` and `ruleKey=BTCUSDT:FUTURES` — user rules apply on MEXC with no change.
       `contractSize` → quantity multiplier. A row with a missing / non-positive `contractSize` is
@@ -257,7 +258,7 @@ The Disruptor, consumer and classifier are already venue-agnostic; nothing new s
 
 | # | Question | Notes |
 |---|---|---|
-| D1 | **Universe size** — all ~1106 contracts, or a filtered set? | Full set includes tokenized stocks (`*STOCK_USDT`; ~370 of the 1052 selected on 2026-10-04 — no clean field marks them, only the name suffix and `conceptPlate` `mc-trade-zone-Stock`) and pairs with no activity. Options: exclude list; minimum 24h turnover via `/api/v1/contract/ticker` (`amount24`); intersection with Binance futures. Affects cold-start time and connection count. |
+| D1 | **Universe size** — all ~1106 contracts, or a filtered set? | *Partly decided: tokenized stocks excluded (§6, decision 4); turnover filter still open.* Full set includes tokenized stocks (`*STOCK_USDT`; ~370 of the 1052 selected on 2026-10-04 — no clean field marks them, only the name suffix and `conceptPlate` `mc-trade-zone-Stock`) and pairs with no activity. Options: exclude list; minimum 24h turnover via `/api/v1/contract/ticker` (`amount24`); intersection with Binance futures. Affects cold-start time and connection count. |
 | D2 | **Global tier calibration** | Default tiers were tuned on Binance liquidity; the same dollar wall means more on MEXC. Acceptable for now, but a product question. |
 | D3 | **Ordering of 4a vs 3** | The strategy can be built against `FakeRecoverySink` before the queue exists, so 4a (a Binance-only refactor) can run in parallel with Phases 1–3 rather than after. |
 
@@ -297,3 +298,10 @@ The Disruptor, consumer and classifier are already venue-agnostic; nothing new s
    Binance's spot and futures are one API under two prefixes, hence `BinancePaths`; MEXC's are not
    (envelope, DTOs, symbol format and depth-path shape all differ, on the same host), so MEXC spot
    will get its own `MexcSpotRestClient`.
+4. **Tokenized-stock perpetuals are excluded** (2026-10-04): `MexcInstrumentSource` drops any symbol
+   ending in `STOCK_USDT` (~370 of 1052). They track US equities, not crypto: thin, market-maker-quoted
+   books that go quiet when the stock market closes, no Binance counterpart for user rules, and ~1.5 min
+   of extra cold-start snapshots. No field marks them; the name suffix is the filter
+   (`conceptPlate` `mc-trade-zone-Stock` is the fallback signal if it ever stops matching). A
+   non-crypto contract without the suffix (e.g. `XLE`, sampled in V1, which looks like an ETF ticker)
+   is not caught by it.

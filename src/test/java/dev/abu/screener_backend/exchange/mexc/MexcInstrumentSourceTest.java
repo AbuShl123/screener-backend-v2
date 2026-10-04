@@ -32,7 +32,8 @@ class MexcInstrumentSourceTest {
               {"symbol": "LUNA_USDT",      "baseCoin": "LUNA", "quoteCoin": "USDT", "futureType": 1, "state": 3, "apiAllowed": true,  "contractSize": 1},
               {"symbol": "ZC_USDT",        "baseCoin": "ZC",   "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": false, "contractSize": 1},
               {"symbol": "BTC_USDC",       "baseCoin": "BTC",  "quoteCoin": "USDC", "futureType": 1, "state": 0, "apiAllowed": true,  "contractSize": 0.0001},
-              {"symbol": "NOSTATE_USDT",   "baseCoin": "NOSTATE", "quoteCoin": "USDT", "futureType": 1, "apiAllowed": true, "contractSize": 1}
+              {"symbol": "NOSTATE_USDT",   "baseCoin": "NOSTATE", "quoteCoin": "USDT", "futureType": 1, "apiAllowed": true, "contractSize": 1},
+              {"symbol": "PLTRSTOCK_USDT", "baseCoin": "PLTRSTOCK", "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true, "contractSize": 0.01}
             ]
             """;
 
@@ -43,7 +44,7 @@ class MexcInstrumentSourceTest {
     }
 
     @Test
-    @DisplayName("USDT ∧ perpetual ∧ enabled ∧ apiAllowed; a missing state is not 'enabled'")
+    @DisplayName("USDT ∧ perpetual ∧ enabled ∧ apiAllowed ∧ not a tokenized stock; a missing state is not 'enabled'")
     void policy() {
         List<InstrumentCandidate> result = source(parse(CONTRACTS)).fetch().get(Venue.MEXC_FUTURES);
 
