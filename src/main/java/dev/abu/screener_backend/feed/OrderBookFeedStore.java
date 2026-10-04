@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * Shared data structure between the classifier (consumer threads) and the broadcaster (sender thread).
  * All access goes through the three public methods — internal maps are never exposed directly.
  *
- * <p>Keyed by {@link dev.abu.screener_backend.exchange.Instrument#feedKey() feedKey}
+ * <p>Keyed by {@link dev.abu.screener_backend.marketdata.Instrument#feedKey() feedKey}
  * ({@code "EXCHANGE:MARKET:SYMBOL"}), so the same symbol on two exchanges holds two entries.
  */
 @Component

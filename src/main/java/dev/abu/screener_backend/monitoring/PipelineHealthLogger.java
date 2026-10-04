@@ -1,11 +1,11 @@
 package dev.abu.screener_backend.monitoring;
 
-import dev.abu.screener_backend.exchange.Venue;
-import dev.abu.screener_backend.exchange.book.BookSlot;
-import dev.abu.screener_backend.exchange.book.BookSlotTable;
-import dev.abu.screener_backend.exchange.book.OrderBookState;
-import dev.abu.screener_backend.exchange.health.PipelineMetrics;
-import dev.abu.screener_backend.exchange.ingress.DisruptorShardManager;
+import dev.abu.screener_backend.marketdata.Venue;
+import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
+import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
+import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
 import dev.abu.screener_backend.feed.OrderBookBroadcaster;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,7 +39,7 @@ import org.springframework.stereotype.Component;
  *   <li><b>drain</b> — whether delivery, rather than ingest, is the bottleneck.</li>
  * </ul>
  *
- * <p>Lives in {@code monitoring/} because it reads across {@code exchange/} and {@code feed/};
+ * <p>Lives in {@code monitoring/} because it reads across {@code marketdata/} and {@code feed/};
  * putting it in either would have coupled them. Nothing depends on it, so it introduces no cycle.
  *
  * <p>Everything here runs on the scheduler thread and samples counters the pipeline maintains

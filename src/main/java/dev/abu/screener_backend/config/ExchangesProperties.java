@@ -1,8 +1,8 @@
 package dev.abu.screener_backend.config;
 
-import dev.abu.screener_backend.exchange.Exchange;
-import dev.abu.screener_backend.exchange.Market;
-import dev.abu.screener_backend.exchange.Venue;
+import dev.abu.screener_backend.marketdata.Exchange;
+import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.Venue;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;

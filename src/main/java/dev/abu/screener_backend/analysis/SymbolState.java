@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.analysis;
 
-import dev.abu.screener_backend.exchange.book.PriceLevelEntry;
+import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
 import dev.abu.screener_backend.feed.ClassifiedLevel;
 
 import java.util.Map;
@@ -9,7 +9,7 @@ import static dev.abu.screener_backend.analysis.OrderBookClassifier.TOP_LEVELS;
 
 /**
  * Per-instrument activity state for one classification context (the global default or one user),
- * held under the instrument's {@link dev.abu.screener_backend.exchange.Instrument#feedKey() feedKey}. Extracted out of {@link OrderBookClassifier} (Phase C) so a
+ * held under the instrument's {@link dev.abu.screener_backend.marketdata.Instrument#feedKey() feedKey}. Extracted out of {@link OrderBookClassifier} (Phase C) so a
  * {@link UserClassificationContext} can declare its own {@code Map<String, SymbolState>}; the
  * behavior is unchanged from when it was a private inner class.
  *

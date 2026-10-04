@@ -56,7 +56,7 @@ package imports `binance/` (except `SnapshotFetchQueue → BinanceRestClient`, w
 ### 2.1 `DepthEventPublisher`
 
 ```java
-package dev.abu.screener_backend.exchange.ingress;
+package dev.abu.screener_backend.marketdata.ingress;
 
 /**
  * The only way events enter the sharded pipeline. Implementations pick the shard from the id
@@ -64,16 +64,16 @@ package dev.abu.screener_backend.exchange.ingress;
  */
 public interface DepthEventPublisher {
 
-    /**
-     * Hot path, WebSocket reader threads. Must not parse.
-     *
-     * @param instrumentId already resolved by the transport; always a valid, published id
-     * @param payload      the frame exactly as received
-     */
-    void publishFrame(int instrumentId, String payload);        // EventType.WS_MSG
+  /**
+   * Hot path, WebSocket reader threads. Must not parse.
+   *
+   * @param instrumentId already resolved by the transport; always a valid, published id
+   * @param payload      the frame exactly as received
+   */
+  void publishFrame(int instrumentId, String payload);        // EventType.WS_MSG
 
-    /** Snapshot-fetch completion threads (Reactor). */
-    void publishSnapshot(int instrumentId, String payload);     // EventType.REST_MSG
+  /** Snapshot-fetch completion threads (Reactor). */
+  void publishSnapshot(int instrumentId, String payload);     // EventType.REST_MSG
 }
 ```
 
@@ -185,18 +185,20 @@ block a startup failure. This is **not a regression**: `WebClientConfig` already
 ### 4.1 `Heartbeat`
 
 ```java
-package dev.abu.screener_backend.exchange.spi;
+package dev.abu.screener_backend.marketdata.spi;
 
 /** How a connection keeps itself alive. The interval comes from the venue's config. */
 public sealed interface Heartbeat {
 
-    Duration interval();
+  Duration interval();
 
-    /** A WebSocket control-frame PING (Binance). */
-    record ProtocolPing(Duration interval) implements Heartbeat {}
+  /** A WebSocket control-frame PING (Binance). */
+  record ProtocolPing(Duration interval) implements Heartbeat {
+  }
 
-    /** An application-level text frame (Bybit {@code {"op":"ping"}}, MEXC {@code {"method":"PING"}}). */
-    record TextPing(Duration interval, String payload) implements Heartbeat {}
+  /** An application-level text frame (Bybit {@code {"op":"ping"}}, MEXC {@code {"method":"PING"}}). */
+  record TextPing(Duration interval, String payload) implements Heartbeat {
+  }
 }
 ```
 
@@ -207,7 +209,7 @@ then gains the arm later.
 ### 4.2 `StreamProtocol`
 
 ```java
-package dev.abu.screener_backend.exchange.spi;
+package dev.abu.screener_backend.marketdata.spi;
 
 /**
  * One venue's wire protocol: what to send, how to read what comes back, and how to stay alive.
@@ -218,31 +220,31 @@ package dev.abu.screener_backend.exchange.spi;
  */
 public interface StreamProtocol {
 
-    /** The frame was not a data frame for any instrument: ack, pong, error, or unrecognised. */
-    int IGNORED = -2;
-    /** A data frame whose routing key this connection never subscribed. Same value as {@link SubscriptionIndex#resolve} misses. */
-    int UNKNOWN = -1;
+  /** The frame was not a data frame for any instrument: ack, pong, error, or unrecognised. */
+  int IGNORED = -2;
+  /** A data frame whose routing key this connection never subscribed. Same value as {@link SubscriptionIndex#resolve} misses. */
+  int UNKNOWN = -1;
 
-    /**
-     * Cold. One subscribe frame for a chunk of instruments. Core chunks by the venue's
-     * {@code subscribe-chunk-size}; {@code requestId} is the chunk's index on this connection.
-     */
-    String subscribeFrame(List<Instrument> chunk, int requestId);
+  /**
+   * Cold. One subscribe frame for a chunk of instruments. Core chunks by the venue's
+   * {@code subscribe-chunk-size}; {@code requestId} is the chunk's index on this connection.
+   */
+  String subscribeFrame(List<Instrument> chunk, int requestId);
 
-    /** Cold. The key the connection's {@link SubscriptionIndex} is built on. */
-    String routingKey(Instrument instrument);
+  /** Cold. The key the connection's {@link SubscriptionIndex} is built on. */
+  String routingKey(Instrument instrument);
 
-    /**
-     * <b>Hot path</b>, called on the WebSocket reader thread for every frame. No allocation beyond
-     * what {@link SubscriptionIndex#resolve} does and no logging above DEBUG, except for rare
-     * error frames.
-     *
-     * @return the instrument id ({@code >= 0}), {@link #IGNORED}, or {@link #UNKNOWN}
-     */
-    int route(String frame, SubscriptionIndex index);
+  /**
+   * <b>Hot path</b>, called on the WebSocket reader thread for every frame. No allocation beyond
+   * what {@link SubscriptionIndex#resolve} does and no logging above DEBUG, except for rare
+   * error frames.
+   *
+   * @return the instrument id ({@code >= 0}), {@link #IGNORED}, or {@link #UNKNOWN}
+   */
+  int route(String frame, SubscriptionIndex index);
 
-    /** Cold; read once per connection open. */
-    Heartbeat heartbeat();
+  /** Cold; read once per connection open. */
+  Heartbeat heartbeat();
 }
 ```
 
@@ -274,15 +276,15 @@ semantics stay core-owned. `SubscriptionIndex.resolve(msg, start, end)` keeps it
 ## 5. Step 4 — `BinanceStreamProtocol`
 
 ```java
-package dev.abu.screener_backend.exchange.binance;
+package dev.abu.screener_backend.marketdata.binance;
 
 @Slf4j
 public final class BinanceStreamProtocol implements StreamProtocol {
 
-    private final Venue venue;
-    private final VenueProperties props;
+  private final Venue venue;
+  private final VenueProperties props;
 
-    public BinanceStreamProtocol(Venue venue, VenueProperties props) { ... }
+  public BinanceStreamProtocol(Venue venue, VenueProperties props) { ...}
 ```
 
 | Method | Behaviour (moved from `BinanceStreamClient` unless noted) |

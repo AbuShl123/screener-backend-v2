@@ -9,7 +9,7 @@ weight-budget ceiling) are design constraints for P3/P4, not trivia. They are ex
 re-derive and easy to re-litigate from intuition. The run also happens to contain a real
 mass-disconnect event, which is not something we can reproduce on demand.
 
-**Related reading**: `.claude/docs/multi-exchange-progress.md` §4 (the sync algorithm these numbers
+**Related reading**: `.claude/docs/multi-exchange-progress.md` §7–§8 (the sync algorithm these numbers
 exercise), `.claude/plans/multi-exchange-architecture-vision.md` §6–§8 (the seams these numbers
 size).
 

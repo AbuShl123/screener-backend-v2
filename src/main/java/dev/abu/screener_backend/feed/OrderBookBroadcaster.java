@@ -2,7 +2,7 @@ package dev.abu.screener_backend.feed;
 
 import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
-import dev.abu.screener_backend.exchange.Instrument;
+import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.ws.UserWebSocketSession;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;

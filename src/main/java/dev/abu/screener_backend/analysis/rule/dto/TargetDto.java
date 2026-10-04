@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.analysis.rule.dto;
 
-import dev.abu.screener_backend.exchange.Market;
+import dev.abu.screener_backend.marketdata.Market;
 
 /**
  * A single {@code (symbol, market)} a rule applies to.

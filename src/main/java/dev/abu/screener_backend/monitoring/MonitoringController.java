@@ -2,15 +2,10 @@ package dev.abu.screener_backend.monitoring;
 
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.analysis.UserFeedRegistry.UserPresence;
-import dev.abu.screener_backend.exchange.Exchange;
-import dev.abu.screener_backend.exchange.InstrumentRegistry;
-import dev.abu.screener_backend.exchange.Market;
-import dev.abu.screener_backend.exchange.Venue;
-import dev.abu.screener_backend.exchange.book.BookSlot;
-import dev.abu.screener_backend.exchange.book.BookSlotTable;
-import dev.abu.screener_backend.exchange.book.OrderBook;
-import dev.abu.screener_backend.exchange.book.OrderBookState;
-import dev.abu.screener_backend.exchange.book.PriceLevelEntry;
+import dev.abu.screener_backend.marketdata.InstrumentRegistry;
+import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.monitoring.dto.UsageReportResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -23,7 +18,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
-import java.util.TreeMap;
 
 /**
  * Operational / monitoring endpoints used to inspect and debug the running screener.

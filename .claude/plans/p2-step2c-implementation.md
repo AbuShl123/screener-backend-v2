@@ -224,7 +224,7 @@ public REST payload change.
 ## 3. The SPI
 
 ```java
-package dev.abu.screener_backend.exchange.spi;
+package dev.abu.screener_backend.marketdata.spi;
 
 /** One configured instance per venue. Stateless — all per-book state lives in BookSyncContext. */
 public interface DepthSyncStrategy {
@@ -237,7 +237,8 @@ public interface DepthSyncStrategy {
 }
 
 /** Opaque per-book sync state. Core stores it in the slot and never inspects it. */
-public interface BookSyncContext {}
+public interface BookSyncContext {
+}
 
 /** How one venue repairs a desynced book. The strategy's only collaborator. */
 public interface RecoverySink {
@@ -277,7 +278,7 @@ than worked around with a fourth package.
 ### 4.1 Context
 
 ```java
-package dev.abu.screener_backend.exchange.binance;
+package dev.abu.screener_backend.marketdata.binance;
 
 /** Package-private field access is deliberate: the strategy and its tests are in this package. */
 final class BinanceSyncContext implements BookSyncContext {

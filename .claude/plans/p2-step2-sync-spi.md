@@ -88,7 +88,7 @@ plus small test fixtures (§8.1).
 ## 2. The SPI
 
 ```java
-package dev.abu.screener_backend.exchange.spi;
+package dev.abu.screener_backend.marketdata.spi;
 
 /** One configured instance per venue. Stateless — all per-book state lives in BookSyncContext. */
 public interface DepthSyncStrategy {
@@ -101,7 +101,8 @@ public interface DepthSyncStrategy {
 }
 
 /** Opaque per-book sync state. Core stores it and never inspects it. */
-public interface BookSyncContext {}
+public interface BookSyncContext {
+}
 
 /** How one venue repairs a desynced book. The strategy's only collaborator. */
 public interface RecoverySink {

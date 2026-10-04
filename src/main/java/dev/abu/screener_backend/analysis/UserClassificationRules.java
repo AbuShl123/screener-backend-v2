@@ -7,7 +7,7 @@ import java.util.Set;
  * A per-user lookup table of {@code (symbol, market)} override rules, built off the hot path from
  * a user's persisted tier rows at WebSocket connect time (Phase C).
  *
- * <p>Keys are {@link dev.abu.screener_backend.exchange.Instrument#ruleKey() ruleKey}s —
+ * <p>Keys are {@link dev.abu.screener_backend.marketdata.Instrument#ruleKey() ruleKey}s —
  * {@code "BASEQUOTE:MARKET"}, e.g. {@code "BTCUSDT:SPOT"}. They carry no exchange, so one rule
  * applies to that symbol and market on every exchange.
  *

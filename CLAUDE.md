@@ -6,12 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Backend for a cryptocurrency market screener. It is a classical **Spring Boot 4 (MVC/servlet, Java 21)** application that combines several independent concerns:
 
-- **Market-data pipeline** — maintains accurate local Binance order books (spot + futures) and classifies price levels by importance. This is the performance-critical core and the largest module, but it is one feature among many.
+- **Market-data pipeline** — maintains accurate local order books per exchange venue (Binance spot + futures, MEXC futures) and classifies price levels by importance. This is the performance-critical core and the largest module, but it is one feature among many.
 - **Accounts** — registration, login, email verification, JWT auth, `USER`/`ADMIN` roles.
 - **Monetization** — a plan catalog, per-user access entitlement (with a free trial), an order/payment flow (Multicard gateway today), and entitlement enforcement on the screener.
 - **Delivery** — a per-user classified feed pushed over a WebSocket server, with per-user custom classification rules layered on top of global defaults.
 
-Everything runs in **one JVM**. Persistence is **PostgreSQL** via Spring Data JPA + Flyway migrations. Outbound HTTP (to Binance, to Multicard) uses `WebClient` from `spring-webflux` — WebFlux is a client library only; the app itself runs on Tomcat (`spring.main.web-application-type=servlet`).
+Everything runs in **one JVM**. Persistence is **PostgreSQL** via Spring Data JPA + Flyway migrations. Outbound HTTP (to the exchanges, to Multicard) uses `WebClient` from `spring-webflux` — WebFlux is a client library only; the app itself runs on Tomcat (`spring.main.web-application-type=servlet`).
 
 Target scale for the market-data core: ~500 futures tickers + a spot subset = 1000+ concurrent depth streams, hundreds of thousands of diff messages per second.
 
@@ -39,7 +39,7 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 
 | Package | Responsibility |
 |---------|----------------|
-| `exchange/` | Identity + the whole market-data pipeline. **Root (cold):** `Exchange`, `Market`, `Venue` (= exchange + market, the pipeline's adapter unit), `Instrument`, `InstrumentRegistry` (dense runtime `int` ids), `InstrumentUniverseService` (discovery + inclusion policy). **Subpackages:** `stream/` (venue-agnostic java-websocket transport: `StreamManager` starts one `ConnectionPool` per venue on its first universe event, per-connection `SubscriptionIndex`; the wire protocol — subscribe frames, frame routing, heartbeat — is adapter-supplied via `spi/StreamProtocol`), `ingress/` (sharded LMAX ring buffers + consumer, `OrderBookProcessor`), `book/` (TreeMap local books, sync state machine, `BookSlotTable`), `recovery/` (`SnapshotRequestQueue`, one per REST-recovering venue, built by `SnapshotQueueFactory`) — these four are the **hot path**. `spi/` holds the adapter contracts (`DepthSyncStrategy` and `StreamProtocol`, each bound per venue via a `Venue*Binding` bean, `SnapshotFetcher` for REST snapshot pacing, plus `InstrumentSource` for discovery). `binance/` is the reference venue adapter (sync strategies, `BinanceStreamProtocol`, instrument source, REST client, `BinanceSnapshotFetcher` + its `WeightGuard`), all registered in `BinanceAdapterConfig`. `mexc/` is the second, futures only (`MEXC_FUTURES`), registered in `MexcAdapterConfig` and disabled by default (`MEXC_ENABLED`) until end-to-end enablement (`.claude/plans/mexc-impl-plan.md`). |
+| `marketdata/` | Identity + the whole market-data pipeline. **Root (cold):** `Exchange`, `Market`, `Venue` (= exchange + market, the pipeline's adapter unit), `Instrument`, `InstrumentRegistry` (dense runtime `int` ids), `InstrumentUniverseService` (merges every adapter's `InstrumentSource`), `TickerRefreshScheduler` (scheduled universe refresh) and `TickerController` (`/api/tickers` debug endpoint). **`spi/`**: the adapter contracts — `DepthSyncStrategy` and `StreamProtocol` (each bound per venue via a `Venue*Binding` bean), `SnapshotFetcher` for REST snapshot fetching/pacing, `InstrumentSource` for discovery. **`core/`** (venue-agnostic): `stream/` (java-websocket transport: `StreamManager` starts one `ConnectionPool` per venue on its first universe event, per-connection `SubscriptionIndex`), `ingress/` (sharded LMAX ring buffers, `DisruptorDepthEventPublisher`, `DepthEventHandler` consumer), `book/` (TreeMap local books, `BookSlotTable`), `recovery/` (`SnapshotRequestQueue`, one per REST-recovering venue, built by `SnapshotQueueFactory`) — these four are the **hot path** — plus `rest/` (`ExchangeWebClientFactory`) and `health/` (`PipelineMetrics`). **`adapter/`**: one package per exchange, each registered by its own `@Configuration`. `binance/` (spot + futures; `BinanceAdapterConfig`) and `mexc/` (futures only, `MEXC_FUTURES`; `MexcAdapterConfig`; disabled by default via `MEXC_ENABLED` until end-to-end enablement, `.claude/plans/mexc-impl-phase-5.md`). |
 | `analysis/` | Order classification engine (`OrderBookClassifier`, tier rules) and per-user custom rules — `rule/` holds the `/api/rules` CRUD, entity, and live rule-update propagation. |
 | `feed/` | `OrderBookBroadcaster` (100ms drain loop), global + per-user feed stores, classified-level model. |
 | `ws/` | Jakarta WebSocket server — `/ws` endpoint, JWT-gated `@OnOpen`, virtual-thread send loops, per-session state. |
@@ -49,7 +49,6 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 | `billing/` | Plan catalog: `Plan` + `PlanPrice` (`FIXED` day-bundles and `PER_DAY` pay-as-you-go), `Currency`, `PricingService`, `RegionResolver`. Public catalog `/api/billing-catalog`, admin catalog `/api/admin/billing`. |
 | `entitlement/` | The single access source of truth. Derives access state (`TRIAL`/`ACTIVE`/`EXPIRED`/`ADMIN`) from an `accessExpiresAt` stamp; append-only `EntitlementLedger` audits every grant. `/api/billing/entitlement`. |
 | `payment/` | Order lifecycle: `Order`, `OrderService`, `OrderStateMachine` (+ status history), scheduled `PaymentReconciliationService`, `PaymentProvider` abstraction. `multicard/` is the only provider impl today (client, signature, callback controller/service). `/api/billing/orders`, `/api/payment/multicard/callback`. |
-| `ticker/` | Scheduled universe refresh (`TickerRefreshScheduler`) + the `/api/tickers` debug endpoint. The discovery logic itself lives in `exchange/`. |
 | `monitoring/` | Admin-only diagnostics: `/api/monitoring/presence`, `/api/monitoring/orderbook`. |
 | `config/` | `@ConfigurationProperties` records (one per feature) + `SecurityConfig`, `WebClientConfig`, `AsyncConfig`. |
 | `error/` | `ApiException` + `ApiError` + `GlobalExceptionHandler` — the canonical error shape for all REST responses. |
@@ -63,11 +62,11 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 
 ## Performance Rules: Hot Path vs. Everything Else
 
-The **`exchange/` pipeline subpackages (`stream/`, `ingress/`, `book/`, `recovery/`), `feed/`, and the `analysis/` classifier** are the hot path — they process the full Binance depth firehose on the Disruptor consumer threads and the 100ms broadcaster. Strict rules apply **there**:
+The **`marketdata/core/` pipeline packages (`stream/`, `ingress/`, `book/`, `recovery/`), the adapters' sync strategies and stream protocols (`marketdata/adapter/*/`), `feed/`, and the `analysis/` classifier** are the hot path — they process the full depth firehose of every enabled venue on the Disruptor consumer threads and the 100ms broadcaster. Strict rules apply **there**:
 
 - **No object allocation** in `onMessage` callbacks and Disruptor `onEvent` loops. Reuse mutable objects; parse in place.
 - **No `BigDecimal`** for market data. Prices/quantities are primitive `double` (parsed via fastdoubleparser). `double`'s precision is more than sufficient for a screener.
-- **Jackson streaming (`JsonParser`)** for high-frequency diff parsing — extract only `b`, `a`, `U`, `u`, `pu`. Never full-POJO-deserialize a depth diff.
+- **Jackson streaming (`JsonParser`)** for high-frequency diff parsing — extract only the levels and sequence fields (Binance: `b`, `a`, `U`, `u`, `pu`). Never full-POJO-deserialize a depth diff.
 - **No per-message logging** at INFO+; use lazy-evaluated `log.debug("{}", x)`, never string concatenation.
 - Order-book `TreeMap`s are **single-thread-owned** by their shard's consumer — never synchronized, never shared across shards.
 
@@ -77,13 +76,13 @@ The **`exchange/` pipeline subpackages (`stream/`, `ingress/`, `book/`, `recover
 
 ## Market-Data Pipeline (hot path detail)
 
-The performance-critical core. Read the dedicated docs (`.claude/docs/orderbook-sync-algorithm.md`) before touching sync logic.
+The performance-critical core. Read `.claude/docs/multi-exchange-progress.md` (the current-state report: SPI, core, the sync contract, each adapter, known gaps) before touching pipeline or sync logic.
 
-- **Identity**: `(String symbol, Market market)` is *not* the pipeline key — a dense `int` instrument id is. `Venue = (exchange, market)`, and `BTCUSDT` is two `Instrument`s (spot + futures) with two ids and two books. `(venue, nativeSymbol)` is the durable identity; the id is a process-local array index and is **never** persisted or put in a payload. Persistence and the public API stay on `Market`.
-- **Streams**: `@depth` (spot 1/s, futures 1/500ms). Separate WebSocket connection pools for spot (`wss://stream.binance.com/ws`) and futures (`wss://fstream.binance.com/ws`), ≤1024 streams per connection.
+- **Identity**: `(String symbol, Market market)` is *not* the pipeline key — a dense `int` instrument id is. `Venue = (exchange, market)`, and `BTCUSDT` is one `Instrument` per venue (Binance spot, Binance futures, MEXC futures) with its own id and book. `(venue, nativeSymbol)` is the durable identity; the id is a process-local array index and is **never** persisted or put in a payload. Persistence and the public API stay on `Market`. User rules are exchange-independent (`ruleKey` = `base + quote : MARKET`); classification state and feed entries are per venue (`feedKey`).
+- **Streams**: one connection pool per venue, wire protocol supplied by the adapter's `StreamProtocol`. Binance `@depth` (spot 1/s, futures 500ms) on `stream.binance.com` / `fstream.binance.com`; MEXC futures `sub.depth` on `contract.mexc.com/edge`. Venue URLs, topics and connection caps live in YAML.
 - **Disruptor**: configurable shards (default 2), each a `Disruptor` + one dedicated consumer thread, `ProducerType.MULTI`, power-of-2 ring buffer. **Instrument → shard is `id & (shardCount - 1)`**, with `shard-count` validated as a power of two at startup — an instrument's events must never split across shards (books are not thread-safe). Both producers must use that one expression.
 - **Order books**: one per `Instrument`, held in `BookSlotTable` — an array indexed by the instrument's dense `int` id, populated at registration rather than lazily. `TreeMap<Double, PriceLevelEntry>` (bids reverse-ordered, asks natural). `PriceLevelEntry` is mutable and updated in place; `firstSeenMillis` tracks level lifetime. Zero-quantity updates **must** remove the level. Levels beyond the price filter (`screener.orderbook.price-filter-threshold`, default 0.1) are dropped; recalc mid-price *after* applying each batch.
-- **Sync state machine** per book: `PENDING` (diffs dropped) → `SNAPSHOT_REQUESTED` (buffering) → `SYNCED` (live). Only `SYNCED` books produce classification output. Any sequence gap / parse error / empty buffer resets to `PENDING` and re-enqueues. Buffering starts when the snapshot **request is dispatched**, not when it returns. Futures additionally validate `pu` continuity. Snapshot fetches are rate-limited against Binance weight budgets.
+- **Sync state machine** per book: `PENDING` (asks for recovery on every diff; refused → diff dropped) → `RECOVERING` (buffering, snapshot requested) → `SYNCED` (live). Sequence validation is each venue's `DepthSyncStrategy`. Only `SYNCED` books produce classification output. Any sequence gap / parse error / buffer overflow clears the book back to `PENDING` and re-requests. Snapshots are fetched by a per-venue core `SnapshotRequestQueue`; the adapter's `SnapshotFetcher` owns rate limits (Binance weight, MEXC fixed pacing). Every request gets exactly one ring event back (`REST_MSG` / `REST_FAILED`) — book state changes only on the shard thread.
 - **Classification**: two passes per update — a default pass (global tiers → global feed) and a per-user pass (each connected custom-rules user → their personal feed). Top-5 levels per side ranked by `(tier DESC, notional DESC, distance ASC)`. The full order book (bounded only by the price filter) is retained so wide custom user rules can still see far levels.
 
 ---
@@ -101,4 +100,4 @@ The performance-critical core. Read the dedicated docs (`.claude/docs/orderbook-
 
 ## Future Work
 
-Planned: klines/candlestick streams for extra signals; expanded roles and plan-limit enforcement; additional payment providers behind the existing `PaymentProvider` abstraction. Long-term: a primitive-friendly order-book store to shed `TreeMap<Double,…>` boxing overhead, distributed ticker partitioning, and multi-exchange support (keep core interfaces free of Binance-specific assumptions).
+Planned: klines/candlestick streams for extra signals; expanded roles and plan-limit enforcement; additional payment providers behind the existing `PaymentProvider` abstraction. Long-term: a primitive-friendly order-book store to shed `TreeMap<Double,…>` boxing overhead, distributed ticker partitioning, and more exchanges/venues (MEXC spot next — needs binary-frame support; keep core and `spi/` free of venue-specific assumptions).
