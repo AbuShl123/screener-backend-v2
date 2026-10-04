@@ -72,15 +72,18 @@ public class BinanceSnapshotFetcher implements SnapshotFetcher {
     @Override
     public CompletionStage<Void> fetchAll(List<BookSlot> batch, SnapshotOutcome outcome) {
         long now = clock.getAsLong();
-        long affordable = guard.isBanned(now) ? 0 : Math.max(0, guard.remaining(weightBudget, now) / weightPerRequest);
+        boolean banned = guard.isBanned(now);
+        long remaining = guard.remaining(weightBudget, now);
+        long affordable = banned ? 0 : Math.max(0, remaining / weightPerRequest);
         int sendCount = (int) Math.min(affordable, batch.size());
 
         for (int i = sendCount; i < batch.size(); i++) {
             outcome.failed(batch.get(i));   // skipped for budget
         }
-        if (sendCount < batch.size()) {
-            log.debug("[{}] weight budget affords {} of {} snapshot requests - the rest re-ask after the window rolls",
-                    venue, sendCount, batch.size());
+
+        if (banned) {
+            log.debug("[{}] snapshot batch of {}: all skipped - banned for another {} ms",
+                    venue, batch.size(), guard.bannedUntilMs() - now);
         }
 
         return Flux.fromIterable(batch.subList(0, sendCount))
@@ -94,7 +97,7 @@ public class BinanceSnapshotFetcher implements SnapshotFetcher {
                 .doOnNext(response -> onResponse(slot, response, outcome))
                 .then()
                 .onErrorResume(e -> {
-                    onError(e);
+                    onError(slot, e);
                     outcome.failed(slot);
                     return Mono.empty();
                 });
@@ -117,24 +120,36 @@ public class BinanceSnapshotFetcher implements SnapshotFetcher {
      * to the local clock, since it is relative — or, without the header, until the next server minute
      * (429) or for {@code ban-fallback} (418).
      */
-    private void onError(Throwable e) {
-        if (!(e instanceof ExchangeApiException api)) return;
+    private void onError(BookSlot slot, Throwable e) {
+        if (!(e instanceof ExchangeApiException api)) {
+            // Timeout, connection reset, codec overflow… — no headers to learn from.
+            log.debug("[{}] snapshot failed without an HTTP status: {}", slot.instrument().logName(), e.toString());
+            return;
+        }
         HttpHeaders headers = api.getHeaders();
         long now = clock.getAsLong();
         guard.observe(headers, now);
 
         int status = api.getStatusCode().value();
+        log.debug("[{}] snapshot failed - HTTP {}, used weight {}, Retry-After {}, server time {}, body: {}",
+                slot.instrument().logName(), status, headers.getFirst(WeightGuard.WEIGHT_HEADER),
+                headers.getFirst(HttpHeaders.RETRY_AFTER), headers.getFirst(HttpHeaders.DATE), api.getResponseBody());
         if (status != TOO_MANY_REQUESTS && status != IP_BANNED) return;
 
         long banMs = retryAfterMs(headers);
+        String banSource = "Retry-After";
         if (banMs < 0) {
             long serverNow = WeightGuard.serverTimeMs(headers, now);
             banMs = status == TOO_MANY_REQUESTS
                     ? WeightGuard.nextMinuteBoundary(serverNow) - serverNow
                     : banFallback.toMillis();
+            banSource = status == TOO_MANY_REQUESTS ? "next server minute" : "ban-fallback";
         }
         boolean wasBanned = guard.isBanned(now);
+        long previousUntil = guard.bannedUntilMs();
         guard.ban(now + banMs);
+        log.debug("[{}] ban from HTTP {}: {} ms ({}) - suspended until {} (was {})", venue, status, banMs, banSource,
+                Instant.ofEpochMilli(guard.bannedUntilMs()), wasBanned ? Instant.ofEpochMilli(previousUntil) : "not banned");
         if (!wasBanned) {
             log.error("[{}] Binance answered {} - snapshot requests suspended for {} ms, until {}",
                     venue, status, banMs, Instant.ofEpochMilli(now + banMs));

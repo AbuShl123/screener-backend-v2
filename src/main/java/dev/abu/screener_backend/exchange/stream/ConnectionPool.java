@@ -67,7 +67,7 @@ public class ConnectionPool {
         }
 
         int connectionCount = connectionCount(instruments.size());
-        log.info("[{}] Starting {} connection(s) for {} streams", venue, connectionCount, instruments.size());
+        log.info("Starting {} connection(s) for {} streams in {}", connectionCount, instruments.size(), venue);
 
         for (int i = 0; i < connectionCount; i++) {
             int from = i * instruments.size() / connectionCount;

@@ -75,7 +75,7 @@ public class MexcInstrumentSource implements InstrumentSource {
                 }
             }
         }
-        log.info("MEXC instrument universe selected: {} futures of {} listed", candidates.size(), contracts.size());
+        log.debug("MEXC eligible before exclusions: {} futures of {} listed", candidates.size(), contracts.size());
         return candidates;
     }
 

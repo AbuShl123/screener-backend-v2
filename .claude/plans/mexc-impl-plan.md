@@ -305,8 +305,9 @@ The Disruptor, consumer and classifier are already venue-agnostic; nothing new s
    (`DiscoveryProperties`), written as `base + quote` (`USDCUSDT`), never in native form. Applied once
    by `InstrumentUniverseService` to every source's validated result, matched on
    `Instrument.symbol(base, quote)`. It is the union of the two former lists, so MEXC now also drops
-   `FDUSD`, `DAI`, `PYUSD` and `USD1`. Trade-offs accepted: no per-exchange exclusion (nothing needs
-   one yet), and sources' "selected N" log lines count instruments before exclusion.
+   `FDUSD`, `DAI`, `PYUSD` and `USD1`. Trade-off accepted: no per-exchange exclusion (nothing needs
+   one yet). The "universe selected" INFO line is therefore logged by core, after exclusion; sources
+   log their pre-exclusion count at debug.
 3. **REST clients are per API, not per exchange.** `MexcRestClient` → `MexcFuturesRestClient`.
    Binance's spot and futures are one API under two prefixes, hence `BinancePaths`; MEXC's are not
    (envelope, DTOs, symbol format and depth-path shape all differ, on the same host), so MEXC spot

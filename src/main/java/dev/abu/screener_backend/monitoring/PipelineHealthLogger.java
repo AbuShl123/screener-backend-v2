@@ -13,9 +13,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * One periodic line covering the whole market-data pipeline: how many books are synced, how hard
- * they are churning, how fast events are being consumed, how much ring headroom is left, and
- * whether the feed's drain loop is keeping inside its budget.
+ * One periodic block covering the whole market-data pipeline — a table row per venue, then one line
+ * for the shards and the feed: how many books are synced, how hard they are churning, how fast
+ * events are being consumed, how much ring headroom is left, and whether the feed's drain loop is
+ * keeping inside its budget.
  *
  * <p>Replaces the {@code sync count: spot=… fut=…} line that {@code BookSlotTable} used to emit.
  * A synced count alone has a blind spot big enough to hide a broken sequence rule: a book that
@@ -26,7 +27,7 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li><b>resyncs</b> — churn. Near zero at steady state; a steady trickle against a flat synced
  *       count means books are cycling, not settled.</li>
- *   <li><b>snapshot failures</b> — the venue's REST side. Non-zero during the startup ramp, when
+ *   <li><b>snap fails</b> (snapshot failures) — the venue's REST side. Non-zero during the startup ramp, when
  *       requests the weight budget cannot afford are failed; near zero after it.</li>
  *   <li><b>frames/s per venue</b> — what each venue's WebSocket delivers, before sync state is
  *       known. A venue at zero has a dead or never-subscribed stream; it is also the only rate that
@@ -50,6 +51,9 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class PipelineHealthLogger {
 
+    /** venue | synced | resyncs | snap fails | frames/s — wide enough for {@code binance/futures}. */
+    private static final String ROW = "  %-16s %9s %8s %11s %9s";
+
     private final BookSlotTable slots;
     private final DisruptorShardManager shardManager;
     private final PipelineMetrics metrics;
@@ -67,26 +71,24 @@ public class PipelineHealthLogger {
         double elapsedSec = lastSampleNanos == 0 ? 0 : (nowNanos - lastSampleNanos) / 1e9;
         lastSampleNanos = nowNanos;
 
-        StringBuilder line = new StringBuilder(220);
-        line.append("pipeline:");
-        int[] tracked = appendBookCounts(line);
-        appendResyncs(line, tracked);
-        appendSnapshotFailures(line, tracked);
-        appendFrameRates(line, tracked, elapsedSec);
-        appendThroughput(line, elapsedSec);
-        appendRingFree(line);
-        appendDrain(line);
+        StringBuilder out = new StringBuilder(512);
+        out.append("pipeline health:");
+        appendVenueTable(out, elapsedSec);
+        out.append(System.lineSeparator()).append("  shards  ");
+        appendThroughput(out, elapsedSec);
+        appendRingFree(out);
+        appendDrain(out);
 
-        log.info("{}", line);
+        log.info("{}", out);
     }
 
     /**
-     * Synced books per venue against the number tracked, so a shortfall is visible without arithmetic.
-     *
-     * @return books tracked per venue, by ordinal. The per-venue sections all skip a venue with
-     *         none, so a disabled venue never appears in the line.
+     * One row per venue: synced books against the number tracked (so a shortfall is visible
+     * without arithmetic), then resyncs, snapshot failures and frame rate over the interval. A
+     * venue with no tracked books is skipped, so a disabled venue never appears — but its counters
+     * are still sampled, so the first interval after it appears is not inflated.
      */
-    private int[] appendBookCounts(StringBuilder line) {
+    private void appendVenueTable(StringBuilder out, double elapsedSec) {
         int[] synced = new int[Venue.values().length];
         int[] total = new int[Venue.values().length];
         for (BookSlot slot : slots.snapshot()) {
@@ -95,52 +97,34 @@ public class PipelineHealthLogger {
             total[v]++;
             if (slot.book().getState() == OrderBookState.SYNCED) synced[v]++;
         }
-        line.append(" synced");
-        for (Venue venue : Venue.values()) {
-            if (total[venue.ordinal()] == 0) continue;
-            line.append(' ').append(shortName(venue)).append('=')
-                    .append(synced[venue.ordinal()]).append('/').append(total[venue.ordinal()]);
-        }
-        return total;
-    }
 
-    private void appendResyncs(StringBuilder line, int[] tracked) {
-        line.append(" | resyncs");
+        out.append(System.lineSeparator())
+                .append(String.format(ROW, "venue", "synced", "resyncs", "snap fails", "frames/s"));
         for (Venue venue : Venue.values()) {
-            long total = metrics.resyncs(venue);
-            long delta = total - lastResyncs[venue.ordinal()];
-            lastResyncs[venue.ordinal()] = total;
-            if (tracked[venue.ordinal()] == 0) continue;
-            line.append(' ').append(shortName(venue)).append('=').append(delta);
-        }
-    }
-
-    private void appendSnapshotFailures(StringBuilder line, int[] tracked) {
-        line.append(" | snapshot failures");
-        for (Venue venue : Venue.values()) {
-            long total = metrics.snapshotFailures(venue);
-            long delta = total - lastSnapshotFailures[venue.ordinal()];
-            lastSnapshotFailures[venue.ordinal()] = total;
-            if (tracked[venue.ordinal()] == 0) continue;
-            line.append(' ').append(shortName(venue)).append('=').append(delta);
+            int v = venue.ordinal();
+            long resyncs = delta(metrics.resyncs(venue), lastResyncs, v);
+            long snapshotFailures = delta(metrics.snapshotFailures(venue), lastSnapshotFailures, v);
+            long frames = delta(metrics.frames(venue), lastFrames, v);
+            if (total[v] == 0) continue;
+            out.append(System.lineSeparator()).append(String.format(ROW,
+                    shortName(venue),
+                    synced[v] + "/" + total[v],
+                    resyncs,
+                    snapshotFailures,
+                    elapsedSec <= 0 ? "-" : Math.round(frames / elapsedSec)));
         }
     }
 
-    private void appendFrameRates(StringBuilder line, int[] tracked, double elapsedSec) {
-        line.append(" | frames/s");
-        for (Venue venue : Venue.values()) {
-            long total = metrics.frames(venue);
-            long delta = total - lastFrames[venue.ordinal()];
-            lastFrames[venue.ordinal()] = total;
-            if (tracked[venue.ordinal()] == 0) continue;
-            line.append(' ').append(shortName(venue)).append('=')
-                    .append(elapsedSec <= 0 ? "-" : String.valueOf(Math.round(delta / elapsedSec)));
-        }
+    /** Advances {@code last[i]} to {@code current} and returns the increase since the previous sample. */
+    private static long delta(long current, long[] last, int i) {
+        long delta = current - last[i];
+        last[i] = current;
+        return delta;
     }
 
     private void appendThroughput(StringBuilder line, double elapsedSec) {
         long[] processed = shardManager.processedPerShard();
-        line.append(" | msgs/s [");
+        line.append("msgs/s [");
         for (int i = 0; i < processed.length; i++) {
             if (i > 0) line.append(", ");
             if (lastProcessed == null || lastProcessed.length != processed.length || elapsedSec <= 0) {

@@ -18,6 +18,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.StringJoiner;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -142,7 +143,7 @@ public class InstrumentUniverseService {
      * completion.
      */
     public void refresh() {
-        log.info("Refreshing instrument universe from {} source(s)...", sources.size());
+        log.info("Universe refresh triggered: using {} source(s)...", sources.size());
         Map<Venue, List<InstrumentCandidate>> fresh = new EnumMap<>(Venue.class);
         Set<Venue> retained = EnumSet.noneOf(Venue.class);
         int succeeded = fetchAll(fresh, retained);
@@ -180,7 +181,7 @@ public class InstrumentUniverseService {
 
                     String rejection = validate(handle, result);
                     if (rejection == null) {
-                        result.forEach((venue, list) -> fresh.put(venue, withoutExcluded(list)));
+                        accept(handle, result, fresh);
                         succeeded++;
                     } else {
                         retain(handle, retained, rejection, null);
@@ -226,6 +227,25 @@ public class InstrumentUniverseService {
             }
         }
         return null;
+    }
+
+    /**
+     * Applies the exclusion list to a validated result and logs what each venue will actually
+     * track — the source can't, since it reports before exclusion.
+     */
+    private void accept(SourceHandle handle, Map<Venue, List<InstrumentCandidate>> result,
+                        Map<Venue, List<InstrumentCandidate>> fresh) {
+        StringJoiner counts = new StringJoiner(", ");
+        int excluded = 0;
+        for (Venue venue : EnumSet.copyOf(handle.venues())) {
+            List<InstrumentCandidate> reported = result.get(venue);
+            List<InstrumentCandidate> kept = withoutExcluded(reported);
+            fresh.put(venue, kept);
+            counts.add(kept.size() + " " + venue.market().name().toLowerCase());
+            excluded += reported.size() - kept.size();
+        }
+        log.info("{} instrument universe selected: {} ({} excluded)",
+                handle.venues().iterator().next().exchange(), counts, excluded);
     }
 
     private List<InstrumentCandidate> withoutExcluded(List<InstrumentCandidate> candidates) {

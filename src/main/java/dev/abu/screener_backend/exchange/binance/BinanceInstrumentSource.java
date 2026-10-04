@@ -98,7 +98,7 @@ public class BinanceInstrumentSource implements InstrumentSource {
                 .filter(s -> futuresNames.contains(s.getSymbol()))
                 .toList();
 
-        log.info("Instrument universe selected: {} spot, {} futures", spotSymbols.size(), futuresSymbols.size());
+        log.debug("Binance eligible before exclusions: {} spot, {} futures", spotSymbols.size(), futuresSymbols.size());
         return Map.of(
                 Venue.BINANCE_SPOT, toCandidates(spotSymbols),
                 Venue.BINANCE_FUTURES, toCandidates(futuresSymbols));

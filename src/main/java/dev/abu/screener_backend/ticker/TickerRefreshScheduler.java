@@ -35,7 +35,6 @@ public class TickerRefreshScheduler {
      */
     @Scheduled(fixedDelayString = "${screener.ticker.refresh-interval}")
     public void scheduledRefresh() {
-        log.info("Scheduled instrument universe refresh triggered");
         universeService.refresh();
     }
 }

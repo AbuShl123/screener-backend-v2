@@ -571,8 +571,8 @@ abstraction by luck and validate nothing.
   stream stays alive re-asks on every diff. Add one only if the snapshot-failure counter shows it.
 - **No staleness watchdog.** A subscription that silently stops delivering is invisible: the book
   sits `SYNCED` with frozen data indefinitely.
-- **Health surface is a log line, not a registry.** `PipelineHealthLogger` emits one line every 30s
-  — synced/tracked per venue, resyncs and snapshot failures per interval per venue, msgs/s and free ring slots per shard,
+- **Health surface is a log block, not a registry.** `PipelineHealthLogger` emits a small table every 30s
+  — a row per venue (synced/tracked, resyncs and snapshot failures per interval, frames/s), then msgs/s and free ring slots per shard,
   and the feed drain's worst tick — backed by `exchange/health/PipelineMetrics`. That covers churn,
   throughput, backpressure and delivery, which is enough to tell the current failure modes apart.
   Still missing: connections up/down and reconnect counts, snapshot batch latency, dropped-event counters, and oldest `lastMessageAtMs` per venue — and none of it is

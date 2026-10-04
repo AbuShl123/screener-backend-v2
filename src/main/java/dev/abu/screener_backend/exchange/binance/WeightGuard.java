@@ -96,6 +96,11 @@ public class WeightGuard {
         return nowMs < bannedUntilMs;
     }
 
+    /** Local-clock end of the current or last ban; 0 if never banned. For logging. */
+    long bannedUntilMs() {
+        return bannedUntilMs;
+    }
+
     static long nextMinuteBoundary(long ms) {
         return (ms / 60_000L + 1L) * 60_000L;
     }

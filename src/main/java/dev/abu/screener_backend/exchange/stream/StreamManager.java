@@ -110,7 +110,6 @@ public class StreamManager {
             ConnectionPool pool = poolFactory.create(venue, protocols.forVenue(venue));
             pool.start(instruments);
             pools.put(venue, pool);
-            log.info("WebSocket pool started for {} — {} instruments", venue, instruments.size());
         } catch (RuntimeException e) {
             log.error("[{}] Failed to start WebSocket pool — the venue will not stream until a later "
                     + "universe event retries it (with that event's new instruments only)", venue, e);
