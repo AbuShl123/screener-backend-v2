@@ -373,7 +373,7 @@ class MexcFuturesSyncStrategyTest {
         @Test
         @DisplayName("a throttled 510 body that slips past the fetcher resyncs instead of syncing an empty book")
         void throttledBodyResyncs() {
-            // Keeping 510s out of the ring is the fetcher's job (Phase 4b); this is the backstop.
+            // Keeping 510s out of the ring is MexcSnapshotFetcher's job; this is the backstop.
             Harness h = new Harness();
             h.wsMsg(push(100, 110, "", ""));
 

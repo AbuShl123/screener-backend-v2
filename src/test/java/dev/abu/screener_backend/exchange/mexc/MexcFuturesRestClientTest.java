@@ -73,6 +73,38 @@ class MexcFuturesRestClientTest {
     }
 
     @Test
+    @DisplayName("depth: returns the raw body, symbol in the path and limit in the query")
+    void depthRawBody() {
+        String body = "{\"success\":true,\"code\":0,\"data\":{\"asks\":[[100.5,3,1]],\"bids\":[],\"version\":7}}";
+
+        String result = client(json(HttpStatus.OK, body)).depth("BTC_USDT", 1500).block();
+
+        assertEquals("https://api.mexc.com/api/v1/contract/depth/BTC_USDT?limit=1500", sent.get().toASCIIString());
+        assertEquals(body, result);
+    }
+
+    @Test
+    @DisplayName("depth: a throttled HTTP 200 is returned as a body, for the fetcher to classify")
+    void depthThrottledIsAValue() {
+        String body = "{\"success\":false,\"code\":510,\"message\":\"Requests are too frequent, please try again later\"}";
+
+        assertEquals(body, client(json(HttpStatus.OK, body)).depth("BTC_USDT", 1500).block());
+    }
+
+    @Test
+    @DisplayName("depth: an Akamai HTML 403 is an ExchangeApiException carrying the status")
+    void depthWafBlock() {
+        MexcFuturesRestClient client = client(ClientResponse.create(HttpStatus.FORBIDDEN)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_HTML_VALUE)
+                .body("<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD></HTML>")
+                .build());
+
+        ExchangeApiException e = assertThrows(ExchangeApiException.class, () -> client.depth("BTC_USDT", 1500).block());
+
+        assertEquals(403, e.getStatusCode().value());
+    }
+
+    @Test
     @DisplayName("contractDetail: an Akamai HTML 403 is an ExchangeApiException carrying the status")
     void contractDetailWafBlock() {
         MexcFuturesRestClient client = client(ClientResponse.create(HttpStatus.FORBIDDEN)

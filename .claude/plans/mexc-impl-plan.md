@@ -75,7 +75,7 @@ So Phase 1 needs at least a no-op strategy binding, and Phase 2 needs the real s
 | WS connections per IP | no cap observed up to 150 | empirical |
 | WS keepalive | text `{"method":"ping"}` every 10–20s; disconnect after 60s without | docs |
 | Sub ack | `{"channel":"rs.sub.depth","data":"success"}` — does **not** echo the symbol | empirical |
-| Snapshot rate | 10 req / 2s documented; **4 req/s** clean, 5 req/s occasionally trips | empirical |
+| Snapshot rate | 10 req / 2s documented; **4 req/s** clean, 5 req/s occasionally trips. One window per IP: shared by `api.` and `contract.mexc.com` and across symbols; `limit` 100–1500 all cost the same; `/contract/detail` not counted (V2) | empirical |
 | Throttle penalty | none — next window succeeds | empirical |
 | Universe | ~1106 USDT contracts (incl. tokenized stocks, dead pairs) | empirical |
 
@@ -216,11 +216,10 @@ stale-snapshot / malformed / 510-body → one resync, and the shared dispatch co
 retries, overflow, `REST_FAILED`, resync counter). `FakeRecoverySink` moved to the `spi` test package
 so both adapters' suites use it.
 
-**Not wired yet.** `MexcAdapterConfig` still binds `MexcPlaceholderSyncStrategy`: the real strategy
-needs a `RecoverySink`, which is the snapshot queue from 4b. 4b swaps the binding in the same change
-(and `MexcAdapterConfigTest`'s `assertInstanceOf` with it).
+**Wired in 4b**: `MexcAdapterConfig` binds the real strategy to the MEXC snapshot queue;
+`MexcPlaceholderSyncStrategy` is deleted.
 
-### Phase 4 — Recovery
+### Phase 4 — Recovery — DONE
 
 **4a — Generalize the snapshot queue — DONE** (P2 steps 3 + 4, plan
 `.claude/plans/snapshot-source-and-request-budget.md`; current shape in progress doc §3.1). It
@@ -243,24 +242,137 @@ paces.
 
 **Pass condition for 4a**: Binance still reaches ~353 spot + ~525 futures `SYNCED` in ~6 minutes and holds.
 
-**4b — MEXC recovery.** Adapter-only: a `MexcSnapshotFetcher` handed to
-`SnapshotQueueFactory.create(venue, fetcher)` from `MexcAdapterConfig`, plus a
-`screener.exchanges.mexc.snapshot-queue` block. No core change expected.
+**4b — MEXC recovery — DONE** (verified live 2026-10-04). Adapter-only: a `MexcSnapshotFetcher`
+handed to `SnapshotQueueFactory.create(venue, fetcher)` from `MexcAdapterConfig`, plus a
+`screener.exchanges.mexc.snapshot-queue` block. `MexcPlaceholderSyncStrategy` was swapped for
+`MexcFuturesSyncStrategy` in the same change. **No core change**: decision 6 (§6) explains why the
+existing queue fits.
 
-- [ ] `MexcSnapshotFetcher`: `GET /api/v1/contract/depth/{symbol}?limit=1000`. Classify the body
-      **before** reporting: `success:false` / `code:510` (HTTP 200) → `failed`, never `delivered`;
-      HTML 403 → WAF block → `failed`.
-- [ ] Pacing inside `fetchAll`: ~4 req/s, evenly spaced with a non-blocking Reactor delay (never
-      sleep — `fetchAll` runs on the queue's scheduler thread). `isAcceptingRequests()` returns
-      false during a cooldown: one window (~2s) after a 510, ≥60s after a 403 (pauses **all** MEXC
-      REST traffic).
-- [ ] `snapshot-queue.batch-timeout` must exceed `max-batch-size / rate + rest.response-timeout`
-      (e.g. 10 at 4 req/s + 10s ≈ 12.5s). `SnapshotQueueFactory` only checks it against
-      `response-timeout`, so state this in the YAML comment.
-- [ ] Cold-start expectation: ~1100 contracts at 4 req/s ≈ 4.6 minutes minimum — comparable to
-      Binance's ramp.
-- [ ] Defer the `depth_commits/{symbol}/1000` gap backfill: it is still a REST call, likely against the
-      same limit, so it buys little at first. Revisit once resync rates are measured.
+*Design (decided 2026-10-04 — rationale in §6, decisions 5–8)*
+
+- [x] **Verification first — V2**, below (done 2026-10-04). Outcome: `rest.base-url` and
+      `request-interval` unchanged; `depth-limit` raised 1000 → 1500 (decision 9).
+- [x] `MexcFuturesRestClient.depth(symbol, limit)`: `GET /api/v1/contract/depth/{symbol}?limit=…`,
+      returning the **raw body** (the strategy stream-parses it) — not unwrapped through
+      `MexcResponse`.
+- [x] `MexcSnapshotFetcher` **classifies before reporting**. Read only the envelope's `success` /
+      `code` with a `JsonParser` and stop; never full-deserialize the ~1500-level (~43 KB) body:
+
+      | Response | Report | Cooldown |
+      |---|---|---|
+      | 200, `success:true` | `delivered` | — |
+      | 200, `success:false` (510 throttle) | `failed` | `throttle-cooldown` (3s) |
+      | 403 HTML (Akamai WAF) or 429 | `failed` | `waf-cooldown` (90s) |
+      | timeout / connection error / other status | `failed` | — |
+
+      A 510 must never reach the strategy as a snapshot. (The strategy also resyncs on a body
+      without `data.version` — defense in depth, not the primary guard.)
+- [x] **Pacing: one send clock per fetcher**, not per batch. A `nextSendAt` field; each slot reserves
+      `delay = max(0, nextSendAt − now)` and advances `nextSendAt` by `request-interval` (250ms).
+      The send waits on `Mono.delay(delay)` (Reactor's parallel scheduler — never sleep, `fetchAll`
+      runs on the shared `snapshot-queue` thread), then requests are `flatMap`ped so sends stay
+      evenly spaced regardless of response latency (`concatMap` would serialize on round-trip time).
+- [x] **Cooldown checked at send time, not at batch start.** When a slot's delay elapses inside a
+      cooldown, it is reported `failed` without sending. So a 510 or 403 mid-batch fails the rest of
+      that batch promptly, the queue reopens, and those books re-ask once the cooldown ends. No
+      retries anywhere, as on Binance.
+- [x] `isAcceptingRequests()` = `now >= cooldownUntil` — one volatile read (like
+      `WeightGuard.isBanned`). Cooldowns only extend, never shorten (a 3s throttle must not cut a
+      90s WAF pause short).
+- [x] Logging: the first 510 / 403 of a cooldown at `warn` with its duration, repeats at debug;
+      count failures through the existing `PipelineMetrics.recordSnapshotFailure` (`BatchOutcome`
+      already does).
+
+*Configuration*
+
+- [x] `screener.exchanges.mexc.snapshot-queue`: `max-batch-size: 12`, `flush-interval: PT0.25S`,
+      `batch-timeout: PT20S`.
+- [x] Venue-level snapshot block (shape mirroring Binance's per-market snapshot properties):
+      `depth-limit: 1500` (the server cap — same cost as 1000, decision 9),
+      `request-interval: PT0.25S`, `throttle-cooldown: PT3S`, `waf-cooldown: PT90S`.
+- [x] **Fail fast in `MexcAdapterConfig`**: `batch-timeout` must exceed
+      `(max-batch-size − 1) × request-interval + rest.response-timeout` (12 → 2.75s + 10s = 12.75s;
+      PT20S leaves margin). `SnapshotQueueFactory` only checks against `response-timeout` — it cannot
+      know the fetcher's pacing — but the adapter config holds both property sets. A too-short
+      timeout would seal batches whose tail requests had not even been sent.
+
+*As built (deviations and details)*
+
+- Venue snapshot block bound by `MexcSnapshotProperties` (`screener.exchanges.mexc.venues.<market>.snapshot`,
+  the `BinanceSnapshotProperties` pattern); `depth-limit` validated to 1–1500.
+- Fail-fast formula is **`max-batch-size × request-interval + response-timeout`** (13s), not
+  `(max-batch-size − 1) × …` (12.75s): with the persistent send clock, a batch's first send can wait
+  up to one interval for the previous batch's last. PT20S still leaves margin.
+- Escalation logging: WARN when a cooldown starts, or when a 403/429 escalates a 510 pause; repeats
+  inside the pause at debug. A `success:false` with a code other than 510, or an unreadable / empty
+  200 body, is reported failed at WARN with no cooldown.
+- Tests: `MexcSnapshotFetcherTest` (16) drives a real `MexcFuturesRestClient` under a hand-rolled
+  virtual-time `ManualScheduler` (no `reactor-test` dependency): spacing within and across batches,
+  510 / 403 / 429 mid-batch, cooldown never shortening, no-cooldown failures, and envelope
+  classification (incl. stopping at `success:true` before `data`). Plus `MexcSnapshotPropertiesTest`
+  (binds both shipped YAMLs, which pass the fail-fast check) and the queue wiring in `MexcAdapterConfigTest`.
+
+**Verify** (live, `MEXC_ENABLED=true`): MEXC books ramp to `SYNCED` in ~3 min; no 510 / 403 WARNs
+from `MexcSnapshotFetcher` in steady state; batch debug lines show sends 250ms apart; Binance's
+ramp unaffected.
+→ Live local run, 2026-10-04, 25 min, `-Xmx512m`, all three venues enabled:
+- **Ramp**: 678/678 MEXC books `SYNCED` ~3m25s after the sockets opened, in 74 batches / 681
+  sends: 678 plus 3 resyncs, all during the ramp. Effective 3.5 req/s. A full batch of 12 takes
+  3.1–3.4s against an ideal 3.0s, so the inter-batch gap costs ~10%, the top of decision 6's
+  estimate. Every batch logged `sends from +0 ms`: the gap always exceeded one interval.
+- **Steady state** (~22 min): 678/678 held with **zero** resyncs, zero snapshot failures, no
+  510 / 403 / 429, no MEXC disconnects. `frames/s mexc/futures` was 660–820.
+- **Binance unaffected**: 354/354 spot by ~2 min and 525/525 futures by ~2.5 min, through two
+  local-only 1006 reconnects on futures. Three more 1006s at ~10 min resynced up to 177
+  futures books and were back to 525/525 ~80s after the last one. MEXC was untouched. Ring free
+  stayed at ~65.5k/65.5k, `drain max` ≤ 9ms, and the heap stayed flat through the run.
+
+*Expectations*
+
+- Cold start: ~678 contracts (after the stock exclusion and core exclusions) at 4 req/s ≈ **170s
+  minimum**, ~3 minutes with inter-batch gaps — comparable to Binance's ramp.
+- A dropped socket (300 books) recovers in ~75s. Steady-state resync demand is far below 4 req/s,
+  so the rate only matters for cold start and mass reconnects.
+- The last book of a 12-batch waits ~3s for its snapshot and buffers a handful of pushes —
+  nowhere near the 500 cap.
+
+*V2 — empirical checks before / while building* (Phase 0's V1 style; save findings to
+`external-docs/mexc/mexc-api-rate-limits-empirical.md`, gentle runs that stop at the first
+rejection) — **all done 2026-10-04**, details in the empirical doc's "Futures — V2 follow-up".
+
+- [x] **V2a — host mismatch.** The futures measurements hit `contract.mexc.com`; the configured
+      `rest.base-url` is `api.mexc.com`. They may sit behind different Akamai configs or limiters.
+      Re-run the 4 req/s × 20s and 5 req/s probes on `api.mexc.com/api/v1/contract/depth/BTC_USDT`.
+      If it differs (or is worse), switch `base-url` to `contract.mexc.com` and confirm
+      `/api/v1/contract/detail` still works there for discovery.
+      **Result: same limiter.** `api.mexc.com` matched `contract.mexc.com` (4 req/s clean, 5 req/s
+      tripped once in two runs), and 4 + 4 req/s split across both hosts tripped both within ~2s.
+      `base-url` stays `api.mexc.com`.
+- [x] **V2b — window scope: per IP or per symbol?** Every probe so far used `BTC_USDT` only. Run
+      ~8 req/s rotating across distinct symbols (stop at the first 510). If per-symbol, 4 req/s is
+      very conservative and `request-interval` can drop; if per-IP (expected), it stays.
+      **Result: per IP.** 8 req/s over 24–40 symbols tripped after 7–20 OKs, the same band as one
+      symbol. `request-interval` stays `PT0.25S`.
+- [x] **V2c — does `limit` change the cost?** Repeat the 5 req/s probe with `limit=1000` vs no
+      `limit` / a small one. If `limit=1000` trips earlier, either lower `depth-limit` (the price
+      filter drops far levels anyway — check how deep 10% from mid reaches on liquid contracts) or
+      lengthen `request-interval`.
+      **Result: no, for any useful depth.** `limit` 100 / 500 / 1000 / 1500 all trip at ~10 per 2s;
+      only `limit=20` escaped the limiter. The server caps at 1500 levels per side (no `limit` and
+      `limit=2000` both return 1500), and 1000 levels reach only ~0.5–0.7% from mid on BTC_USDT
+      (1500: ~0.9%) — far inside the 10% filter. So `depth-limit` goes **up** to 1500 at no cost.
+- [x] **V2d — does discovery share the budget?** Does `/api/v1/contract/detail` count against the
+      depth window (e.g. a detail call followed immediately by 9–10 depth calls within 2s)? 4 req/s
+      leaves ~1 req/s of headroom under the ~5 req/s limit, and discovery is rare, so this is
+      expected to be a non-issue — confirm rather than design for it.
+      **Result: not shared.** Detail at 2 req/s alongside depth at 4 req/s (6 req/s combined): no
+      rejection on either.
+
+*Deferred*
+
+- [ ] The `depth_commits/{symbol}/1000` gap backfill: still a REST call, likely against the same
+      limit, so it buys little at first. Measured in 4b's live run: 3 resyncs in 25 min, all
+      during the ramp, so it is not worth building unless longer runs show otherwise.
 
 ### Phase 5 — End-to-end
 
@@ -296,7 +408,8 @@ The Disruptor, consumer and classifier are already venue-agnostic; nothing new s
   rule key won't match, so a user rule set for Binance's spelling won't apply on MEXC. Data-driven,
   not a correctness bug.
 - **Akamai WAF on the futures host** — untested at higher rates; the 4 req/s pacing keeps us well
-  below where spot tripped.
+  below where spot tripped. No 403 seen on either futures host up to 8 req/s (V2); sustained
+  violation is still untested. A block pauses snapshots for `waf-cooldown`.
 
 ---
 
@@ -328,3 +441,43 @@ The Disruptor, consumer and classifier are already venue-agnostic; nothing new s
    (`conceptPlate` `mc-trade-zone-Stock` is the fallback signal if it ever stops matching). A
    non-crypto contract without the suffix (e.g. `XLE`, sampled in V1, which looks like an ETF ticker)
    is not caught by it.
+5. **Futures snapshots are paced at a fixed 4 req/s, not adaptively** (2026-10-04). Measured: 4 req/s
+   clean for 20s; 5 req/s (the documented 10 / 2s) occasionally trips, because jitter bunches
+   arrivals into one window. Evenly spaced at 250ms, any 2s window — fixed or sliding — holds at
+   most 8. Probing upward (AIMD) would buy ~10% of cold-start time, but a trip costs a failed slot
+   plus a 3s cooldown (12 lost sends), so it loses more than it gains; and outside cold start and
+   mass reconnects the demand is far below 4 req/s anyway. The rate is config
+   (`request-interval`); V2b confirmed the window is per IP, so it stays at 250ms. The spot numbers (12 req/s clean,
+   Akamai WAF at 20–30 req/s) do **not** apply: different host path, different limiter — futures is
+   bound by MEXC's own 10-per-2s window, which fires long before the WAF.
+6. **Queue capacity ≠ request rate; the core queue is unchanged** (2026-10-04). On Binance the two
+   look coupled because `BinanceSnapshotFetcher` fires a whole batch in parallel. On MEXC,
+   `max-batch-size` only bounds how many books are `RECOVERING` (buffering) at once; the fetcher
+   paces inside `fetchAll`, which the `SnapshotFetcher` contract already permits ("may spread the
+   batch over time"). `BatchOutcome`'s one-outcome-per-slot guarantee covers mid-batch failures
+   unchanged. The one cost is that batches don't overlap: between batches there is a dead gap of
+   the last response's round-trip plus ≤ one `flush-interval`. Because the send clock persists
+   across batches, the gap only costs throughput beyond the 250ms spacing — ~5–10%. Removing it
+   means letting the queue reopen while a batch is still pacing (pipelining) — a core change not
+   worth making for that.
+   `max-batch-size: 12` ≈ 2.75s of sends per batch: amortizes the inter-batch gap over more sends
+   than a smaller batch, while tail books still buffer only a few pushes. 8 (one 2s window) would
+   work equally well; nothing in the design depends on the exact value.
+7. **One persistent send clock; cooldown checked at send time** (2026-10-04). A per-batch
+   `i × interval` schedule would restart spacing at every batch and could put two sends closer
+   than 250ms across a boundary (e.g. after a batch whose last request failed fast). A
+   fetcher-wide `nextSendAt` keeps spacing global — across batches and cooldowns. Checking the
+   cooldown when each slot's delay elapses (rather than once in `fetchAll`) lets a 510 or 403 that
+   arrives mid-batch stop the rest of the batch from being sent.
+8. **Cooldowns: 3s after a 510, 90s after a 403 / 429** (2026-10-04). MEXC sends no `Retry-After`
+   and no rate-limit headers, so durations are fixed config. 510: the window is ~2s and empirically
+   carries no penalty (a request 0.5s after a rejection succeeded); 3s covers a full window plus
+   slack, and at 4 req/s a 510 means our model of the limit is wrong (another client on the IP,
+   shared budget), so pausing is the right reaction to a rare event. 403/429: the Akamai block is
+   host-wide and "flappy" for ~20–100s on spot, and quick retries hit edges still blocking, so
+   ≥60–90s. Cooldowns only extend, so a 510 never shortens a WAF pause.
+9. **Snapshots request the full 1500 levels** (2026-10-04, V2c). `limit` 100–1500 costs the same
+   against the 10-per-2s window, and 1500 is the server's cap. 1000 levels reach only ~0.5–0.7% from
+   mid on BTC_USDT, so the extra 500 widen the seeded book (~0.9%) for ~14 KB more per response.
+   Even 1500 stays far inside the 10% price filter on liquid contracts; levels beyond it enter the
+   book only through pushes.

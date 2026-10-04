@@ -91,11 +91,17 @@ screener:
           heartbeat-interval-seconds: 120
 
     mexc:
-      # Futures only — MEXC spot streams Protobuf and has no adapter. Dark until the adapter is
-      # complete (.claude/plans/mexc-impl-plan.md, Phase 5). Enabling it earlier streams and counts
-      # frames, but books stay PENDING under the placeholder strategy. snapshot-queue arrives with
-      # Phase 4b.
+      # Futures only — MEXC spot streams Protobuf and has no adapter. Dark until end-to-end
+      # verification (.claude/plans/mexc-impl-plan.md, Phase 5).
       enabled: ${MEXC_ENABLED:false}
+      # Core snapshot request queue for MEXC futures. max-batch-size caps how many books buffer
+      # pushes at once; it does not set the request rate — the fetcher paces sends inside a batch
+      # (venues.FUTURES.snapshot.request-interval). batch-timeout must exceed
+      # max-batch-size × request-interval + rest.response-timeout (12 × 0.25s + 10s = 13s).
+      snapshot-queue:
+        max-batch-size: 12
+        flush-interval: PT0.25S
+        batch-timeout: PT20S
       venues:
         FUTURES:
           rest:
@@ -104,6 +110,16 @@ screener:
             codec-buffer-size-mb: 8
             connect-timeout: PT5S
             response-timeout: PT10S
+          # How snapshot requests are sized and paced (external-docs/mexc/mexc-api-rate-limits-empirical.md).
+          # MEXC's window is ~10 requests per 2s per IP, across all symbols; 4 req/s evenly spaced
+          # never trips it. depth-limit 1500 is the server cap and costs the same as any smaller limit.
+          # A throttled request (HTTP 200, code 510) pauses sends for throttle-cooldown; an Akamai
+          # 403 or a 429 for waf-cooldown.
+          snapshot:
+            depth-limit: 1500
+            request-interval: PT0.25S
+            throttle-cooldown: PT3S
+            waf-cooldown: PT90S
           stream-url: wss://contract.mexc.com/edge
           # The symbol travels inside the sub.depth frame's param, so the topic is the bare symbol.
           stream-topic: "{symbol}"

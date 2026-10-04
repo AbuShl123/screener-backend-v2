@@ -41,7 +41,7 @@ Where this document and the code disagree, the code is right.
 | **P2 step 6** | Config consolidation — fold `screener.orderbook.*` / `screener.websocket.*` into `screener.exchanges.*` | Partially pre-done (`ExchangesProperties` carries per-venue stream/REST/connection config, stream topic and heartbeat interval; `screener.websocket.*` is down to reconnect backoff) |
 | **P3** | Reset lane, `tryNext()` backpressure, dynamic subscribe/unsubscribe, staleness watchdog, venue health surface, read-side storage seam | Not started |
 | **P4** | Bybit — the first real second venue | Not started |
-| **P5–P6** | MEXC/Bitget breadth; primitive-array book | Not started |
+| **P5–P6** | MEXC/Bitget breadth; primitive-array book | MEXC futures adapter built ahead of P4, plan phases 0–4 done and verified live (`.claude/plans/mexc-impl-plan.md`), end-to-end enablement pending (Phase 5); Bitget and primitive-array book not started |
 
 **Live verification** (before P2 steps 3–4): run against real Binance, 353 spot + 525 futures books
 reached `SYNCED` in roughly 6 minutes and held. The ramp is now weight-limited rather than
@@ -53,7 +53,8 @@ minute is what paces it (§3).
 ## 2. Identity — done and stable
 
 - **`Venue = (Exchange, Market)`** is the adapter unit: `Venue.BINANCE_SPOT`, `Venue.BINANCE_FUTURES`,
-  and `Venue.MEXC_FUTURES` (disabled; adapter in progress under `exchange/mexc/` — discovery done, MEXC plan Phase 1).
+  and `Venue.MEXC_FUTURES` (disabled by default until MEXC plan Phase 5; `exchange/mexc/` has
+  discovery, transport, sync and recovery, verified live; `.claude/plans/mexc-impl-plan.md`).
   `Market` remains the persistence- and API-facing type; `Venue.of(exchange, market)` bridges the two.
   This is what let identity land without a Flyway migration or a frontend contract change.
 - **`Instrument`** is a record carrying `id`, `venue`, `nativeSymbol`, `base`, `quote`, plus four

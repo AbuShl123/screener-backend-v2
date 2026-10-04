@@ -27,12 +27,15 @@ import java.util.List;
  *   <li>{@link MexcApiException} — a 2xx whose envelope says {@code "success": false}, e.g. a
  *       throttled request ({@code code 510}).</li>
  * </ul>
+ * {@link #depth} is the exception to the second: it returns the raw body, envelope included, and
+ * leaves classifying it to its caller.
  */
 @Slf4j
 public class MexcFuturesRestClient {
 
     private static final Venue VENUE = Venue.MEXC_FUTURES;
     private static final String CONTRACT_DETAIL_PATH = "/api/v1/contract/detail";
+    private static final String DEPTH_PATH = "/api/v1/contract/depth/{symbol}?limit={limit}";
     private static final ParameterizedTypeReference<MexcResponse<List<MexcContractDto>>> CONTRACT_DETAIL_TYPE =
             new ParameterizedTypeReference<>() {};
 
@@ -46,6 +49,17 @@ public class MexcFuturesRestClient {
     public Mono<List<MexcContractDto>> contractDetail() {
         return logErrors(retrieve(CONTRACT_DETAIL_PATH).bodyToMono(CONTRACT_DETAIL_TYPE).map(this::unwrap),
                 CONTRACT_DETAIL_PATH);
+    }
+
+    /**
+     * One contract's order book, as the raw body — not unwrapped through {@link MexcResponse}: the
+     * sync strategy stream-parses it, and {@code MexcSnapshotFetcher} reads its envelope first. So a
+     * throttled request ({@code 200}, {@code success:false}) arrives here as a value, not an error.
+     *
+     * <p>The symbol is a URI variable, never pre-encoded into the path, as in {@code BinanceRestClient}.
+     */
+    public Mono<String> depth(String symbol, int limit) {
+        return logErrors(retrieve(DEPTH_PATH, symbol, limit).bodyToMono(String.class), DEPTH_PATH + " " + symbol);
     }
 
     private <T> T unwrap(MexcResponse<T> response) {
