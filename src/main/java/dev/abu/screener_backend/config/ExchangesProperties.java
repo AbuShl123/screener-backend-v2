@@ -67,9 +67,9 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     }
 
     /**
-     * The {@code discovery} subtree of an exchange block is deliberately not bound here: inclusion
-     * policy is exchange-shaped, so each adapter binds its own record to
-     * {@code screener.exchanges.<exchange>.discovery} (e.g. {@code BinanceDiscoveryProperties}).
+     * Instrument-inclusion policy is not configured per exchange: each adapter's eligibility filters
+     * are hardcoded in its {@code InstrumentSource}, and the exclusion list is the exchange-agnostic
+     * {@code screener.discovery.excluded-symbols} ({@link DiscoveryProperties}).
      *
      * @param enabled       safe-rollout switch — an adapter can ship dark and be turned on
      *                      independently. Read through {@link ExchangesProperties#isEnabled}

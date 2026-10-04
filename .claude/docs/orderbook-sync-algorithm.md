@@ -28,23 +28,21 @@ full hot-path rules.
 ## 1. Instrument Discovery and Registration
 
 Files: `exchange/{InstrumentUniverseService,InstrumentRegistry,Instrument,Venue,Market,Exchange,InstrumentUniverseChangedEvent}.java`,
-`ticker/TickerRefreshScheduler.java`; config: `ExchangesProperties`
-(`screener.exchanges.binance.discovery.*`).
+`ticker/TickerRefreshScheduler.java`; config: `DiscoveryProperties` (`screener.discovery.*`).
 
 `InstrumentUniverseService.refresh()` fetches `GET /api/v3/exchangeInfo` (spot) and
 `GET /fapi/v1/exchangeInfo` (futures) concurrently via `Mono.zip`, blocking up to 30s. The zip
 combinator only *filters*; registration runs on the calling (discovery) thread afterwards, which
 is what keeps id assignment single-threaded.
 
-**Inclusion policy** — config-driven, no longer hardcoded:
+**Inclusion policy** — hardcoded in `BinanceInstrumentSource`:
 ```
-futures = status TRADING & contractType PERPETUAL & quote USDT & not excluded
-spot    = status TRADING & quote USDT & not excluded
-                         & (spot-requires-futures -> symbol also in futures)
+futures = status TRADING & contractType PERPETUAL & quote USDT
+spot    = status TRADING & quote USDT & symbol also in futures
 ```
-`spot-requires-futures: true` reproduces the historical universe (spot tracked only where a
-futures contract existed). `excluded-symbols` holds the stablecoin/metal pairs (`USDCUSDT`,
-`FDUSDUSDT`, `DAIUSDT`, `PYUSDUSDT`, `USD1USDT`, `XAUTUSDT`, `PAXGUSDT`).
+Then `InstrumentUniverseService` drops `screener.discovery.excluded-symbols`, the exchange-agnostic
+stablecoin/metal list in `base + quote` form (`USDCUSDT`, `FDUSDUSDT`, `DAIUSDT`, `PYUSDUSDT`,
+`USD1USDT`, `XAUTUSDT`, `PAXGUSDT`).
 
 **Ids** (`InstrumentRegistry`): dense, from a counter, assigned the first time a
 `(venue, nativeSymbol)` pair is registered. Four rules matter:

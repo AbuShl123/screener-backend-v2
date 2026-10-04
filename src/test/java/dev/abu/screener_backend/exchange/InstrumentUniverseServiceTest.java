@@ -193,6 +193,21 @@ class InstrumentUniverseServiceTest {
 
             assertEquals(List.of("allocate", "allocate", "publish", "event"), calls);
         }
+
+        @Test
+        @DisplayName("excluded symbols are matched on base + quote, whatever the native spelling")
+        void exclusionMatchesNormalizedSymbol() {
+            FakeSource source = new FakeSource(BOTH).returning(() -> both(
+                    List.of(new InstrumentCandidate("USDCUSDT", "USDC", "USDT"),
+                            new InstrumentCandidate("BTCUSDT", "BTC", "USDT")),
+                    List.of(new InstrumentCandidate("USDC_USDT", "USDC", "USDT"),
+                            new InstrumentCandidate("BTC_USDT", "BTC", "USDT"))));
+
+            service(List.of(source), Set.of("USDCUSDT")).refresh();
+
+            assertEquals(List.of("BTCUSDT", "BTC_USDT"), symbols(events.getFirst().getAdded()));
+            assertTrue(registry.find(Venue.BINANCE_FUTURES, "USDC_USDT").isEmpty());
+        }
     }
 
     // ---------------------------------------------------------------- failure isolation
@@ -282,13 +297,22 @@ class InstrumentUniverseServiceTest {
     // ---------------------------------------------------------------- fixtures
 
     private InstrumentUniverseService service(List<InstrumentSource> sources) {
-        return service(sources, allEnabled(), timeout());
+        return service(sources, allEnabled(), timeout(), Set.of());
+    }
+
+    private InstrumentUniverseService service(List<InstrumentSource> sources, Set<String> excludedSymbols) {
+        return service(sources, allEnabled(), timeout(), excludedSymbols);
     }
 
     private InstrumentUniverseService service(List<InstrumentSource> sources,
                                               ExchangesProperties exchanges, Duration timeout) {
+        return service(sources, exchanges, timeout, Set.of());
+    }
+
+    private InstrumentUniverseService service(List<InstrumentSource> sources, ExchangesProperties exchanges,
+                                              Duration timeout, Set<String> excludedSymbols) {
         return new InstrumentUniverseService(sources, registry, slots, exchanges,
-                new DiscoveryProperties(timeout),
+                new DiscoveryProperties(timeout, excludedSymbols),
                 event -> {
                     calls.add("event");
                     events.add((InstrumentUniverseChangedEvent) event);

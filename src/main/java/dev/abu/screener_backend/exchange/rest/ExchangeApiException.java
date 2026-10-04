@@ -4,6 +4,8 @@ import dev.abu.screener_backend.exchange.Venue;
 import lombok.Getter;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import reactor.core.publisher.Mono;
 
 /**
  * Thrown when a venue's REST API responds with a non-2xx HTTP status code.
@@ -37,5 +39,19 @@ public class ExchangeApiException extends RuntimeException {
 
     public ExchangeApiException(Venue venue, HttpStatusCode statusCode, String responseBody) {
         this(venue, statusCode, HttpHeaders.EMPTY, responseBody);
+    }
+
+    /**
+     * Reads an error response into an exception, for use as a WebClient {@code onStatus} handler.
+     *
+     * <p>{@code defaultIfEmpty} matters: an error status with an empty body would otherwise map to an
+     * empty {@code Mono}, which {@code onStatus} treats as "not an error" — and a bodiless 429
+     * would then be handed to the caller as a success.
+     */
+    public static Mono<ExchangeApiException> from(Venue venue, ClientResponse response) {
+        return response.bodyToMono(String.class)
+                .defaultIfEmpty("")
+                .map(body -> new ExchangeApiException(venue, response.statusCode(),
+                        response.headers().asHttpHeaders(), body));
     }
 }

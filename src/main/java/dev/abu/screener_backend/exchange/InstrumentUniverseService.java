@@ -30,9 +30,15 @@ import java.util.stream.Collectors;
  * Merges every enabled {@link InstrumentSource} into one instrument universe and drives
  * registration, slot allocation and subscription.
  *
- * <p>Exchange-agnostic: what an exchange lists and which of it to track is the adapter's source's
- * business. This class owns only what must be uniform across exchanges — id assignment, the
- * added/removed diff, publication order and failure isolation.
+ * <p>Exchange-agnostic: what an exchange lists and which of it the pipeline can track is the
+ * adapter's source's business. This class owns only what must be uniform across exchanges — the
+ * exclusion list, id assignment, the added/removed diff, publication order and failure isolation.
+ *
+ * <h3>Exclusion</h3>
+ * {@code screener.discovery.excluded-symbols} is applied here, to every source's validated result,
+ * matched on the normalized {@link Instrument#symbol(String, String) symbol} ({@code base + quote})
+ * so one list serves every exchange and market. Applied after validation: the empty-venue guard
+ * judges what the exchange reported, not what configuration chose to drop.
  *
  * <h3>Sources</h3>
  * Validated once at construction: every source claims a non-empty set of venues of one exchange,
@@ -67,6 +73,7 @@ public class InstrumentUniverseService {
     private final InstrumentRegistry registry;
     private final BookSlotTable slots;
     private final Duration sourceTimeout;
+    private final Set<String> excludedSymbols;
     private final ApplicationEventPublisher eventPublisher;
 
     /** Ids per venue as of that venue's last successful fetch. Discovery thread only. */
@@ -82,6 +89,7 @@ public class InstrumentUniverseService {
         this.registry = registry;
         this.slots = slots;
         this.sourceTimeout = discovery.sourceTimeout();
+        this.excludedSymbols = discovery.excludedSymbols();
         this.eventPublisher = eventPublisher;
     }
 
@@ -172,7 +180,7 @@ public class InstrumentUniverseService {
 
                     String rejection = validate(handle, result);
                     if (rejection == null) {
-                        fresh.putAll(result);
+                        result.forEach((venue, list) -> fresh.put(venue, withoutExcluded(list)));
                         succeeded++;
                     } else {
                         retain(handle, retained, rejection, null);
@@ -218,6 +226,13 @@ public class InstrumentUniverseService {
             }
         }
         return null;
+    }
+
+    private List<InstrumentCandidate> withoutExcluded(List<InstrumentCandidate> candidates) {
+        if (excludedSymbols.isEmpty()) return candidates;
+        return candidates.stream()
+                .filter(c -> !excludedSymbols.contains(Instrument.symbol(c.base(), c.quote())))
+                .toList();
     }
 
     private void retain(SourceHandle handle, Set<Venue> retained, String reason, Throwable cause) {

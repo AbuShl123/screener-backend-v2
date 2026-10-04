@@ -6,7 +6,6 @@ import dev.abu.screener_backend.exchange.rest.ExchangeApiException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
@@ -62,23 +61,11 @@ public class BinanceRestClient {
         return webClient.get()
                 .uri(uriTemplate, uriVariables)
                 .retrieve()
-                .onStatus(HttpStatusCode::isError, this::toApiException);
+                .onStatus(HttpStatusCode::isError, response -> ExchangeApiException.from(venue, response));
     }
 
     private <T> Mono<T> logErrors(Mono<T> call, String uriTemplate, Object... uriVariables) {
         return call.doOnError(ex -> log.warn("[{}] REST call failed [{} {}]: {}",
                 venue, uriTemplate, Arrays.toString(uriVariables), ex.getMessage()));
-    }
-
-    /**
-     * {@code defaultIfEmpty} matters: an error status with an empty body would otherwise map to an
-     * empty {@code Mono}, which {@code onStatus} treats as "not an error" — and a bodiless 429
-     * would then be handed to the caller as a success.
-     */
-    private Mono<? extends Throwable> toApiException(ClientResponse response) {
-        return response.bodyToMono(String.class)
-                .defaultIfEmpty("")
-                .map(body -> new ExchangeApiException(venue, response.statusCode(),
-                        response.headers().asHttpHeaders(), body));
     }
 }

@@ -42,18 +42,6 @@ screener:
   exchanges:
     binance:
       enabled: ${BINANCE_ENABLED:true}
-      discovery:
-        quote-asset: USDT
-        futures-contract-type: PERPETUAL
-        spot-requires-futures: true
-        excluded-symbols:
-          - USDCUSDT
-          - FDUSDUSDT
-          - DAIUSDT
-          - PYUSDUSDT
-          - USD1USDT
-          - XAUTUSDT
-          - PAXGUSDT
       # Core snapshot request queue, one per Binance venue, all shaped alike. max-batch-size also
       # caps how many books buffer diffs at once. batch-timeout is a safety net for a batch that
       # never completes and must exceed every venue's rest.response-timeout.
@@ -105,8 +93,7 @@ screener:
     mexc:
       # Futures only — MEXC spot streams Protobuf and has no adapter. Dark until the adapter is
       # complete (.claude/plans/mexc-impl-plan.md, Phase 5): enabling it earlier fails startup,
-      # because MEXC_FUTURES has no stream protocol or sync strategy bound yet. discovery and
-      # snapshot-queue arrive with Phases 1 and 4b.
+      # because MEXC_FUTURES has no stream protocol bound yet. snapshot-queue arrives with Phase 4b.
       enabled: ${MEXC_ENABLED:false}
       venues:
         FUTURES:
@@ -133,6 +120,17 @@ screener:
     # Per-source wait on each universe refresh. A source that overruns is cancelled and its venues
     # keep their previous universe (no removals).
     source-timeout: PT30S
+    # Never tracked on any exchange or market: stablecoin / metal pairs whose books carry no signal.
+    # Written as base + quote (USDCUSDT), never an exchange's native form (MEXC's USDC_USDT).
+    # Eligibility itself (quote asset, contract type, status) is hardcoded in each adapter.
+    excluded-symbols:
+      - USDCUSDT
+      - FDUSDUSDT
+      - DAIUSDT
+      - PYUSDUSDT
+      - USD1USDT
+      - XAUTUSDT
+      - PAXGUSDT
 
   ticker:
     refresh-interval: PT4H

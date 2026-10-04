@@ -53,7 +53,7 @@ minute is what paces it (§3).
 ## 2. Identity — done and stable
 
 - **`Venue = (Exchange, Market)`** is the adapter unit: `Venue.BINANCE_SPOT`, `Venue.BINANCE_FUTURES`,
-  and `Venue.MEXC_FUTURES` (constant and YAML present, disabled, no adapter yet — MEXC plan Phase 0).
+  and `Venue.MEXC_FUTURES` (disabled; adapter in progress under `exchange/mexc/` — discovery done, MEXC plan Phase 1).
   `Market` remains the persistence- and API-facing type; `Venue.of(exchange, market)` bridges the two.
   This is what let identity land without a Flyway migration or a frontend contract change.
 - **`Instrument`** is a record carrying `id`, `venue`, `nativeSymbol`, `base`, `quote`, plus four
@@ -84,10 +84,10 @@ minute is what paces it (§3).
   (`ExchangesProperties.isEnabled`), fetches sources concurrently under
   `screener.discovery.source-timeout`, and owns id order, the diff and publication order. Failure is
   **isolated per source**: a failed, timed-out, mis-keyed or newly-empty source keeps its venues'
-  previous universe and contributes zero removals. Binance ships one `BinanceInstrumentSource`
-  spanning spot + futures (spot inclusion needs the futures list), with its policy in the
-  adapter-owned `BinanceDiscoveryProperties` bound to `screener.exchanges.binance.discovery`
-  (`quote-asset`, `futures-contract-type`, `spot-requires-futures`, `excluded-symbols`). See
+  previous universe and contributes zero removals. Core also applies the exchange-agnostic
+  `screener.discovery.excluded-symbols` (`base + quote` form) to every source's result. Each
+  adapter's eligibility filters are hardcoded in its source, not configured. Binance ships one
+  `BinanceInstrumentSource` spanning spot + futures (spot inclusion needs the futures list). See
   `.claude/plans/universe-discovery-generalization.md`.
 - **`SubscriptionIndex`** is a per-connection `nativeSymbol → instrumentId` map. It is what removed
   `String.intern()` from the reader callback.
@@ -535,7 +535,7 @@ and a YAML block.* Measured against that, here is what is already additive and w
 | Identity | `Venue` + `Instrument` + dense ids; nothing in the hot path is Binance-shaped |
 | Event provenance | `EventType` says where bytes came from, not what they mean |
 | Per-venue transport config | `screener.exchanges.<exchange>.venues.<market>.*` via `ExchangesProperties`; connection count is derived from stream count and the venue's own cap |
-| Discovery | An `InstrumentSource` bean from the adapter's config, with its own policy record under `screener.exchanges.<exchange>.discovery.*` |
+| Discovery | An `InstrumentSource` bean from the adapter's config, with its eligibility filters hardcoded; exclusions are core's `screener.discovery.excluded-symbols`, in `base + quote` form |
 | Snapshot fetching + request budget | A `SnapshotFetcher` per venue handed to core's `SnapshotQueueFactory` from the adapter config, plus a `snapshot-queue` block on the exchange (and whatever pricing keys the adapter binds under its venues); pricing, pacing and bans are entirely the fetcher's |
 | Transport | `StreamProtocol` (subscribe frames, frame routing, `Heartbeat` kind) bound via a `VenueStreamBinding` bean; core `StreamManager` / `ConnectionPool` / `StreamConnection` own lifecycle, reconnect, fan-out, chunking and heartbeat scheduling. The topic template and heartbeat interval are per-venue config. `StreamProtocolRegistry` fails startup if an enabled venue has no binding |
 
@@ -651,6 +651,12 @@ Settled, with the reasoning, so they are not relitigated:
 20. **No core `RequestBudget` type.** Core queues; the venue's fetcher prices and paces. Binance's
     weight accounting lives entirely in `BinanceSnapshotFetcher` + `WeightGuard`, read from its own
     depth responses; discovery traffic is covered by the reserve.
+21. **Universe eligibility filters are hardcoded per adapter**, not YAML — they define what the
+    pipeline can handle, so changing one is a code change anyway. There is no
+    `screener.exchanges.<exchange>.discovery` block.
+22. **One exclusion list for every exchange**, `screener.discovery.excluded-symbols`, written as
+    `base + quote` and applied by `InstrumentUniverseService` on the normalized symbol, never the
+    native one.
 
 ---
 

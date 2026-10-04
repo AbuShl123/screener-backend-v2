@@ -60,7 +60,7 @@ public record Instrument(
      */
     public static Instrument of(int id, Venue venue, String nativeSymbol, String base, String quote,
                                 double quantityMultiplier) {
-        String symbol = base + quote;
+        String symbol = symbol(base, quote);
         String market = venue.market().name();
         return new Instrument(
                 id,
@@ -79,6 +79,15 @@ public record Instrument(
     /** An instrument whose wire quantities are already in base asset. */
     public static Instrument of(int id, Venue venue, String nativeSymbol, String base, String quote) {
         return of(id, venue, nativeSymbol, base, quote, 1.0);
+    }
+
+    /**
+     * The {@code symbol} format, {@code BASEQUOTE}. The one place it is spelled, so discovery's
+     * exclusion list (matched before an instrument exists) cannot drift from the symbol instruments
+     * carry.
+     */
+    public static String symbol(String base, String quote) {
+        return base + quote;
     }
 
     /**

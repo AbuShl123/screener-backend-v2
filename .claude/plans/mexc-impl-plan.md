@@ -88,8 +88,7 @@ New package `exchange/mexc/`, registered via `MexcAdapterConfig`, mirroring `bin
 | Class | Role |
 |---|---|
 | `MexcAdapterConfig` | `@Configuration`; contributes the strategy binding, stream binding, instrument source, REST client, snapshot queue. Strategies/protocols are **not** `@Component`s. |
-| `MexcDiscoveryProperties` | `screener.exchanges.mexc.discovery.*` inclusion policy. |
-| `MexcRestClient` | `WebClient` from `ExchangeWebClientFactory`; unwraps the `{success, code, data}` envelope. |
+| `MexcFuturesRestClient` | `WebClient` from `ExchangeWebClientFactory`; unwraps the `{success, code, data}` envelope. Futures-only: MEXC spot is a different REST API (no envelope, other DTOs, query-param depth), so it gets its own client rather than a `BinancePaths`-style parameter. |
 | `MexcInstrumentSource` | `InstrumentSource` for `MEXC_FUTURES`. |
 | `MexcFuturesStreamProtocol` | `StreamProtocol` implementation. |
 | `MexcFuturesSyncStrategy` + `MexcSyncContext` | `DepthSyncStrategy` + per-book cursor/buffer. |
@@ -125,20 +124,29 @@ Mostly the non-additive edits, done once.
       aggregated, but carry undocumented `begin`/`end` fields that are contiguous. (b) and (c) hold.
       Phase 3's `check()` changes accordingly — see the note there.
 
-### Phase 1 — Universe discovery
+### Phase 1 — Universe discovery — DONE
 
-- [ ] `MexcRestClient` with the envelope unwrap; codec buffer sized for `/contract/detail` (large
-      response for ~1100 contracts).
-- [ ] `MexcInstrumentSource` for `MEXC_FUTURES` only. Filter: `quoteCoin == USDT`,
-      `futureType == 1` (perpetual), `state == 0`, `apiAllowed == true`, minus `excluded-symbols`.
-      Additional policy per decision D1 (§4).
-- [ ] Mapping: `BTC_USDT` → `nativeSymbol=BTC_USDT`, `base=BTC`, `quote=USDT`, so
+- [x] `MexcFuturesRestClient` with the envelope unwrap; codec buffer sized for `/contract/detail` (large
+      response for ~1100 contracts). `success:false` (incl. a 200/510) → `MexcApiException`; non-2xx
+      (incl. Akamai HTML 403) → `ExchangeApiException`, whose `from(venue, response)` now holds the
+      empty-body-safe mapping both clients share.
+- [x] `MexcInstrumentSource` for `MEXC_FUTURES` only. Filter: `quoteCoin == USDT`,
+      `futureType == 1` (perpetual), `state == 0`, `apiAllowed == true`. **Hardcoded**, not YAML —
+      see decision 1 (§6). Exclusions are applied by core afterwards — decision 2 (§6).
+      D1 (§4) still open — no stock / turnover filter yet.
+- [x] Mapping: `BTC_USDT` → `nativeSymbol=BTC_USDT`, `base=BTC`, `quote=USDT`, so
       `symbol=BTCUSDT` and `ruleKey=BTCUSDT:FUTURES` — user rules apply on MEXC with no change.
-      `contractSize` → quantity multiplier.
-- [ ] Placeholder no-op `DepthSyncStrategy` binding (drops events, books stay `PENDING`) — see §1.5.
+      `contractSize` → quantity multiplier. A row with a missing / non-positive `contractSize` is
+      skipped with a warn rather than failing the whole refresh.
+- [x] Placeholder no-op `DepthSyncStrategy` binding (`MexcPlaceholderSyncStrategy`; drops events,
+      books stay `PENDING`) — see §1.5. Phase 3 replaces it.
 
 **Verify**: `/api/tickers` lists the MEXC universe; Binance instrument ids are unchanged; a failing
 MEXC source does not affect Binance's universe (failure isolation is per source).
+→ Unit-tested (`MexcInstrumentSourceTest`, `MexcFuturesRestClientTest`, `MexcAdapterConfigTest`), plus a
+one-off live fetch through the production WebClient: **1052** contracts selected (1055 eligible − 3
+excluded), contract sizes from `1e-5` to `1e7`. The `/api/tickers` check needs MEXC enabled, which
+`StreamProtocolRegistry` refuses until Phase 2 binds the stream protocol — do it then.
 
 ### Phase 2 — WebSocket transport
 
@@ -249,7 +257,7 @@ The Disruptor, consumer and classifier are already venue-agnostic; nothing new s
 
 | # | Question | Notes |
 |---|---|---|
-| D1 | **Universe size** — all ~1106 contracts, or a filtered set? | Full set includes tokenized stocks (`*STOCK_USDT`) and pairs with no activity. Options: exclude list; minimum 24h turnover via `/api/v1/contract/ticker` (`amount24`); intersection with Binance futures. Affects cold-start time and connection count. |
+| D1 | **Universe size** — all ~1106 contracts, or a filtered set? | Full set includes tokenized stocks (`*STOCK_USDT`; ~370 of the 1052 selected on 2026-10-04 — no clean field marks them, only the name suffix and `conceptPlate` `mc-trade-zone-Stock`) and pairs with no activity. Options: exclude list; minimum 24h turnover via `/api/v1/contract/ticker` (`amount24`); intersection with Binance futures. Affects cold-start time and connection count. |
 | D2 | **Global tier calibration** | Default tiers were tuned on Binance liquidity; the same dollar wall means more on MEXC. Acceptable for now, but a product question. |
 | D3 | **Ordering of 4a vs 3** | The strategy can be built against `FakeRecoverySink` before the queue exists, so 4a (a Binance-only refactor) can run in parallel with Phases 1–3 rather than after. |
 
@@ -266,3 +274,26 @@ The Disruptor, consumer and classifier are already venue-agnostic; nothing new s
   not a correctness bug.
 - **Akamai WAF on the futures host** — untested at higher rates; the 4 req/s pacing keeps us well
   below where spot tripped.
+
+---
+
+## 6. Decisions made during implementation
+
+1. **Universe eligibility filters are hardcoded in every adapter**, not YAML. MEXC:
+   `quoteCoin == USDT ∧ futureType == 1 ∧ state == 0 ∧ apiAllowed`. Binance, aligned for consistency:
+   `status TRADING ∧ quote USDT`, plus `contractType PERPETUAL` on futures and spot ⊆ futures on
+   spot. They define what the pipeline can handle (a non-USDT quote needs different notional math),
+   so changing one is a code change anyway. Spot ⊆ futures is a load decision rather than a
+   capability one, but dropping it multiplies Binance spot and belongs in its own change.
+   `BinanceDiscoveryProperties` and `MexcDiscoveryProperties` are gone, and so is every
+   `screener.exchanges.<exchange>.discovery` block.
+2. **One exchange-agnostic exclusion list**: `screener.discovery.excluded-symbols`
+   (`DiscoveryProperties`), written as `base + quote` (`USDCUSDT`), never in native form. Applied once
+   by `InstrumentUniverseService` to every source's validated result, matched on
+   `Instrument.symbol(base, quote)`. It is the union of the two former lists, so MEXC now also drops
+   `FDUSD`, `DAI`, `PYUSD` and `USD1`. Trade-offs accepted: no per-exchange exclusion (nothing needs
+   one yet), and sources' "selected N" log lines count instruments before exclusion.
+3. **REST clients are per API, not per exchange.** `MexcRestClient` → `MexcFuturesRestClient`.
+   Binance's spot and futures are one API under two prefixes, hence `BinancePaths`; MEXC's are not
+   (envelope, DTOs, symbol format and depth-path shape all differ, on the same host), so MEXC spot
+   will get its own `MexcSpotRestClient`.

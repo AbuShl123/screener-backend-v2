@@ -11,11 +11,11 @@ import java.util.Map;
  * {@code screener.exchanges.binance.venues.<market>.snapshot.*}. The core queue's own shape (batch
  * size, flush interval) is the exchange-level {@code snapshot-queue} block, not this.
  *
- * <p>Adapter-owned, like {@link BinanceDiscoveryProperties}, yet it lives inside the venue block
+ * <p>Adapter-owned (registered by {@link BinanceAdapterConfig}), yet it lives inside the venue block
  * that core's {@code ExchangesProperties} binds. Both bind the same {@code venues} subtree and each
  * takes only its own keys: core ignores {@code snapshot}, and this record ignores {@code rest},
  * {@code stream-url} and the rest — as it ignores the exchange-level siblings ({@code enabled},
- * {@code discovery}, {@code snapshot-queue}).
+ * {@code snapshot-queue}).
  *
  * @param venues per-market blocks; only their {@code snapshot} subtree is bound
  */

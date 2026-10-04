@@ -39,7 +39,7 @@ import org.springframework.web.reactive.function.client.WebClient;
  * The REST clients carry no filters.
  */
 @Configuration
-@EnableConfigurationProperties({BinanceDiscoveryProperties.class, BinanceSnapshotProperties.class})
+@EnableConfigurationProperties(BinanceSnapshotProperties.class)
 public class BinanceAdapterConfig {
 
     @Bean
@@ -89,9 +89,8 @@ public class BinanceAdapterConfig {
 
     @Bean
     InstrumentSource binanceInstrumentSource(@Qualifier("binanceSpotRestClient") BinanceRestClient spotClient,
-                                             @Qualifier("binanceFuturesRestClient") BinanceRestClient futuresClient,
-                                             BinanceDiscoveryProperties discovery) {
-        return new BinanceInstrumentSource(spotClient, futuresClient, discovery);
+                                             @Qualifier("binanceFuturesRestClient") BinanceRestClient futuresClient) {
+        return new BinanceInstrumentSource(spotClient, futuresClient);
     }
 
     @Bean

@@ -33,7 +33,6 @@ class BinanceSnapshotPropertiesTest {
     void validDepthLimitsBind(int depthLimit) {
         BinanceSnapshotProperties props = bind(Map.of(
                 "screener.exchanges.binance.enabled", "true",                       // sibling keys ignored
-                "screener.exchanges.binance.discovery.quote-asset", "USDT",
                 "screener.exchanges.binance.snapshot-queue.max-batch-size", "10",
                 "screener.exchanges.binance.venues.SPOT.rest.base-url", "https://x", // core's venue keys ignored
                 "screener.exchanges.binance.venues.SPOT.stream-url", "wss://x",

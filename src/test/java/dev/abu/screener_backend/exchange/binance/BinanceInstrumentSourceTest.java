@@ -31,8 +31,7 @@ class BinanceInstrumentSourceTest {
               {"symbol": "SOLUSDT",        "baseAsset": "SOL",  "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"},
               {"symbol": "ETHUSDT_250926", "baseAsset": "ETH",  "quoteAsset": "USDT", "status": "TRADING", "contractType": "CURRENT_QUARTER"},
               {"symbol": "XRPUSDT",        "baseAsset": "XRP",  "quoteAsset": "USDT", "status": "SETTLING", "contractType": "PERPETUAL"},
-              {"symbol": "ETHBTC",         "baseAsset": "ETH",  "quoteAsset": "BTC",  "status": "TRADING", "contractType": "PERPETUAL"},
-              {"symbol": "USDCUSDT",       "baseAsset": "USDC", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL"}
+              {"symbol": "ETHBTC",         "baseAsset": "ETH",  "quoteAsset": "BTC",  "status": "TRADING", "contractType": "PERPETUAL"}
             ]}
             """;
 
@@ -42,48 +41,39 @@ class BinanceInstrumentSourceTest {
               {"symbol": "SOLUSDT",  "baseAsset": "SOL",  "quoteAsset": "USDT", "status": "BREAK"},
               {"symbol": "DOGEUSDT", "baseAsset": "DOGE", "quoteAsset": "USDT", "status": "TRADING"},
               {"symbol": "XRPUSDT",  "baseAsset": "XRP",  "quoteAsset": "USDT", "status": "TRADING"},
-              {"symbol": "ETHBTC",   "baseAsset": "ETH",  "quoteAsset": "BTC",  "status": "TRADING"},
-              {"symbol": "USDCUSDT", "baseAsset": "USDC", "quoteAsset": "USDT", "status": "TRADING"}
+              {"symbol": "ETHBTC",   "baseAsset": "ETH",  "quoteAsset": "BTC",  "status": "TRADING"}
             ]}
             """;
 
     @Test
     @DisplayName("claims exactly the two Binance venues")
     void venues() {
-        BinanceInstrumentSource source = source(true, Mono.empty(), Mono.empty());
+        BinanceInstrumentSource source = source(Mono.empty(), Mono.empty());
 
         assertEquals(Set.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES), source.venues());
     }
 
     @Test
-    @DisplayName("futures: TRADING ∧ PERPETUAL ∧ quote USDT ∧ not excluded")
+    @DisplayName("futures: TRADING ∧ PERPETUAL ∧ quote USDT")
     void futuresPolicy() {
-        Map<Venue, List<InstrumentCandidate>> result = source(true, parse(SPOT), parse(FUTURES)).fetch();
+        Map<Venue, List<InstrumentCandidate>> result = source(parse(SPOT), parse(FUTURES)).fetch();
 
         assertEquals(List.of("BTCUSDT", "SOLUSDT"), symbols(result.get(Venue.BINANCE_FUTURES)));
     }
 
     @Test
-    @DisplayName("spot with spot-requires-futures: the futures intersection, plus the spot filters")
-    void spotPolicyIntersected() {
-        Map<Venue, List<InstrumentCandidate>> result = source(true, parse(SPOT), parse(FUTURES)).fetch();
+    @DisplayName("spot: the futures intersection, plus the spot filters")
+    void spotPolicy() {
+        Map<Venue, List<InstrumentCandidate>> result = source(parse(SPOT), parse(FUTURES)).fetch();
 
         // SOLUSDT is in futures but not TRADING on spot; DOGEUSDT/XRPUSDT have no eligible future.
         assertEquals(List.of("BTCUSDT"), symbols(result.get(Venue.BINANCE_SPOT)));
     }
 
     @Test
-    @DisplayName("spot without spot-requires-futures: every TRADING, USDT-quoted, non-excluded pair")
-    void spotPolicyIndependent() {
-        Map<Venue, List<InstrumentCandidate>> result = source(false, parse(SPOT), parse(FUTURES)).fetch();
-
-        assertEquals(List.of("BTCUSDT", "DOGEUSDT", "XRPUSDT"), symbols(result.get(Venue.BINANCE_SPOT)));
-    }
-
-    @Test
     @DisplayName("candidates carry base and quote assets")
     void candidateShape() {
-        Map<Venue, List<InstrumentCandidate>> result = source(true, parse(SPOT), parse(FUTURES)).fetch();
+        Map<Venue, List<InstrumentCandidate>> result = source(parse(SPOT), parse(FUTURES)).fetch();
 
         assertEquals(new InstrumentCandidate("BTCUSDT", "BTC", "USDT"), result.get(Venue.BINANCE_SPOT).getFirst());
     }
@@ -94,28 +84,24 @@ class BinanceInstrumentSourceTest {
         Mono<ExchangeInfoResponse> failing = Mono.error(
                 new ExchangeApiException(Venue.BINANCE_SPOT, HttpStatus.SERVICE_UNAVAILABLE, "down"));
 
-        assertThrows(RuntimeException.class, () -> source(true, parse(SPOT), failing).fetch());
-        assertThrows(RuntimeException.class, () -> source(true, failing, parse(FUTURES)).fetch());
+        assertThrows(RuntimeException.class, () -> source(parse(SPOT), failing).fetch());
+        assertThrows(RuntimeException.class, () -> source(failing, parse(FUTURES)).fetch());
     }
 
     @Test
     @DisplayName("an empty body or a missing symbols array throws")
     void malformedResponseThrows() {
-        assertThrows(IllegalStateException.class, () -> source(true, Mono.empty(), parse(FUTURES)).fetch());
-        assertThrows(IllegalStateException.class, () -> source(true, parse("{}"), parse(FUTURES)).fetch());
+        assertThrows(IllegalStateException.class, () -> source(Mono.empty(), parse(FUTURES)).fetch());
+        assertThrows(IllegalStateException.class, () -> source(parse("{}"), parse(FUTURES)).fetch());
     }
 
     // ---------------------------------------------------------------- fixtures
 
-    private static BinanceInstrumentSource source(boolean spotRequiresFutures,
-                                                  Mono<ExchangeInfoResponse> spot,
+    private static BinanceInstrumentSource source(Mono<ExchangeInfoResponse> spot,
                                                   Mono<ExchangeInfoResponse> futures) {
-        BinanceDiscoveryProperties discovery = new BinanceDiscoveryProperties(
-                "USDT", "PERPETUAL", spotRequiresFutures, Set.of("USDCUSDT"));
         return new BinanceInstrumentSource(
                 new StubRestClient(Venue.BINANCE_SPOT, spot),
-                new StubRestClient(Venue.BINANCE_FUTURES, futures),
-                discovery);
+                new StubRestClient(Venue.BINANCE_FUTURES, futures));
     }
 
     private static Mono<ExchangeInfoResponse> parse(String json) {

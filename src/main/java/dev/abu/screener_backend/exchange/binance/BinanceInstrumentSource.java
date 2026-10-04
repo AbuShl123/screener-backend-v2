@@ -20,11 +20,16 @@ import java.util.stream.Collectors;
  * list, so the two cannot be fetched or fail independently.
  *
  * <h3>Inclusion policy</h3>
- * Configured under {@code screener.exchanges.binance.discovery} ({@link BinanceDiscoveryProperties}):
  * <pre>
- * futures = status TRADING ∧ contractType PERPETUAL ∧ quote USDT ∧ not excluded
- * spot    = status TRADING ∧ quote USDT ∧ not excluded ∧ (spot-requires-futures → symbol ∈ futures)
+ * futures = status TRADING ∧ contractType PERPETUAL ∧ quote USDT
+ * spot    = status TRADING ∧ quote USDT ∧ symbol ∈ futures
  * </pre>
+ * Hardcoded, not configuration, as in every adapter: it defines what the pipeline can handle — a
+ * non-USDT quote, for one, needs different notional math. The spot ⊆ futures rule is a load
+ * decision rather than a capability one, but dropping it takes spot from ~350 pairs to every USDT
+ * pair, which belongs in its own change, not a YAML flip. The exchange-agnostic exclusion list
+ * ({@code screener.discovery.excluded-symbols}) is applied afterwards by core's
+ * {@code InstrumentUniverseService}, so the counts logged here include excluded symbols.
  *
  * <p>Constructed by {@link BinanceAdapterConfig}; deliberately not a {@code @Component}.
  */
@@ -32,17 +37,16 @@ import java.util.stream.Collectors;
 public class BinanceInstrumentSource implements InstrumentSource {
 
     private static final String TRADING_STATUS = "TRADING";
+    private static final String QUOTE_ASSET = "USDT";
+    private static final String PERPETUAL = "PERPETUAL";
     private static final Set<Venue> VENUES = Set.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES);
 
     private final BinanceRestClient spotClient;
     private final BinanceRestClient futuresClient;
-    private final BinanceDiscoveryProperties discovery;
 
-    public BinanceInstrumentSource(BinanceRestClient spotClient, BinanceRestClient futuresClient,
-                                    BinanceDiscoveryProperties discovery) {
+    public BinanceInstrumentSource(BinanceRestClient spotClient, BinanceRestClient futuresClient) {
         this.spotClient = spotClient;
         this.futuresClient = futuresClient;
-        this.discovery = discovery;
     }
 
     @Override
@@ -77,13 +81,11 @@ public class BinanceInstrumentSource implements InstrumentSource {
                                                                    ExchangeInfoResponse futures) {
         List<BinanceSymbolDto> spotAll = requireSymbols(spot, "spot exchangeInfo");
         List<BinanceSymbolDto> futuresAll = requireSymbols(futures, "futures exchangeInfo");
-        Set<String> excluded = discovery.excludedSymbols() == null ? Set.of() : discovery.excludedSymbols();
 
         List<BinanceSymbolDto> futuresSymbols = futuresAll.stream()
                 .filter(s -> TRADING_STATUS.equals(s.getStatus()))
-                .filter(s -> discovery.futuresContractType().equals(s.getContractType()))
-                .filter(s -> discovery.quoteAsset().equals(s.getQuoteAsset()))
-                .filter(s -> !excluded.contains(s.getSymbol()))
+                .filter(s -> PERPETUAL.equals(s.getContractType()))
+                .filter(s -> QUOTE_ASSET.equals(s.getQuoteAsset()))
                 .toList();
 
         Set<String> futuresNames = futuresSymbols.stream()
@@ -92,9 +94,8 @@ public class BinanceInstrumentSource implements InstrumentSource {
 
         List<BinanceSymbolDto> spotSymbols = spotAll.stream()
                 .filter(s -> TRADING_STATUS.equals(s.getStatus()))
-                .filter(s -> discovery.quoteAsset().equals(s.getQuoteAsset()))
-                .filter(s -> !excluded.contains(s.getSymbol()))
-                .filter(s -> !discovery.spotRequiresFutures() || futuresNames.contains(s.getSymbol()))
+                .filter(s -> QUOTE_ASSET.equals(s.getQuoteAsset()))
+                .filter(s -> futuresNames.contains(s.getSymbol()))
                 .toList();
 
         log.info("Instrument universe selected: {} spot, {} futures", spotSymbols.size(), futuresSymbols.size());
