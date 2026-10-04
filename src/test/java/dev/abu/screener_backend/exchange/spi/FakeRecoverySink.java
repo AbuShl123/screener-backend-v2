@@ -1,7 +1,6 @@
-package dev.abu.screener_backend.exchange.binance;
+package dev.abu.screener_backend.exchange.spi;
 
 import dev.abu.screener_backend.exchange.book.BookSlot;
-import dev.abu.screener_backend.exchange.spi.RecoverySink;
 
 /**
  * Stands in for a venue's {@code SnapshotRequestQueue}.
@@ -15,16 +14,16 @@ import dev.abu.screener_backend.exchange.spi.RecoverySink;
  * assert it to protect the "at most one recovery request per event" invariant, which holds only
  * because {@code recover()} has exactly one call site.
  */
-final class FakeRecoverySink implements RecoverySink {
+public final class FakeRecoverySink implements RecoverySink {
 
     /** {@code false} models a snapshot queue at capacity. */
-    boolean accepts = true;
+    public boolean accepts = true;
 
     /** Calls that reached the sink, whatever the verdict. */
-    int requests = 0;
+    public int requests = 0;
 
     /** The slot handed to the most recent call, so tests can assert the book's state at that moment. */
-    BookSlot lastSlot;
+    public BookSlot lastSlot;
 
     @Override
     public boolean requestRecovery(BookSlot slot) {

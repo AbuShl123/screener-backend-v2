@@ -15,6 +15,7 @@ import dev.abu.screener_backend.exchange.ingress.DepthEventPublisher;
 import dev.abu.screener_backend.exchange.recovery.SnapshotQueueFactory;
 import dev.abu.screener_backend.exchange.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.exchange.spi.DepthSyncStrategy;
+import dev.abu.screener_backend.exchange.spi.FakeRecoverySink;
 import dev.abu.screener_backend.exchange.spi.StreamProtocolRegistry;
 import dev.abu.screener_backend.exchange.spi.SyncStrategyRegistry;
 import dev.abu.screener_backend.exchange.spi.VenueStrategyBinding;

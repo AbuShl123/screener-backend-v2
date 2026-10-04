@@ -182,34 +182,43 @@ holds the socket well past the 60s idle cutoff); none of the three warnings. Bin
 354/354 spot + 525/525 futures with the ring untouched (`drain max=0ms`). The only disconnects
 were Binance 1006s, which happen on local runs only. `/api/tickers` lists the MEXC universe.
 
-### Phase 3 — Sync strategy (unit-tested in isolation)
+### Phase 3 — Sync strategy (unit-tested in isolation) — DONE
 
 Same shape as Binance (progress doc §4): one flat dispatch table in `onEvent`, `recover()` called only
 from there, buffering only while `RECOVERING`, `PENDING` retrying on every diff, and the §4.10
 invariants.
 
-- [ ] `MexcSyncContext`: `ArrayDeque<String>` buffer (bounded), `long lastVersion` (-1 = no sync point),
-      single `reset()`.
-> **Superseded by V1.** The `+1` predicate below would desync on most pushes. Use the
-> Binance-spot-shaped predicate over `begin`/`end` from
-> `external-docs/mexc/mexc-depth-versioning-empirical.md` ("Implications for the sync strategy"),
-> and locate `begin`/`end` rather than `version` in the §1.2 pre-scan.
-
-- [ ] `check()` (assuming V1 confirms +1 semantics):
-      - `version <= lastVersion` → `IGNORE`
-      - `version == lastVersion + 1` → `OK`, advance cursor
+- [x] `MexcSyncContext`: `ArrayDeque<String>` buffer (bounded at 500), `long lastVersion` (-1 = no sync
+      point), single `reset()`.
+- [x] `check()` — the V1 predicate over the undocumented `begin`/`end`, not the documented `+1` on
+      `version` (which would desync on most pushes):
+      - `end < lastVersion` → `IGNORE` (strict `<`, as Binance spot, decision log #10)
+      - `begin <= lastVersion + 1` → `OK`, `lastVersion = end`
       - otherwise → `DE_SYNCED`
-- [ ] Snapshot handling: unwrap `data`, stream `asks`/`bids` into the (empty) book, `computeDistance()`,
-      set `lastVersion = snapshot.version`, drain the buffer through the full `handleDiff` path.
-      Stale entries `IGNORE`; the first remaining one must be `version + 1` or it is a gap → recover.
-      Empty / all-stale buffer = success.
-- [ ] Level application: levels are JSON **numbers**, not strings — add a numeric-token variant of the
-      level parse; multiply quantity by the instrument's multiplier before `applyLevel`.
 
-**Verify**: a test suite modelled on `BinanceDepthSyncStrategyTest`, driving real MEXC-shaped JSON
-(including its field order) through the real `JsonParser`, with `FakeRecoverySink`. Pin: version
-located after levels, contract-size scaling, gap → recover, stale snapshot → recover, 510 body never
-reaching the strategy (that last one is a Phase 4 test).
+      One predicate covers the post-snapshot sync point (including the ~1/3 of snapshots that land
+      inside a push's range) and steady state. A push without `begin`/`end` throws → resync, so their
+      disappearance is loud.
+- [x] §1.2 pre-scan: `begin`/`end` are found with `lastIndexOf` on the raw frame (they sit near its
+      end) and parsed by hand; only an `OK` push is then streamed through `JsonParser` into the book.
+- [x] Snapshot handling: one walk shared with pushes — find the top-level `data` object, stream
+      `asks`/`bids` into the (empty) book, read `version`. No `data.version` (incl. a 510 body) →
+      resync. Then `computeDistance()`, `lastVersion = version`, drain the buffer through the full
+      `handleDiff` path. Empty / all-stale buffer = success.
+- [x] Level application: JSON number tokens are read from the parser's char buffer and parsed with
+      `JavaDoubleParser`, as on Binance — so an integer `99` and a fractional `99.0` share one key.
+      `vol × quantityMultiplier` before `applyLevel`; `orderCount` and anything after it is skipped.
+
+**Verify**: `MexcFuturesSyncStrategyTest` (35 cases) drives MEXC-shaped JSON in the delivered field
+order (and once in the documented order) through the real `JsonParser`. Pins: sequence fields after
+the levels, aggregated pushes, straddling and boundary snapshots, contract-size scaling, gap /
+stale-snapshot / malformed / 510-body → one resync, and the shared dispatch contract (refusal
+retries, overflow, `REST_FAILED`, resync counter). `FakeRecoverySink` moved to the `spi` test package
+so both adapters' suites use it.
+
+**Not wired yet.** `MexcAdapterConfig` still binds `MexcPlaceholderSyncStrategy`: the real strategy
+needs a `RecoverySink`, which is the snapshot queue from 4b. 4b swaps the binding in the same change
+(and `MexcAdapterConfigTest`'s `assertInstanceOf` with it).
 
 ### Phase 4 — Recovery
 

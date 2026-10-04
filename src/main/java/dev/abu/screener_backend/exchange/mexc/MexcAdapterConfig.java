@@ -19,7 +19,8 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>Built up by the MEXC plan's phases ({@code .claude/plans/mexc-impl-plan.md}): discovery, the
  * stream protocol and a placeholder strategy so far. Enabled, MEXC streams and counts frames, but
- * its books stay {@code PENDING} until the real strategy lands.
+ * its books stay {@code PENDING}: {@link MexcFuturesSyncStrategy} exists, but is bound only once
+ * its snapshot queue does (Phase 4b).
  */
 @Configuration
 public class MexcAdapterConfig {

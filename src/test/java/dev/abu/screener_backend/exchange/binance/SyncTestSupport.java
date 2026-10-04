@@ -7,6 +7,7 @@ import dev.abu.screener_backend.exchange.book.OrderBook;
 import dev.abu.screener_backend.exchange.health.PipelineMetrics;
 import dev.abu.screener_backend.exchange.ingress.DepthEvent;
 import dev.abu.screener_backend.exchange.ingress.EventType;
+import dev.abu.screener_backend.exchange.spi.FakeRecoverySink;
 
 import java.util.StringJoiner;
 
