@@ -1,3 +1,5 @@
+test.json
+deploy-backend.ps1
 /scripts/
 /external-docs/
 src/main/resources/application-local.yml
@@ -7,6 +9,11 @@ deployment-guide.md
 scratch_paper.txt
 HELP.md
 target/
+### Captured monitoring runs (OrderBookCsvRecorder) ###
+/monitoring-data/
+
+### Output of tools/analyze_orderbook_monitoring.py ###
+/monitoring-analysis/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

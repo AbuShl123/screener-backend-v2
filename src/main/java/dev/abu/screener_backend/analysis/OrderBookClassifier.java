@@ -1,12 +1,14 @@
 package dev.abu.screener_backend.analysis;
 
-import dev.abu.screener_backend.binance.orderbook.OrderBook;
-import dev.abu.screener_backend.binance.orderbook.OrderBookState;
-import dev.abu.screener_backend.binance.orderbook.PriceLevelEntry;
+import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.core.book.OrderBook;
+import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
+import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
 import dev.abu.screener_backend.feed.ClassifiedLevel;
 import dev.abu.screener_backend.feed.FeedEventType;
 import dev.abu.screener_backend.feed.OrderBookFeedStore;
 import dev.abu.screener_backend.feed.OrderBookUpdate;
+import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
 import lombok.Setter;
 
 import java.util.HashMap;
@@ -19,29 +21,35 @@ import java.util.TreeMap;
  *
  * <h2>Lifecycle and threading</h2>
  * One {@code OrderBookClassifier} instance is created per Disruptor shard by
- * {@link dev.abu.screener_backend.binance.disruptor.DisruptorShardManager} and is never shared
+ * {@link DisruptorShardManager} and is never shared
  * between shards. Because every order book is pinned to exactly one shard, and each shard has
  * exactly one consumer thread, all per-shard state inside this class is accessed by a single
  * thread. The only cross-thread field is {@link #activeUserContexts}, a {@code volatile} array
  * swapped atomically by the WebSocket connect/disconnect path; it is read once per
- * {@link #process(OrderBook)} call.
+ * {@link #process(Instrument, OrderBook)} call.
  *
  * <h2>Two-pass classification (Phase C)</h2>
  * Each {@code process(ob)} runs the classification state machine once per active context:
  * <ol>
  *   <li><b>Default pass</b> — always — against {@link #defaultStates}, {@link #defaultRule},
  *       and the global {@link #feedStore}.</li>
- *   <li><b>Per-user passes</b> — only for contexts that have this {@code (symbol, market)} key
- *       configured — against that context's own state map, override leaf rule, and personal feed
- *       store.</li>
+ *   <li><b>Per-user passes</b> — only for contexts that have a rule for this instrument's
+ *       {@link Instrument#ruleKey() ruleKey} configured — against that context's own state map,
+ *       override leaf rule, and personal feed store.</li>
  * </ol>
  * The shared per-context work lives in {@link #classifyOne}; the default and user passes differ
  * only in the {@code (state, rule, feedStore)} triple they operate on. When no custom users are
  * connected, the user loop body never executes, so the only added cost is one {@code volatile}
  * read and an emptiness check.
  *
- * <h2>Per-symbol activity state machine</h2>
- * Each {@code (symbol, market)} pair is tracked by a {@link SymbolState} that alternates
+ * <h2>Keys</h2>
+ * Rules are looked up by the venue-agnostic {@link Instrument#ruleKey() ruleKey}
+ * ({@code BTCUSDT:SPOT}), so one user rule applies on every exchange. State and feed entries are
+ * keyed by the venue-specific {@link Instrument#feedKey() feedKey} ({@code BINANCE:SPOT:BTCUSDT}),
+ * so the same symbol on two exchanges is classified and delivered independently.
+ *
+ * <h2>Per-instrument activity state machine</h2>
+ * Each instrument is tracked by a {@link SymbolState} that alternates
  * between two activity levels:
  * <ul>
  *   <li><b>LOW</b> — the order book has no tier-&ge;1 levels or is not yet synchronised.
@@ -58,25 +66,26 @@ import java.util.TreeMap;
  *
  * <h2>Classification</h2>
  * Every level in the book is assigned a tier (0–4, where 4 is most important and 0 is
- * the default fall-through). The top {@value #TOP_LEVELS} levels are selected by
- * {@code (tier DESC, notional DESC, distance ASC)}. A symbol is visible only if at least
- * one of its top levels has tier &ge; 1; tier-0 levels fill remaining slots when fewer
- * than {@value #TOP_LEVELS} qualifying levels exist.
+ * the default fall-through). Up to {@value #TOP_LEVELS} tier-&ge;1 levels per side are selected
+ * by {@code (tier DESC, notional DESC, distance ASC)}. <b>Tier-0 levels are never sent</b>: a
+ * side with fewer qualifying levels ships fewer entries (possibly none), and a symbol is visible
+ * only if at least one side has a tier-&ge;1 level.
  *
  * <h2>Select / apply split and the LOW-skip</h2>
  * {@link #classifyOne} runs in two stages per side:
  * <ol>
  *   <li>{@link #selectTopK selectTopK} walks the {@link TreeMap} from best (closest to spread)
- *       outward and fills a pre-allocated top-K {@link SymbolState.Scratch} buffer, returning
- *       whether that side is visible (best slot has tier &ge; 1). Because both maps iterate in
- *       monotonically increasing distance order, it early-breaks once the buffer is full and the
- *       level is beyond {@link ClassificationRule#maxDistance}.</li>
+ *       outward and fills a pre-allocated top-K {@link SymbolState.Scratch} buffer with tier-&ge;1
+ *       levels only, returning whether that side is visible (anything was selected). Because both
+ *       maps iterate in monotonically increasing distance order, it early-breaks at the first
+ *       level beyond {@link ClassificationRule#maxDistance}, past which every level is tier 0.</li>
  *   <li>{@link #applyNewOrders applyNewOrders} writes the selected entries into the persistent
  *       {@code workBids}/{@code workAsks} arrays, allocating a {@link ClassifiedLevel} only when
  *       a slot's value actually changed.</li>
  * </ol>
  * Both sides are <b>selected</b> before either is <b>applied</b>, because a visible ask side
- * forces us to still emit the (tier-0) bids and vice-versa. When neither side is visible the
+ * still requires the bid side to be applied (and vice-versa) — an emptied side must clear its
+ * stale slots so the client receives an empty array for it. When neither side is visible the
  * book is LOW and the apply stage is skipped entirely — <b>no {@link ClassifiedLevel} is
  * allocated for the LOW majority of books</b>, which is the dominant GC win.
  */
@@ -102,23 +111,25 @@ public class OrderBookClassifier {
     }
 
     /// Entry point called by DepthEventHandler after every ring buffer event.
-    public void process(OrderBook ob) {
-        String key = ob.getSymbol() + ":" + ob.getMarket();
-        boolean highLiquidity = defaultRule.isHighLiquidity(ob.getSymbol()); // computed ONCE per book
+    public void process(Instrument inst, OrderBook ob) {
+        String stateKey = inst.feedKey();                                  // venue-specific, precomputed
+        String ruleKey  = inst.ruleKey();                                  // venue-agnostic, precomputed
+        boolean highLiquidity = defaultRule.isHighLiquidity(inst.symbol()); // computed ONCE per book
 
         // TODO: parallel classification for default and per-user rules
 
         // Pass 1 — default, always.
-        SymbolState defaultState = defaultStates.computeIfAbsent(key, k -> new SymbolState());
-        classifyOne(ob, key, defaultState, defaultRule, feedStore, highLiquidity);
+        SymbolState defaultState = defaultStates.computeIfAbsent(stateKey, k -> new SymbolState());
+        classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity);
 
-        // Pass 2 — per user, only if any context is active.
+        // Pass 2 — per user, only if any context is active. A rule applies on every exchange,
+        // but each exchange's book keeps its own state and feed entry.
         UserClassificationContext[] ctxs = activeUserContexts;
         for (UserClassificationContext ctx : ctxs) {
-            if (ctx.rule().configuredKeys().contains(key)) {
-                ThresholdClassificationRule rule = ctx.rule().ruleFor(key);
-                SymbolState state = ctx.states().computeIfAbsent(key, k -> new SymbolState());
-                classifyOne(ob, key, state, rule, ctx.feedStore(), highLiquidity);
+            ThresholdClassificationRule rule = ctx.rule().ruleFor(ruleKey);
+            if (rule != null) {
+                SymbolState state = ctx.states().computeIfAbsent(stateKey, k -> new SymbolState());
+                classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity);
             }
         }
     }
@@ -129,8 +140,8 @@ public class OrderBookClassifier {
      * identical to the pre-Phase-C single-pass {@code process()} body.
      */
     private void classifyOne(
+            Instrument inst,
             OrderBook ob,
-            String key,
             SymbolState state,
             ClassificationRule rule,
             OrderBookFeedStore feedStore,
@@ -138,7 +149,7 @@ public class OrderBookClassifier {
     ) {
         if (ob.getState() != OrderBookState.SYNCED) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
-                submitDropUpdate(feedStore, key, ob);
+                submitDropUpdate(feedStore, inst);
                 state.level = SymbolState.ActivityLevel.LOW;
             }
             return;
@@ -148,7 +159,7 @@ public class OrderBookClassifier {
         TreeMap<Double, PriceLevelEntry> asks = ob.getAsks();
         if (bids.isEmpty() || asks.isEmpty()) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
-                submitDropUpdate(feedStore, key, ob);
+                submitDropUpdate(feedStore, inst);
                 state.level = SymbolState.ActivityLevel.LOW;
             }
             return;
@@ -161,7 +172,7 @@ public class OrderBookClassifier {
         // No visible tiers? Then no need to update working bids/asks in the state
         if (!bidVisible && !askVisible) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
-                submitDropUpdate(feedStore, key, ob);
+                submitDropUpdate(feedStore, inst);
                 state.level = SymbolState.ActivityLevel.LOW;
             }
             return; // LOW book: skip. No ClassifiedLevel allocation
@@ -171,17 +182,18 @@ public class OrderBookClassifier {
         boolean asksChanged = applyNewOrders(state.askScratch, state.workAsks);
 
         if (state.level == SymbolState.ActivityLevel.LOW) {
-            submitAddUpdate(feedStore, key, ob, state);
+            submitAddUpdate(feedStore, inst, state);
             state.level = SymbolState.ActivityLevel.HIGH;
         } else if (bidsChanged || asksChanged) {
-            submitModifyUpdate(feedStore, key, ob, state);
+            submitModifyUpdate(feedStore, inst, state);
         }
     }
 
     /**
      * Iterates all entries in {@code levels} (best→worst by distance) and selects the top
-     * {@value #TOP_LEVELS} by (tier DESC, notional DESC, distance ASC) into {@code s}.
-     * Returns {@code true} if the side is visible, i.e. its best selected slot has tier &ge; 1.
+     * {@value #TOP_LEVELS} tier-&ge;1 levels by (tier DESC, notional DESC, distance ASC) into
+     * {@code s}. Tier-0 levels are never selected. Returns {@code true} if the side is visible,
+     * i.e. at least one level was selected.
      */
     private boolean selectTopK(
             TreeMap<Double, PriceLevelEntry> levels,
@@ -195,16 +207,17 @@ public class OrderBookClassifier {
             double distance = e.getValue().distance;
 
             // Distance increases monotonically as we iterate both TreeMaps (bids from best bid
-            // outward, asks from best ask outward). Once the buffer is full, nothing further can
-            // place; everything beyond maxDist is tier-0.
-            if (s.topCount == TOP_LEVELS && distance > maxDist) break;
+            // outward, asks from best ask outward). Everything beyond maxDist is tier-0, so
+            // nothing further can be selected.
+            if (distance > maxDist) break;
 
             double notional = e.getKey() * e.getValue().quantity;
             int tier = rule.computeTier(notional, distance, highLiquidity);
+            if (tier == 0) continue; // tier-0 levels are never sent to clients
             tryInsert(s, e, tier, notional, distance);
         }
 
-        return s.topCount > 0 && s.topTiers[0] >= 1; // visible iff best slot is tier ≥ 1
+        return s.topCount > 0; // visible iff any tier ≥ 1 level was selected
     }
 
     /**
@@ -299,23 +312,23 @@ public class OrderBookClassifier {
         return changed;
     }
 
-    private void submitDropUpdate(OrderBookFeedStore feedStore, String key, OrderBook ob) {
-        feedStore.submit(key, new OrderBookUpdate(
-                ob.getSymbol(), ob.getMarket(),
+    private void submitDropUpdate(OrderBookFeedStore feedStore, Instrument inst) {
+        feedStore.submit(inst.feedKey(), new OrderBookUpdate(
+                inst,
                 FeedEventType.DROP,
                 null, null));
     }
 
-    private void submitAddUpdate(OrderBookFeedStore feedStore, String key, OrderBook ob, SymbolState state) {
-        feedStore.submit(key, new OrderBookUpdate(
-                ob.getSymbol(), ob.getMarket(),
+    private void submitAddUpdate(OrderBookFeedStore feedStore, Instrument inst, SymbolState state) {
+        feedStore.submit(inst.feedKey(), new OrderBookUpdate(
+                inst,
                 FeedEventType.ADD,
                 state.workBids.clone(), state.workAsks.clone()));
     }
 
-    private void submitModifyUpdate(OrderBookFeedStore feedStore, String key, OrderBook ob, SymbolState state) {
-        feedStore.submit(key, new OrderBookUpdate(
-                ob.getSymbol(), ob.getMarket(),
+    private void submitModifyUpdate(OrderBookFeedStore feedStore, Instrument inst, SymbolState state) {
+        feedStore.submit(inst.feedKey(), new OrderBookUpdate(
+                inst,
                 FeedEventType.UPDATE,
                 state.workBids.clone(), state.workAsks.clone()));
     }

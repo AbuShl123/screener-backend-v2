@@ -5,7 +5,6 @@
       "Bash(./mvnw.cmd *)",
       "Bash(mvn *)",
       "PowerShell(.\\mvnw.cmd *)",
-
       "Bash(git status *)",
       "Bash(git diff *)",
       "Bash(git log *)",
@@ -15,11 +14,12 @@
       "Bash(git check-ignore *)",
       "PowerShell(git status *)",
       "PowerShell(git diff *)",
-
       "Bash(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080*)",
       "Bash(psql -h localhost -p 5432 -U postgres -d screener_new *)",
-
-      "Read(./external-docs/**)"
+      "Read(./external-docs/**)",
+      "Bash(git worktree *)",
+      "Bash(python *)",
+      "Bash(grep -n \"ticker/\\\\|binance/\\\\`\\\\|Ticker\\\\|analysis/\\\\` \\\\|config/\\\\` \" CLAUDE.md)"
     ]
   }
 }

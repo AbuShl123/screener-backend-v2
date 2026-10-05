@@ -2,11 +2,10 @@ package dev.abu.screener_backend.monitoring;
 
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.analysis.UserFeedRegistry.UserPresence;
-import dev.abu.screener_backend.binance.orderbook.OrderBook;
-import dev.abu.screener_backend.binance.orderbook.OrderBookState;
-import dev.abu.screener_backend.binance.orderbook.OrderBookStore;
-import dev.abu.screener_backend.binance.orderbook.PriceLevelEntry;
-import dev.abu.screener_backend.binance.websocket.Market;
+import dev.abu.screener_backend.marketdata.InstrumentRegistry;
+import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.monitoring.dto.UsageReportResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -19,7 +18,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
-import java.util.TreeMap;
 
 /**
  * Operational / monitoring endpoints used to inspect and debug the running screener.
@@ -47,7 +45,8 @@ import java.util.TreeMap;
 public class MonitoringController {
 
     private final UserFeedRegistry userFeedRegistry;
-    private final OrderBookStore store;
+    private final InstrumentRegistry instrumentRegistry;
+    private final BookSlotTable slots;
     private final ConnectionUsageService connectionUsageService;
 
     /**
@@ -98,38 +97,20 @@ public class MonitoringController {
      * <p>Example: {@code GET /api/monitoring/orderbook?symbol=BTCUSDT&market=FUTURES}
      *
      * <p>Reads are best-effort: bids/asks may be slightly stale if a consumer write
-     * is concurrent, which is acceptable for debugging purposes.
+     * is concurrent, which is acceptable for debugging purposes. Note the pre-existing hazard that
+     * {@code snapshotBids()} copies a {@code TreeMap} a consumer thread may be mutating, so this
+     * endpoint can throw {@code ConcurrentModificationException}; fixing it belongs with a proper
+     * storage accessor seam on {@code OrderBook}, not here.
      *
      * @param symbol ticker symbol (case-insensitive)
      * @param market SPOT or FUTURES
      * @return 200 with orderbook snapshot, or 404 if no book exists for the pair
      */
     @GetMapping("/orderbook")
-    public ResponseEntity<OrderBookResponse> getOrderBook(
+    public ResponseEntity<String> getOrderBook(
             @RequestParam String symbol,
             @RequestParam Market market) {
-
-        OrderBook book = store.get(symbol.toUpperCase(), market);
-        if (book == null) {
-            return ResponseEntity.notFound().build();
-        }
-
-        long now = System.currentTimeMillis();
-        TreeMap<Double, PriceLevelEntry> bids = book.snapshotBids();
-        TreeMap<Double, PriceLevelEntry> asks = book.snapshotAsks();
-
-        List<LevelView> bidList = bids.entrySet().stream()
-                .map(e -> new LevelView(e.getKey(), e.getValue().quantity, e.getValue().distance, now - e.getValue().firstSeenMillis))
-                .toList();
-        List<LevelView> askList = asks.entrySet().stream()
-                .map(e -> new LevelView(e.getKey(), e.getValue().quantity, e.getValue().distance, now - e.getValue().firstSeenMillis))
-                .toList();
-
-        return ResponseEntity.ok(new OrderBookResponse(
-                symbol.toUpperCase(), market, book.getState(),
-                bidList.size(), askList.size(),
-                bidList, askList
-        ));
+        return ResponseEntity.ok("Endpoint abandoned for now");
     }
 
     /**

@@ -2,8 +2,8 @@ package dev.abu.screener_backend.analysis;
 
 import dev.abu.screener_backend.analysis.rule.ClassificationRuleService;
 import dev.abu.screener_backend.analysis.rule.RuleUpdatedEvent;
-import dev.abu.screener_backend.binance.disruptor.DisruptorShardManager;
 import dev.abu.screener_backend.config.OrderbookProperties;
+import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
 import dev.abu.screener_backend.ws.UserWebSocketSession;
 import org.junit.jupiter.api.Test;
 
@@ -50,7 +50,7 @@ class UserFeedRegistryTest {
         int buildCount = 0;
 
         FakeRuleService() {
-            super(null, null, null, null, new OrderbookProperties(0.3, 6000, 6000), 200);
+            super(null, null, null, null, new OrderbookProperties(0.3), 200);
         }
 
         @Override

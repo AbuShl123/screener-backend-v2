@@ -7,18 +7,22 @@ import java.util.Set;
  * A per-user lookup table of {@code (symbol, market)} override rules, built off the hot path from
  * a user's persisted tier rows at WebSocket connect time (Phase C).
  *
- * <p>It intentionally does <b>not</b> implement {@link ClassificationRule}. The classifier checks
- * {@link #configuredKeys()} for an O(1) membership test, then fetches the per-key leaf via
- * {@link #ruleFor(String)} and passes that leaf to its top-K selection. Keys absent from the map
- * are never touched by the user classification pass — the user receives the global/default
- * classification for them via the broadcaster merge.
+ * <p>Keys are {@link dev.abu.screener_backend.marketdata.Instrument#ruleKey() ruleKey}s —
+ * {@code "BASEQUOTE:MARKET"}, e.g. {@code "BTCUSDT:SPOT"}. They carry no exchange, so one rule
+ * applies to that symbol and market on every exchange.
+ *
+ * <p>It intentionally does <b>not</b> implement {@link ClassificationRule}. The classifier fetches
+ * the per-key leaf via {@link #ruleFor(String)} (a {@code null} means "not configured") and passes
+ * that leaf to its top-K selection; the broadcaster uses {@link #configuredKeys()} to filter the
+ * global feed. Keys absent from the map are never touched by the user classification pass — the
+ * user receives the global/default classification for them via the broadcaster merge.
  *
  * <p>Immutable after construction; safe to publish across threads via the {@code volatile}
  * active-context array.
  */
 public final class UserClassificationRules {
 
-    private final Map<String, ThresholdClassificationRule> byKey; // key = "SYMBOL:MARKET"
+    private final Map<String, ThresholdClassificationRule> byKey; // key = ruleKey, "BASEQUOTE:MARKET"
     private final Set<String> configuredKeys;                     // = byKey.keySet(), cached
 
     public UserClassificationRules(Map<String, ThresholdClassificationRule> byKey) {
@@ -26,7 +30,7 @@ public final class UserClassificationRules {
         this.configuredKeys = byKey.keySet();
     }
 
-    /** O(1) hot-path membership check — the set of {@code "SYMBOL:MARKET"} keys this user configured. */
+    /** O(1) hot-path membership check — the set of {@code ruleKey}s this user configured. */
     public Set<String> configuredKeys() {
         return configuredKeys;
     }
