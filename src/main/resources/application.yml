@@ -92,8 +92,8 @@ screener:
 
     mexc:
       # Futures only — MEXC spot streams Protobuf and has no adapter. Dark until end-to-end
-      # verification (.claude/plans/mexc-impl-plan.md, Phase 5).
-      enabled: ${MEXC_ENABLED:false}
+      # verification (.claude/plans/mexc-futures-impl-plan.md, Phase 5).
+      enabled: ${MEXC_ENABLED:true}
       # Core snapshot request queue for MEXC futures. max-batch-size caps how many books buffer
       # pushes at once; it does not set the request rate — the fetcher paces sends inside a batch
       # (venues.FUTURES.snapshot.request-interval). batch-timeout must exceed

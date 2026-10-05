@@ -1,4 +1,4 @@
-# MEXC Futures — Implementation Plan
+# MEXC Futures — Implementation Plan — DONE
 
 **Created**: 2026-10-02, branch `feature/multi-exchange`.
 **Scope**: add MEXC as the second exchange, **futures venue only** (`MEXC_FUTURES`). MEXC spot is
