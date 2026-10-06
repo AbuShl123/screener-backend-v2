@@ -6,7 +6,7 @@ import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
-import dev.abu.screener_backend.feed.OrderBookBroadcaster;
+import dev.abu.screener_backend.feed.FeedBroadcaster;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -57,7 +57,7 @@ public class PipelineHealthLogger {
     private final BookSlotTable slots;
     private final DisruptorShardManager shardManager;
     private final PipelineMetrics metrics;
-    private final OrderBookBroadcaster broadcaster;
+    private final FeedBroadcaster broadcaster;
 
     private final long[] lastResyncs = new long[Venue.values().length];
     private final long[] lastSnapshotFailures = new long[Venue.values().length];

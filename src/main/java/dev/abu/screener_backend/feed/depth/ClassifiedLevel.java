@@ -1,4 +1,4 @@
-package dev.abu.screener_backend.feed;
+package dev.abu.screener_backend.feed.depth;
 
 /**
  * One classified price level delivered to clients.

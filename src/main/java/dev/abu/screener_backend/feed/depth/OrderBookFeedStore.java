@@ -1,4 +1,4 @@
-package dev.abu.screener_backend.feed;
+package dev.abu.screener_backend.feed.depth;
 
 import org.springframework.stereotype.Component;
 

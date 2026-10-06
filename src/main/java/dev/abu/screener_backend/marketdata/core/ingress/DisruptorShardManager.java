@@ -9,7 +9,7 @@ import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.config.DisruptorProperties;
 import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
-import dev.abu.screener_backend.feed.OrderBookFeedStore;
+import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;

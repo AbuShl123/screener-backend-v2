@@ -5,7 +5,7 @@ import dev.abu.screener_backend.auth.AuthService;
 import dev.abu.screener_backend.auth.AuthenticatedUser;
 import dev.abu.screener_backend.auth.JwtService;
 import dev.abu.screener_backend.entitlement.EntitlementService;
-import dev.abu.screener_backend.feed.OrderBookBroadcaster;
+import dev.abu.screener_backend.feed.FeedBroadcaster;
 import dev.abu.screener_backend.monitoring.ConnectionActivityService;
 import dev.abu.screener_backend.user.User;
 import jakarta.websocket.*;
@@ -23,7 +23,7 @@ import java.util.List;
 public class ScreenerWebSocketEndpoint {
 
     @Autowired
-    private OrderBookBroadcaster broadcaster;
+    private FeedBroadcaster broadcaster;
 
     @Autowired
     private JwtService jwtService;

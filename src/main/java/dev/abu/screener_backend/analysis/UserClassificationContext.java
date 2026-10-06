@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.analysis;
 
-import dev.abu.screener_backend.feed.OrderBookFeedStore;
+import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
 
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
