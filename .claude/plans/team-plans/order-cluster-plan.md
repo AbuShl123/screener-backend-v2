@@ -10,7 +10,9 @@ decisions, open questions, and a proposed phasing and team split. Nothing here i
 - `marketdata/core/book/OrderBook`, `PriceLevelEntry` — the data the detector walks.
 - `analysis/OrderBookClassifier`, `SymbolState` — the per-shard, per-instrument pattern to mirror.
 - `feed/OrderBookFeedStore`, `feed/OrderBookBroadcaster` — the delivery path clusters join.
-- `.claude/plans/spike-alerts-plan.md` — also changes `onEvent` (D4) and the broadcaster (D8); see §7.
+- `.claude/plans/team-plans/spike-alerts-plan.md` — renames the event handler into a dispatcher
+  (D3/D4) and introduces the common WS envelope and feed channels (D16/D17) that cluster delivery
+  is built on; see §7.
 
 ---
 
@@ -80,9 +82,9 @@ A cluster near the threshold flickers in and out as quantities jitter. Without h
 gets an alert storm.
 
 - Enter at a higher total than exit (e.g. enter ≥ T, exit < 0.8·T).
-- Minimum lifetime before the first ADD (e.g. present for ≥ N seconds) — open question Q-B4.
-- UPDATE only on a meaningful change: total moved by > X%, or the price bounds changed. Otherwise
-  every tick's per-level jitter would produce an UPDATE.
+- Minimum lifetime before the first emit (e.g. present for ≥ N seconds) — open question Q-B4.
+- Re-emit only on a meaningful change: total moved by > X%, or the price bounds changed. Otherwise
+  every tick's per-level jitter would produce an update.
 
 ### 3.4 Performance — it is hot path
 
@@ -105,33 +107,39 @@ second walk of the book. Hot-path rules from `CLAUDE.md` apply.
 ### D1. One detector per shard, wired after classification
 
 `OrderClusterDetector` is created per shard by `DisruptorShardManager`, like `OrderBookClassifier`,
-and called from `DepthEventHandler.onEvent` right after `classificationModule.process(...)`.
+and called from `MarketEventHandler.onEvent` (today's `DepthEventHandler`, renamed by spike-alerts
+D3) in the **depth** branch of its dispatcher, right after `classificationModule.process(...)`.
 Per-instrument state lives in a map keyed by `feedKey` (touched only by the owning shard thread).
 A book that is not `SYNCED`, or has an empty side, drops its clusters.
 
 ### D2. Clusters are state, not one-shot alerts
 
 A cluster sits in the book, grows, shrinks, and gets filled or pulled — its disappearance is a
-signal too. So it is modelled like the existing feed: **ADD / UPDATE / DROP per instrument**, not
-as a fire-and-forget event (contrast spike alerts, which are true events).
+signal too. So it is modelled like the existing depth feed: **one upserted entry per instrument,
+removed when empty**, not a fire-and-forget event (contrast spike alerts, which are true events).
 
-The UI derives the "alert" toast from ADD; the backend does not emit a separate alert event.
+The UI derives the "alert" toast from a cluster appearing that it did not hold before; the backend
+does not emit a separate alert event.
 
 ### D3. Own feed store, same pattern
 
 `ClusterFeedStore` mirrors `OrderBookFeedStore`: one entry per `feedKey` holding the instrument's
 current `bidClusters[]` / `askClusters[]`, 100ms coalescing with the same ADD/UPDATE/DROP table,
-and a snapshot map. Up to K clusters per side per instrument (K configurable).
+and a snapshot map. Up to K clusters per side per instrument (K configurable). On the wire, ADD and
+UPDATE are both a `CLUSTER` upsert and DROP is `"data": null` (D4).
 
-### D4. Delivery: same `/ws`, inside the book `seq`, included in SNAPSHOT
+### D4. Delivery: a `ClusterChannel` on the common envelope, inside `seq`
 
-Because clusters are state:
-- They share the book `seq`. A lost message triggers `SNAPSHOT_REQUEST`, and the snapshot
-  includes clusters — so recovery works with no new mechanism.
-- SNAPSHOT gains a `clusters` field (additive).
+Clusters use the common WS envelope and feed channels from spike-alerts D16/D17:
+- `type: "CLUSTER"`. An upsert carries the instrument's current clusters; `"data": null` removes
+  them.
+- `ClusterChannel` implements `FeedChannel`: it drains `ClusterFeedStore` once per tick and gives
+  every session the same bodies. There are no per-user cluster rules, so there is no `ruleKey`
+  filter.
+- Clusters share the session's single `seq`. A lost message triggers `SNAPSHOT_REQUEST`, and the
+  snapshot includes one `CLUSTER` entry per instrument with clusters — so recovery works with no
+  new mechanism.
 - A reconnecting client sees exactly the clusters that exist now.
-- **Broadcaster caveat**: custom-rule sessions filter global bodies by `ruleKey`. Cluster bodies
-  must bypass that filter and go to every session, since there are no per-user cluster rules.
 - Entitlement is already enforced at `@OnOpen` — nothing new.
 
 ### D5. Payload carries the full ladder, copied on the shard thread
@@ -142,24 +150,28 @@ on the shard thread at emit time (the TreeMap cannot be read from elsewhere).
 ### D6. Feature flags
 
 `screener.clusters.enabled` (run the detector at all) and `screener.clusters.delivery-enabled`
-(push to clients). Detection with delivery off is the shadow-tuning mode (Phase 3).
+(push to clients — `ClusterChannel` emits nothing while it is off). Detection with delivery off is
+the shadow-tuning mode (Phase 3).
 
 ### Draft cluster contract (to agree before FE/BE split)
 
 ```json
-{ "seq": 412, "type": "CLUSTER_ADD", "exchange": "BINANCE", "symbol": "ARBUSDT", "market": "SPOT",
-  "bidClusters": [
-    { "priceFrom": 0.0700, "priceTo": 0.0740, "levelCount": 41,
-      "totalNotional": 4120000, "totalQuantity": 57200000,
-      "distance": 0.031, "firstSeenMillis": 1759667423000,
-      "levels": [[0.0700, 1714285], [0.0701, 1611983], "..."] }
-  ],
-  "askClusters": [] }
+{ "seq": 412, "type": "CLUSTER", "exchange": "BINANCE", "market": "SPOT", "symbol": "ARBUSDT",
+  "data": {
+    "bidClusters": [
+      { "priceFrom": 0.0700, "priceTo": 0.0740, "levelCount": 41,
+        "totalNotional": 4120000, "totalQuantity": 57200000,
+        "distance": 0.031, "firstSeenMillis": 1759667423000,
+        "levels": [[0.0700, 1714285], [0.0701, 1611983], "..."] }
+    ],
+    "askClusters": [] } }
+
+{ "seq": 413, "type": "CLUSTER", "exchange": "BINANCE", "market": "SPOT", "symbol": "ARBUSDT",
+  "data": null }
 ```
 
-`CLUSTER_UPDATE` has the same shape; `CLUSTER_DROP` carries identity only. SNAPSHOT gains
-`"clusters": [ { identity + bidClusters + askClusters }, ... ]`. Field names, and whether to use
-three types vs. one `CLUSTER` type with a state field, are open (Q-T3).
+`SNAPSHOT` entries use the same envelope without `seq`. Field names inside `data` and compact
+`[price, qty]` levels are open (Q-T3).
 
 ---
 
@@ -167,9 +179,9 @@ three types vs. one `CLUSTER` type with a state field, are open (Q-T3).
 
 | Kind | Where |
 |---|---|
-| **New** | `analysis/cluster/` (detector, per-instrument state, run builder, rules, hysteresis); `ClusterDetectionProperties` (`screener.clusters.*`); `ClusterFeedStore`; cluster DTO records |
-| **Changed (wiring)** | `DisruptorShardManager` (create detector per shard), `DepthEventHandler` (one call) |
-| **Changed (delivery)** | `OrderBookBroadcaster` — new body type, snapshot field, bypass of the custom-session filter |
+| **New** | `analysis/cluster/` (detector, per-instrument state, run builder, rules, hysteresis); `ClusterDetectionProperties` (`screener.clusters.*`); `ClusterFeedStore`; `ClusterChannel`; cluster DTO records |
+| **Changed (wiring)** | `DisruptorShardManager` (create detector per shard), `MarketEventHandler` (one call in the depth branch) |
+| **Changed (delivery)** | None beyond the new channel — `OrderBookBroadcaster` picks up `ClusterChannel` like any other channel; `websocket-feed-api.md` gains the `CLUSTER` type |
 | **Changed (ops)** | `monitoring/` — admin view of current clusters for tuning; `PipelineMetrics` — detector time, active clusters |
 | **Unchanged** | Streams, sync strategies, recovery, adapters, auth, billing, entitlement, payment |
 
@@ -183,8 +195,8 @@ three types vs. one `CLUSTER` type with a state field, are open (Q-T3).
   breaks a run?
 - **Q-B2. Shape.** Only uniform ladders (similar notional), or also steadily increasing/decreasing
   ladders, or any dense range that stands out?
-- **Q-B3. Disappearance.** Do traders want to be told when a cluster is pulled or filled (DROP shown
-  as a notification), or just see it vanish?
+- **Q-B3. Disappearance.** Do traders want to be told when a cluster is pulled or filled (removal
+  shown as a notification), or just see it vanish?
 - **Q-B4. Minimum lifetime.** How long must a cluster exist before it is announced? (Trades off
   latency against flicker/spoof noise.)
 - **Q-B5. Venue scope.** All venues (Binance spot, Binance futures, MEXC futures) from day one?
@@ -196,55 +208,59 @@ three types vs. one `CLUSTER` type with a state field, are open (Q-T3).
 - **Q-D1.** Concrete defaults: min level count, min total per liquidity class, similarity tolerance,
   stand-out ratio, max distance from mid. Settled in Phase 0, recalibrated in Phase 3.
 - **Q-D2.** Max clusters per side per instrument (K), and how to rank them if more are found.
-- **Q-D3.** UPDATE threshold — how much must the total/bounds change to emit an UPDATE.
+- **Q-D3.** Update threshold — how much must the total/bounds change to re-emit.
 
 ### Technical
 
 - **Q-T1.** Detection throttle interval (500ms vs 1s) — confirm with a measurement of detector cost.
 - **Q-T2.** Identity of a cluster across runs (for "same cluster updated" vs "new cluster") — by
   overlap of price ranges with the previous run's clusters?
-- **Q-T3.** JSON contract: field names, one vs three message types, compact `[price, qty]` levels.
+- **Q-T3.** Cluster `data` payload: field names, compact `[price, qty]` levels.
 
 ---
 
 ## 7. Coordination with spike alerts
 
-`spike-alerts-plan.md` D4 turns `DepthEventHandler` into a dispatcher, and D8 adds an alert
-channel to the broadcaster. This feature touches both. Whichever lands second rebases onto the
-first — plan for it in sprint scheduling. The cluster call belongs in the **depth** branch of the
-dispatcher. Clusters do **not** use the spike-alert channel (they are state, inside `seq`; alerts
-are events, outside it).
+- Spike-alerts ticket 1 renames `DepthEventHandler` to `MarketEventHandler` and turns it into a
+  dispatcher (D3/D4 there). The cluster call goes in the **depth** branch. Whichever lands second
+  rebases onto the first — plan for it in sprint scheduling.
+- Spike-alerts ticket 4 introduces the common envelope and `FeedChannel` (D16/D17 there). Cluster
+  delivery (ticket 3 here) is built on it and starts after it lands.
+- Clusters and spike alerts share the session's `seq` but are separate channels and types.
 
 ---
 
 ## 8. Phasing
 
-### Phase 0 — Definition & contract
+### Phase 0 — Definition & payload
 - Capture real books: ARB-like cases plus thick books (BTC/ETH futures).
 - Prototype the run builder in a test harness against the captures.
 - Answer §6 business questions with a trader / the reporting user; settle Q-D1 defaults.
-- Agree the JSON contract (Q-T3) → unblocks BE delivery and frontend.
+- Agree the cluster `data` payload (Q-T3) → unblocks BE delivery and frontend. The envelope around
+  it is fixed by spike-alerts ticket 4.
 
 ### Phase 1 — Detector
 - `analysis/cluster/`: run builder, rules, hysteresis, throttle, per-instrument state.
-- `ClusterDetectionProperties` + YAML; wiring in `DisruptorShardManager` / `DepthEventHandler`.
+- `ClusterDetectionProperties` + YAML; wiring in `DisruptorShardManager` / `MarketEventHandler`.
 - Unit tests on synthetic books: uniform ladder, thick book (must not fire), gaps, flicker around
   the threshold, unsynced/empty book.
 - Metrics: detector time per run, active cluster count.
 
-### Phase 2 — Delivery (parallel with Phase 1, against a stub detector)
-- `ClusterFeedStore`; broadcaster messages; SNAPSHOT `clusters` field; custom-session bypass.
+### Phase 2 — Delivery (parallel with Phase 1, against a stub detector; after spike-alerts ticket 4)
+- `ClusterFeedStore`; `ClusterChannel` emitting `CLUSTER` envelopes and snapshot entries.
 - Admin monitoring endpoint listing current clusters.
-- Contract doc under `.claude/docs/for-frontend/`.
+- `CLUSTER` type added to `.claude/docs/for-frontend/websocket-feed-api.md`.
 
-### Phase 3 — Shadow tuning
-- Run in prod with `delivery-enabled=false` (or admin-only) for about a week.
-- Review what fires via the monitoring endpoint; recalibrate thresholds; then enable delivery.
+### Phase 3 — Shadow tuning (release step)
+- After tickets 2 and 3 are merged: run in prod with `delivery-enabled=false` (or admin-only) for
+  about a week.
+- Review what fires via the monitoring endpoint; recalibrate thresholds; then enable delivery once
+  the frontend (ticket 4) is released.
 - Mandatory: first-cut thresholds will be noisy.
 
-### Phase 4 — Frontend
-- WS handling for cluster messages and the SNAPSHOT field.
-- Alert toast on ADD; list of active clusters.
+### Phase 4 — Frontend (ticket 4; starts once the payload is agreed, against mocks)
+- `CLUSTER` handling, including snapshot entries.
+- Alert toast when a cluster appears; list of active clusters.
 - Detail view: the ladder rendered as depth bars, with price range, total and distance.
 
 ### Later
@@ -254,19 +270,21 @@ are events, outside it).
 
 ## 9. Team split & estimate
 
-Rough estimates, one developer per ticket.
+All tickets belong to Epic 2 (Screener Signals & Visualization), story "Order clusters". Rough
+estimates, one developer per ticket.
 
-| # | Jira ticket | Phase | Owner | Estimate (days) |
-|---|---|---|---|---|
-| 1 | **[BE] Order clusters: define detection rules on captured books and agree the WebSocket contract** | 0 | BE-1 | 3–5 |
-| 2 | **[BE] Order clusters: implement per-shard cluster detector on the depth pipeline (run builder, thresholds, hysteresis, throttling)** | 1 | BE-1 | 4–6 |
-| 3 | **[BE] Order clusters: deliver cluster ADD/UPDATE/DROP over WebSocket, include clusters in snapshots, add admin monitoring endpoint** | 2 | BE-2 | 3–4 |
-| 4 | **[BE] Order clusters: shadow-run detector in production and calibrate thresholds before enabling delivery** | 3 | BE-1 | ~1 week elapsed, low effort |
-| 5 | **[FE] Order clusters: handle cluster WebSocket messages, show alert toast and active-cluster list** | 4 | FE-1 | 3–5 |
-| 6 | **[FE] Order clusters: detail view rendering the cluster ladder as depth bars** | 4 | FE-1 / FE-2 | 3–4 |
+| # | Epic | Story | Jira ticket | Phase | Owner | Estimate (days) |
+|---|---|---|---|---|---|---|
+| 1 | 2 — Signals & Visualization | Order clusters | **[BE] Define cluster detection rules on captured books and agree the cluster payload** | 0 | BE-1 | 3–5 |
+| 2 | 2 — Signals & Visualization | Order clusters | **[BE] Implement per-shard cluster detector on the depth pipeline (run builder, thresholds, hysteresis, throttling)** | 1 | BE-1 | 4–6 |
+| 3 | 2 — Signals & Visualization | Order clusters | **[BE] Deliver clusters over WebSocket through a cluster feed channel, include them in snapshots, add admin monitoring endpoint** | 2 | BE-2 | 2–3 |
+| 4 | 2 — Signals & Visualization | Order clusters | **[FE] Handle cluster messages, show cluster alerts and the active-cluster list, render the cluster ladder** | 4 | FE-1 | FE's own breakdown |
 
-- Tickets 1, 2 and 4 go to the same person: whoever owns the algorithm should also tune it.
-- Ticket 3 starts once ticket 1's contract is agreed; it does not wait for ticket 2.
-- Tickets 5 and 6 can split across two FE developers, or run sequentially for one.
+- Tickets 1 and 2 and the shadow calibration (Phase 3) go to the same person: whoever owns the
+  algorithm should also tune it.
+- Ticket 3 starts once ticket 1 has agreed the payload and spike-alerts ticket 4 has landed; it
+  does not wait for ticket 2.
+- Ticket 4 is one frontend ticket; the frontend breaks it down on its own.
 
-Total: ~2–3 weeks backend, ~1–1.5 weeks frontend.
+Total: ~9–14 developer-days backend (~2–2.5 weeks elapsed), plus the shadow-tuning week before
+delivery is switched on.

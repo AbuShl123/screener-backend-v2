@@ -5,14 +5,18 @@ Captures the discussion so far: what the feature is, where the data comes from, 
 decisions, open questions, and a proposed phasing and team split. Nothing here is built yet.
 
 **Read first**
+- `.claude/docs/epics.md` — why this feature spans Epic 1 (kline ingestion) and Epic 2 (signal and
+  delivery); see §9.
 - `.claude/docs/multi-exchange-progress.md` — SPI, core pipeline, sync contract.
 - `marketdata/core/ingress/` (`DepthEvent`, `EventType`, `DepthEventHandler`,
   `DisruptorDepthEventPublisher`) and `marketdata/core/stream/` (`StreamManager`, `ConnectionPool`,
   `StreamConnection`) — the code this plan generalizes.
-- `feed/OrderBookBroadcaster` and `ws/UserWebSocketSession` — the delivery path alerts join.
-- `.claude/plans/mexc-spot-impl-plan.md` — also changes `DepthEvent` (binary payload); see §7.
-- `.claude/plans/team-plans/order-cluster-plan.md` — also changes `DepthEventHandler` and the
-  broadcaster; see §7.
+- `feed/OrderBookBroadcaster`, `ws/UserWebSocketSession` and
+  `.claude/docs/for-frontend/websocket-feed-api.md` — the delivery path and the WS contract that
+  D16/D17 restructure.
+- `.claude/plans/mexc-spot-impl-plan.md` — also changes the ring event (binary payload); see §7.
+- `.claude/plans/team-plans/order-cluster-plan.md` — also changes the event handler and builds its
+  delivery on D16/D17; see §7.
 
 ---
 
@@ -20,10 +24,13 @@ decisions, open questions, and a proposed phasing and team split. Nothing here i
 
 Two alert types, pushed to the user while connected:
 
-- **Price spike** — a ticker's price moved by at least a threshold within a window
-  (e.g. ≥ 5% in 5 min). UI shows: symbol, exchange, % change (e.g. 6.34%), old price X, new price Y.
-- **Volume spike** — traded volume over the last minute is at least a threshold (e.g. ≥ $70K).
-  UI shows e.g. `PEPE_USDT  $1m = $87K; $5m = $126K, time = 12:40:23`.
+- **Price spike** — a ticker's price moved **up or down** by at least a threshold within a window
+  (e.g. ≥ 5% in 5 min). UI shows: symbol, exchange, % change (e.g. +6.34%), old price X, new price Y.
+- **Volume spike** — quote volume over the last N minutes **increased** against the N minutes
+  before it, by both a percentage and an absolute amount (e.g. ≥ +200% and ≥ $70K). Increases only.
+  UI shows e.g. `PEPE_USDT  $5m: $40K → $126K (+215%), time = 12:40:23`.
+
+Exact rules: D12 (price), D13 (volume).
 
 Both are backend-detected and delivered over the existing `/ws` connection.
 
@@ -37,8 +44,10 @@ Both are backend-detected and delivered over the existing `/ws` connection.
 candle: open, high, low, close, base volume `v`, **quote volume `q` (USDT)**, and `x` (candle
 closed).
 
-- **Volume in dollars is native.** `$1m` = `q` of the current 1m candle; `$5m` = sum of the last
-  five 1m candles. No conversion.
+- **Volume in dollars is native.** `q` is the candle's quote volume; a window's volume is the sum
+  of `q` over its candles. No conversion.
+- **Candle fields used**: `t` (candle open time — identifies the minute), `h`, `l`, `c` (last trade
+  price = current price while `x` is false), `q`. Everything else is ignored.
 - **No sequencing.** Each message is a self-contained candle state — no gaps to detect, no
   snapshots, no PENDING/RECOVERING/SYNCED machine. Far simpler than depth.
 - **Warm-up.** After restart/reconnect the window is empty. REST `/fapi/v1/klines` and
@@ -131,26 +140,40 @@ delays klines by milliseconds — irrelevant for 5-minute windows.
 **Shard routing is unchanged.** A kline is for the same `Instrument` (same dense id) → `id &
 (shardCount - 1)` lands it on the shard owning that book.
 
-### D3. Stream kind is a new axis on the event, not a new `EventType`
+### D3. A generic ring event; stream kind is a new axis on it
 
-`EventType` (`WS_MSG` / `REST_MSG` / `REST_FAILED`) is deliberately **provenance**, and the
-backpressure policy hangs off it. Stream kind (`DEPTH` / `KLINE`) is orthogonal — add it as a
-separate field (e.g. `stream`) on the event. A REST kline backfill would then be
-`REST_MSG + KLINE`, which composes naturally.
+The ring slot no longer carries depth only, so the ingress types lose the `Depth` prefix:
+
+| Today | After |
+|---|---|
+| `DepthEvent` | `MarketEvent` |
+| `DepthEventHandler` | `MarketEventHandler` |
+| `DepthEventPublisher` / `DisruptorDepthEventPublisher` | `MarketEventPublisher` / `DisruptorMarketEventPublisher` |
+| `DepthEventFactory` | `MarketEventFactory` |
+| `EventType` (field `type`) | `EventSource` (field `source`) |
+
+`EventSource` (`WS_MSG` / `REST_MSG` / `REST_FAILED`) stays **provenance**, and the backpressure
+policy hangs off it. Stream kind is orthogonal: a new field `stream` of type
+`StreamKind { DEPTH, KLINE }`. A REST kline backfill is `REST_MSG + KLINE`, which composes
+naturally. With both fields on the event, `source` reads unambiguously where `type` would not.
+
+`DepthSyncStrategy` keeps its name — it is depth-only — and takes a `MarketEvent`.
 
 ### D4. The shard consumer becomes a dispatcher
 
 Today `DepthEventHandler.onEvent` runs `slot.strategy().onEvent(...)` then
-`classificationModule.process(...)` for **every** event. A kline event must branch **before** both:
-→ candle state update → detectors. Depth events keep their current path unchanged.
+`classificationModule.process(...)` for **every** event. `MarketEventHandler.onEvent` switches on
+`event.stream` **before** both: `KLINE` → candle state update → detectors; `DEPTH` → the current
+path, unchanged.
 
 ### D5. `StreamManager` / `ConnectionPool` keyed by (venue, stream kind)
 
 Today: one pool per `Venue` (`EnumMap<Venue, ConnectionPool>`), and `StreamConnection` /
 `ConnectionPool` are bound to `DepthEventPublisher`. Generalize: pools keyed by (venue, kind);
-each connection publishes with its kind. Kline subscriptions follow the same universe events as
-depth. Kline URLs/topics go in YAML under `screener.exchanges.<exchange>.venues.<market>.*`
-(per CLAUDE.md conventions), e.g. `kline-stream-url`, `kline-stream-topic`, `klines-enabled`.
+each connection publishes to `MarketEventPublisher` with its kind. Kline subscriptions follow the
+same universe events as depth. Kline URLs/topics go in YAML under
+`screener.exchanges.<exchange>.venues.<market>.*` (per CLAUDE.md conventions), e.g.
+`kline-stream-url`, `kline-stream-topic`, `klines-enabled`.
 
 `StreamProtocolRegistry` must follow: protocols keyed by (venue, kind), and its startup
 completeness check ("every enabled venue has a protocol") applies to `DEPTH` only. A venue with no
@@ -168,54 +191,192 @@ Publisher claims with blocking `rb.next()`; a full ring stalls the publishing th
 arrive on their own connections, a stall only blocks the kline reader thread — acceptable.
 Re-check ring sizing with the added event rate.
 
-### D8. Alert delivery: same `/ws`, outside the book `seq`
+### D8. Alert delivery: same `/ws`, same `seq`, recent alerts in the snapshot
 
 The current protocol is a **state stream**: snapshot, then `seq`-numbered deltas; a client-detected
-gap triggers `SNAPSHOT_REQUEST`. Alerts are **events**, and don't fit:
+gap triggers `SNAPSHOT_REQUEST`. Alerts are **events**, but they join the same stream:
 
-- If alerts share the book `seq`, a lost alert triggers a snapshot — which doesn't contain alerts.
-- Proposal: alerts are `type: "alert"`, **outside the book seq** (or with their own counter).
-- The snapshot carries the **last N alerts**, so a fresh/reconnected client sees recent history.
-- Shard threads produce alerts (multi-producer: N shards); the broadcaster drains them on its 100ms
-  tick into each session's batch. Follow the existing feed-store pattern for the store.
+- Spikes are `PRICE_SPIKE` / `VOLUME_SPIKE` messages in the common envelope (D16) and carry the
+  session's single `seq` counter like every other message.
+- The snapshot carries the **last N alerts** as entries. After a gap the client re-snapshots and
+  replaces its recent-alerts list with the snapshot's, so a lost alert is recovered in the list.
+- Toasts fire only for live alert messages, never for snapshot entries.
+- Shard threads produce alerts (multi-producer: N shards); `SpikeChannel` (D17) drains them on the
+  broadcaster's 100ms tick. The alert store is bounded (pending queue + recent-N ring).
 - Entitlement is already enforced at `@OnOpen` — nothing new.
 
 ### D9. Hot-path refactor lands alone first
 
-`DepthEvent` → generic market event + stream kind, handler → dispatcher, pools keyed by kind:
-mechanical, but in the most sensitive code. Ship as a **no-behavior-change** commit verified by
-existing tests + `PipelineMetrics` before any kline code lands.
+The D3 rename + stream kind, the handler dispatch (D4) and pools keyed by kind (D5): mechanical,
+but in the most sensitive code. Ship as a **no-behavior-change** change verified by existing
+tests + `PipelineMetrics` before any kline code lands.
 
 ### D10. Two internal seams, agreed before the work splits
 
 So detection, ingestion and delivery can be built in parallel by different people:
 
-- **`CandleWindow`** — the read-only view detectors get of an instrument's candle ring (last close,
-  high/low and summed quote volume over the last N 1m candles, how many candles are filled). The
-  candle store implements it; detector tests use a fake.
+- **`CandleWindow`** — the read-only view detectors get of an instrument's candles: the forming
+  candle (current close, high, low) and the ring of closed candles (high, low, quote volume each),
+  plus how many consecutive closed candles are filled. `CandleStore` implements it (D14); detector
+  tests use a fake. This is also the boundary between Epic 1 (candles) and Epic 2 (detectors).
 - **`AlertSink`** — what detectors call to emit an alert (`emit(instrument, PriceAlert | VolumeAlert)`).
-  The delivery store implements it; delivery tests use a stub producer.
+  The alert store behind `SpikeChannel` implements it; delivery tests use a stub producer.
 
 ### D11. Feature flags and shadow mode
 
 `screener.alerts.enabled` (run detectors at all) and `screener.alerts.delivery-enabled` (push to
-clients). Detection with delivery off is the shadow-tuning mode (Phase 5), with recent alerts
-visible on an admin monitoring endpoint. Per-venue `klines-enabled` (D5) gates ingestion.
+clients — `SpikeChannel` emits nothing while it is off). Detection with delivery off is the
+shadow-tuning mode (Phase 6), with recent alerts visible on an admin monitoring endpoint.
+Per-venue `klines-enabled` (D5) gates ingestion.
+
+### D12. Price spike rule
+
+- Evaluated on **every kline push** of the instrument (futures: up to every 250ms).
+- Window = the forming candle + the last `price.window-minutes − 1` closed candles.
+- **Pump**: `low = min(l)` over the window, `pct = (c − low) / low × 100`.
+  **Dump**: `high = max(h)` over the window, `pct = (high − c) / high × 100`.
+  Comparing against the window extreme, not the price exactly N minutes ago, catches a
+  dip-then-rip inside the window (103 → 100 → 106 is a 6% pump, not 2.9%).
+- Fires when `pct ≥ price.threshold-pct`. Alert shows old price = `low` (pump) / `high` (dump),
+  new price = `c`, pct signed (+ pump, − dump).
+- **Escalation and re-arm** — state per (instrument, direction): `lastAlertedLevel`, initially 0.
+  - `level = floor(pct / threshold)`, so with 5%: 5.4% → 1, 10.2% → 2.
+  - Fire only when `level > lastAlertedLevel`, then store it. 5.4% fires; 5.5–9.9% stays quiet;
+    10.1% fires again.
+  - Reset to 0 once `pct < threshold − price.rearm-margin-pct` (the margin stops a price hovering at
+    the threshold from flapping).
+  - Pump and dump state are independent.
+  - Re-arm keys off the percentage, not off the identity of `low`/`high`: as the window slides the
+    extreme changes, and that must not re-send the same move.
+- No alert until the window is warm (all window candles present).
+
+### D13. Volume spike rule
+
+- **Increases only.** Falling volume is not alerted.
+- Evaluated **once per minute, on candle rollover**, over closed candles only (v1). Reporting
+  latency of up to ~60s is accepted for simplicity.
+- `now` = Σ`q` of the last `volume.window-minutes` closed candles; `prev` = Σ`q` of the
+  `volume.window-minutes` closed candles before those.
+- Fires when **both** hold:
+  - `(now − prev) / prev × 100 ≥ volume.increase-pct` (e.g. 200 = 3×). `prev = 0` passes this check;
+    the floor then decides.
+  - `now − prev ≥ volume.min-increase-usd` (e.g. $70K).
+
+  The percentage alone fires on illiquid tickers ($200 → $1,200 is +500%); the absolute floor alone
+  fires on majors ($5M → $5.1M is +$100K but only +2%). Requiring both filters out both cases.
+- **Re-arm**: fire once, then stay quiet until the increase percentage falls back below
+  `volume.increase-pct`. Without it, one spike re-fires every minute for N minutes as the window
+  slides.
+- No alert until `2 × volume.window-minutes` consecutive closed candles are filled.
+
+### D14. `CandleStore` owns candles; detectors only read
+
+- One `CandleStore` per instrument, in its `BookSlot` (D2), mutated only on the shard thread. It
+  holds the forming candle and a primitive ring of `candle-ring-size` closed candles (`h`, `l`, `q`
+  per candle). Both detectors read the same store through `CandleWindow` (D10) — neither keeps its
+  own candle state.
+- `CandleStore` is market data (Epic 1) and lives under `marketdata/`; the detectors and alert
+  store are a signal (Epic 2) and live in `alert/`.
+- The pipeline only routes a kline event to its shard and to the kline branch of the dispatcher
+  (D4); it knows nothing about candles.
+- **Rollover on a change of `t`, not on `x: true`.** `x: true` is lost if the connection drops at
+  the wrong moment. A new `t` means the previous forming candle is finished: push it into the ring
+  with its last known values, then run the volume detector (D13).
+- If `t` jumps by more than one minute, the ring has a hole (reconnect gap): reset the filled count
+  so detectors wait for the window to refill. Caveat: if Binance sends no candle for zero-trade
+  minutes on illiquid symbols, a jump there is normal (Q-T1).
+
+### D15. Alert configuration
+
+All tunables in `application.yml`, bound to an `AlertsProperties` record:
+
+```yaml
+screener:
+  alerts:
+    enabled: true              # run detectors (D11)
+    delivery-enabled: false    # push to clients (D11)
+    candle-ring-size: 10       # closed candles kept per instrument
+    price:
+      window-minutes: 5        # N for price
+      threshold-pct: 5         # spike threshold; also the escalation step
+      rearm-margin-pct: 1      # re-arm once pct < threshold − margin
+    volume:
+      window-minutes: 5        # N for volume
+      increase-pct: 200        # minimum increase vs. previous window (200 = 3×)
+      min-increase-usd: 70000  # minimum absolute increase (quote currency)
+```
+
+Keeping these consistent is the configurer's responsibility and is not validated at startup:
+`candle-ring-size ≥ 2 × volume.window-minutes` and `≥ price.window-minutes − 1`. Values are
+calibrated during the shadow run (Phase 6).
+
+### D16. Common WebSocket message envelope
+
+The `/ws` feed is about to carry depth, spikes and order clusters. Every server → client message
+except `SNAPSHOT` has one shape:
+
+```json
+{ "seq": 12, "type": "DEPTH", "exchange": "BINANCE", "market": "FUTURES", "symbol": "BTCUSDT",
+  "data": { "bids": [ ... ], "asks": [ ... ] } }
+```
+
+- `type` says how to parse `data`: `DEPTH` (bids/asks), `PRICE_SPIKE`, `VOLUME_SPIKE`, and `CLUSTER`
+  (order-cluster plan). Only `data` differs between types.
+- **State types** (`DEPTH`, `CLUSTER`) are upserts; `"data": null` removes the instrument's entry.
+  ADD / UPDATE / DROP leave the wire — the client already treats UPDATE as an upsert.
+- **`SNAPSHOT`** is the one message without identity, because it covers many instruments. Its
+  `data` is a list of the same envelopes the client receives live (without `seq`), so the client
+  handles a snapshot entry and a live message with the same code:
+  `{"seq":1,"type":"SNAPSHOT","data":[ {"type":"DEPTH",...}, {"type":"PRICE_SPIKE",...} ]}`.
+- Clients ignore unknown `type`s, so new signals are additive.
+- Type names are uppercase, matching the existing enum-name convention.
+- Client → server messages (`SNAPSHOT_REQUEST`) are unchanged.
+- This is a **breaking change** for depth messages: the frontend parser switch ships in the same
+  release as the backend, and `.claude/docs/for-frontend/websocket-feed-api.md` is rewritten for it.
+
+### D17. The broadcaster is split into feed channels
+
+`OrderBookBroadcaster` today mixes three jobs: the per-session loop (seq, snapshot status,
+enqueue/evict), the depth-specific global + per-user merge with its `ruleKey` filter, and JSON
+building. Everything but the loop moves behind one interface:
+
+```java
+interface FeedChannel {
+    void drain();                                                       // once per tick: drain stores, build shared bodies
+    void collectUpdates(UserWebSocketSession session, List<String> out);  // this session's envelopes this tick
+    void collectSnapshot(UserWebSocketSession session, List<String> out); // this channel's SNAPSHOT entries
+}
+```
+
+- **`OrderBookBroadcaster`** keeps the loop: drain every channel once per tick, then per session
+  either collect snapshot entries from all channels into one `SNAPSHOT`, or collect updates,
+  inject `seq` and enqueue (evicting on a full queue). Drain timing metrics stay here.
+- **`DepthChannel`** — today's global + per-user merge and `ruleKey` filter, moved unchanged.
+- **`SpikeChannel`** — drains the alert store (D8); every session gets the same bodies; snapshot
+  entries are the last N alerts.
+- **`ClusterChannel`** (order-cluster plan) — one global store, every session, no filter.
+- A shared helper writes the envelope head; each channel writes its own `data`. JSON stays
+  `StringBuilder`-built, as today (`feed/` is hot path).
+- Channels are beans collected into a list; the broadcaster does not know which exist.
+- **Out of scope**: client-side channel subscriptions, per-channel `seq` counters, a generic event
+  bus, Jackson serialization of depth bodies.
 
 ### Draft alert contract (to agree before FE/BE split)
 
 ```json
-{ "type": "alert", "kind": "PRICE", "exchange": "BINANCE", "market": "FUTURES",
-  "symbol": "PEPEUSDT", "ts": 1759667423000,
-  "oldPrice": 0.00001012, "newPrice": 0.00001076, "pct": 6.34, "windowSec": 300 }
+{ "seq": 14, "type": "PRICE_SPIKE", "exchange": "BINANCE", "market": "FUTURES", "symbol": "PEPEUSDT",
+  "data": { "ts": 1759667423000, "oldPrice": 0.00001012, "newPrice": 0.00001076,
+            "pct": 6.34, "windowSec": 300 } }
 
-{ "type": "alert", "kind": "VOLUME", "exchange": "BINANCE", "market": "FUTURES",
-  "symbol": "PEPEUSDT", "ts": 1759667423000,
-  "vol1m": 87000, "vol5m": 126000 }
+{ "seq": 15, "type": "VOLUME_SPIKE", "exchange": "BINANCE", "market": "FUTURES", "symbol": "PEPEUSDT",
+  "data": { "ts": 1759667423000, "volPrev": 40000, "volNow": 126000,
+            "pct": 215, "windowSec": 300 } }
 ```
 
-Field names and the symbol display convention (`PEPE_USDT`? base/quote split? the `1000` prefix?)
-are open (Q-T5).
+`pct` is signed for `PRICE_SPIKE` (negative = dump) and always positive for `VOLUME_SPIKE`.
+
+Field names inside `data` and the symbol display convention (`PEPE_USDT`? base/quote split? the
+`1000` prefix?) are open (Q-T5).
 
 ---
 
@@ -223,10 +384,10 @@ are open (Q-T5).
 
 | Kind | What |
 |------|------|
-| **New** | `alert/` package (candle rings, detectors, cooldown, alert store); Binance kline `StreamProtocol` + parser; REST backfill; config (`screener.alerts.*`, kline URL/topic per venue); metrics; admin endpoints (candles, recent alerts) |
-| **Modified — moderate** | `core/ingress/` (`DepthEvent` generalization, handler dispatch, publisher signature); `core/stream/` (pools keyed by venue + kind, publisher decoupling); `spi/StreamProtocolRegistry` + `VenueStreamBinding` (keyed by kind, completeness check for `DEPTH` only). The only changes adjacent to the hot path. |
-| **Modified — small** | `BookSlot` (candle state); `OrderBookBroadcaster` (alerts into batches, recent alerts in snapshot); `ExchangesProperties`; `BinanceAdapterConfig` (kline bindings); `monitoring/`; frontend WS message dispatch |
-| **Untouched** | Books, sync strategies, recovery, classifier logic, auth, billing, entitlement, payments |
+| **New** | `alert/` package (detectors, re-arm state, alert store, `SpikeChannel`); `CandleStore` + `CandleWindow` under `marketdata/`; Binance kline `StreamProtocol` + parser; REST backfill; `FeedChannel`, `DepthChannel` and the envelope helper in `feed/`; config (`screener.alerts.*`, kline URL/topic per venue); metrics; admin endpoints (candles, recent alerts) |
+| **Modified — moderate** | `core/ingress/` (D3 rename, `stream` field, handler dispatch, publisher signature); `core/stream/` (pools keyed by venue + kind, publisher decoupling); `spi/StreamProtocolRegistry` + `VenueStreamBinding` (keyed by kind, completeness check for `DEPTH` only); `feed/OrderBookBroadcaster` (reduced to the session loop, D17); the WS contract (D16, breaking for depth) |
+| **Modified — small** | `BookSlot` (candle state); `DepthSyncStrategy` and both adapters' sync strategies (event type in the signature only); `ExchangesProperties`; `BinanceAdapterConfig` (kline bindings); `monitoring/`; `websocket-feed-api.md`; frontend WS parser |
+| **Untouched** | Book logic, sync logic, recovery, classifier logic, auth, billing, entitlement, payments |
 
 ---
 
@@ -248,20 +409,14 @@ are open (Q-T5).
 
 ### Detection semantics
 
-- **Q-D1. Price window.** Now vs. close 5 min ago (point-to-point — misses a pump that reverses
-  inside the window), or window low→now / high→now (catches it)?
-- **Q-D2. Direction.** Pumps only, or dumps too?
-- **Q-D3. Cooldown / re-arm.** Without it, a +5% ticker fires every 250ms. Per-(instrument, kind)
-  cooldown? Escalating levels (5% → 10% → 15%)? Re-arm only after falling back below threshold?
-- **Q-D4. Volume threshold shape.** A flat $70K/min is meaningless for majors (BTC/ETH always
-  qualify). Relative ("1m vol ≥ k × trailing average") with $70K as a floor? Per-symbol tiers?
-- **Q-D5. Volume window.** Current forming 1m candle (fire at most once per candle) or a true
-  rolling 60s? Candle-based is much simpler.
+Settled — see D12 (price), D13 (volume), D14 (candle store), D15 (config). Threshold values are
+calibrated in the shadow run (Phase 6).
 
 ### Technical
 
 - **Q-T1.** Confirm Binance kline push behaviour: on change only, or fixed cadence? Measure actual
-  msg/s across the 525 futures before sizing rings.
+  msg/s across the 525 futures before sizing rings. Also check whether a candle is pushed for a
+  zero-trade minute on illiquid symbols — this decides whether a `t` jump is a gap (D14).
 - **Q-T2.** Ring buffer sizing with the extra kline load; is the current size enough?
 - **Q-T3.** Backfill on startup/reconnect: REST weight budget for 525 kline requests. Kline requests
   are cheap (low single-digit weight each for small `limit` — verify against current docs), but
@@ -272,79 +427,86 @@ are open (Q-T5).
   pool is built once from its first universe event and later changes are only logged. Klines
   inherit that: new listings start streaming after a restart. Dynamic subscribe is separate work
   that would serve both kinds.
-- **Q-T5.** Alert JSON contract (field names, symbol display, `1000`-prefix handling).
-- **Q-T6.** Seq handling: alerts with no seq, or their own counter? What does the client do on a
-  dropped alert (nothing, presumably)?
-- **Q-T7.** How does the frontend currently treat an unknown `type`? If it assumes every message is a
-  book update, the FE change must ship before or together with BE delivery.
+- **Q-T5.** Alert `data` field names and symbol display (`1000`-prefix handling). The volume alert
+  shows previous vs. current window volume and the increase (D13), not `$1m` / `$5m`.
 
 ---
 
 ## 7. Coordination with MEXC spot and order clusters
 
-`mexc-spot-impl-plan.md` Phase 1 also changes `DepthEvent` (`ByteBuffer rawBytes` beside
-`rawJson`) and `DepthEventPublisher` (`publishFrame(int, ByteBuffer)`). Both plans touch the same
-classes on the same axis-adding pattern. Sequence them — whichever lands second rebases onto the
-first — and do not run them in parallel on separate branches.
+`mexc-spot-impl-plan.md` Phase 1 adds `ByteBuffer rawBytes` beside `rawJson` on the ring event and
+`publishFrame(int, ByteBuffer)` on the publisher — the same classes ticket 1 renames (D3). Sequence
+them — whichever lands second rebases onto the first — and do not run them in parallel on
+separate branches.
 
-`order-cluster-plan.md` adds a call in `DepthEventHandler.onEvent` (it belongs in the **depth**
-branch of the D4 dispatcher) and a new body type, a snapshot field and a custom-session filter
-bypass in `OrderBookBroadcaster` — the same places D8 changes. Clusters are state inside `seq`;
-alerts are events outside it, so the two must not share a channel. Whichever lands second rebases.
+`order-cluster-plan.md` adds a call in the event handler — it belongs in the **depth** branch of the
+D4 dispatcher — and delivers clusters as a `ClusterChannel` (D17) with the `CLUSTER` envelope type
+(D16). Ticket 4 is therefore a prerequisite of the cluster delivery ticket. Clusters and spikes share
+the session's `seq` but are separate channels and types.
 
 ---
 
 ## 8. Phasing
 
-### Phase 0 — Decisions, measurement, contracts
-- Answer Q-B1..B6 and Q-D1..D5 with product. These decide whether the feature is useful or noisy.
-- Measure Binance futures kline msg/s across the universe (Q-T1) with a throwaway client.
-- Agree the alert JSON contract (Q-T5, Q-T6) → unblocks frontend and delivery.
-- Agree the internal seams `CandleWindow` and `AlertSink` (D10) → unblocks parallel BE work.
-- FE confirms how the client treats an unknown `type` (Q-T7).
+### Phase 0 — Product decisions and seams
+Preconditions, not tickets:
+- Answer Q-B1..B6 with product. Detection rules are settled (D12–D15).
+- BE-1 commits the `CandleWindow` interface (D10) up front; detectors build against it.
+- The detector owner defines `AlertSink` (D10) at the start of ticket 5; delivery builds against it.
+- The envelope (D16) is fixed in ticket 4; it unblocks the frontend and spike delivery.
 
-### Phase 1 — Core refactor (no behaviour change)
-- Event gains a stream-kind field (D3); handler dispatches by kind (D4); publisher carries kind.
+### Phase 1 — Core refactor, no behaviour change (ticket 1, Epic 1)
+- D3 rename and `stream` field; handler dispatches by kind (D4); publisher carries kind.
 - `StreamManager` / `ConnectionPool` keyed by (venue, kind); `StreamProtocolRegistry` keyed by
   (venue, kind) with completeness checked for `DEPTH` only (D5).
 - Only `DEPTH` exists after this phase. Existing tests + `PipelineMetrics` must be unchanged.
 - Coordinate with MEXC spot and order clusters (§7).
-- **Owner: whoever owns the pipeline** — touches the sync/sharding invariants.
 
-### Phase 2 — Kline ingestion + candle state
-- **2a (parallel with Phase 1)**: streaming kline parser (Jackson `JsonParser`, combined-stream
-  envelope, no allocation) and a primitive candle ring (~60 × 1m) implementing `CandleWindow`.
-  Pure code, unit-tested on recorded frames.
-- **2b (after Phase 1 + 2a)**: Binance kline `StreamProtocol` for futures (`/market/stream`) and
-  spot, `VenueStreamBinding`s, YAML (`kline-stream-url`, `kline-stream-topic`, `klines-enabled`),
-  candle ring in `BookSlot`, kline branch of the dispatcher writing into it. Metrics (kline msg/s
-  per venue) and an admin debug endpoint showing an instrument's candles. Re-check ring sizing (Q-T2).
-- **2c (after 2b)**: REST backfill on startup through `WeightGuard` (Q-T3). Optional for v1:
-  without it, alerts start ~5 min after a deploy. Detectors must handle a partially filled window
-  without firing.
+### Phase 2 — WS envelope and feed channels (ticket 4, Epic 2)
+- All messages move to the envelope (D16); the broadcaster splits into channels with
+  `DepthChannel` as the only one (D17). No new data.
+- Rewrite `websocket-feed-api.md`; the frontend parser switch ships in the same release.
+
+### Phase 3 — Kline ingestion and candle state (tickets 2 and 3, Epic 1, after Phase 1)
+- **Ticket 2**: measure Binance futures kline msg/s across the universe first (Q-T1) with a
+  throwaway client. Then: streaming kline parser (Jackson `JsonParser`, combined-stream envelope,
+  no allocation; extracts `t`, `h`, `l`, `c`, `q`); `CandleStore` implementing `CandleWindow` —
+  forming candle, primitive ring of `candle-ring-size` closed candles, rollover on `t`, gap
+  handling (D14); Binance kline `StreamProtocol` for futures (`/market/stream`) and spot,
+  `VenueStreamBinding`s, YAML (`kline-stream-url`, `kline-stream-topic`, `klines-enabled`);
+  candle store in `BookSlot`, kline branch of the dispatcher writing into it. Metrics (kline msg/s
+  per venue) and an admin debug endpoint showing an instrument's candles. Re-check ring sizing
+  (Q-T2).
+- **Ticket 3**: REST backfill on startup through `WeightGuard` (Q-T3). Deferrable for v1: without
+  it, alerts start ~5 min after a deploy. Detectors handle a partially filled window without
+  firing either way.
 - **No alerts yet.**
 
-### Phase 3 — Detectors (parallel with Phase 2, against a fake `CandleWindow`)
-- `screener.alerts.*` → `@ConfigurationProperties` record; feature flags (D11).
-- Shared cooldown/re-arm component per (instrument, kind) (Q-D3).
-- Price detector (window semantics per Q-D1, direction per Q-D2).
-- Volume detector (1m / 5m quote volume, threshold shape per Q-D4/Q-D5).
+### Phase 4 — Detectors (ticket 5, Epic 2, parallel with Phases 1–3 against a fake `CandleWindow`)
+- `screener.alerts.*` → `AlertsProperties` record (D15); feature flags (D11).
+- Price detector: pumps and dumps against window low/high, level escalation, re-arm margin (D12).
+  Runs on every kline push.
+- Volume detector: current vs. previous N-minute window, percentage AND absolute floor, increases
+  only, re-arm below threshold (D13). Runs on rollover.
 - Runs on the shard thread from the kline branch of the dispatcher; hot-path rules apply.
 
-### Phase 4 — Alert delivery (parallel with Phases 2–3, against a stub `AlertSink` producer)
-- Alert store implementing `AlertSink` (multi-producer from shards → broadcaster drain).
-- `type: "alert"` messages outside the book `seq` (D8); last N alerts in the snapshot.
-- `delivery-enabled` flag; admin endpoint listing recent alerts (used by Phase 5).
-- Contract doc under `.claude/docs/for-frontend/`.
+### Phase 5 — Spike delivery (ticket 6, Epic 2, after Phase 2, against a stub `AlertSink` producer)
+- Alert store implementing `AlertSink` (multi-producer from shards, bounded).
+- `SpikeChannel` (D17): `PRICE_SPIKE` / `VOLUME_SPIKE` envelopes in the session `seq`; last N alerts
+  as snapshot entries (D8).
+- `delivery-enabled` flag; admin endpoint listing recent alerts (used by Phase 6).
+- Spike types added to `websocket-feed-api.md`.
 
-### Phase 5 — Shadow tuning
-- Run in prod with `delivery-enabled=false` for about a week; review via the admin endpoint.
-- Recalibrate thresholds and cooldowns; confirm alert volume is "a handful per minute".
-- Enable delivery only after the FE alert channel (Phase 6) is released.
+### Phase 6 — Shadow tuning (release step)
+- After tickets 2, 5 and 6 are merged: run in prod with `delivery-enabled=false` for about a week;
+  review via the admin endpoint.
+- Recalibrate thresholds; confirm alert volume is "a handful per minute".
+- Enable delivery only after the frontend (ticket 7) is released.
 
-### Phase 6 — Frontend (can start once the Phase 0 contract is fixed, against mocks)
-- WS dispatch for `type: "alert"`, tolerant of unknown types; alert store; list + toast.
-- Price and volume alert presentation (symbol display, % change, old → new price, `$1m` / `$5m`).
+### Phase 7 — Frontend (ticket 7, Epic 2; starts once ticket 4 fixes the envelope, against mocks)
+- `PRICE_SPIKE` / `VOLUME_SPIKE` handling; recent-alerts list replaced from each snapshot; toasts
+  for live alerts only.
+- Price and volume alert presentation (symbol display, % change, old → new price, window volume).
 
 ### Later
 - MEXC / Bybit kline adapters (adapter-only if D6 holds).
@@ -355,45 +517,43 @@ alerts are events outside it, so the two must not share a channel. Whichever lan
 
 ## 9. Team split & estimate
 
-Rough estimates, one developer per ticket. BE-1 is the pipeline owner.
+Per `epics.md`, ingesting a new stream is Epic 1 and the signal built on it is Epic 2, so the work
+is split into two stories, one per epic. The WS envelope is its own Epic 2 story because order
+clusters build on it too. Rough estimates, one developer per ticket. BE-1 is the pipeline owner.
 
-| # | Jira ticket | Phase | Owner | Estimate (days) |
-|---|---|---|---|---|
-| 1 | **[BE] Spike alerts: settle detection rules with product, measure kline message rates, and agree the alert WebSocket contract and internal interfaces** | 0 | BE-2 + product | 2–3 |
-| 2 | **[BE] Spike alerts: generalize the ingress pipeline and stream pools by stream kind (no behaviour change)** | 1 | BE-1 | 2–3 |
-| 3 | **[BE] Spike alerts: implement streaming kline parser and per-instrument 1m candle ring** | 2a | BE-2 | 1–2 |
-| 4 | **[BE] Spike alerts: subscribe to Binance futures and spot kline streams and feed candles into the shard pipeline** | 2b | BE-1 | 2–3 |
-| 5 | **[BE] Spike alerts: backfill recent candles over REST on startup within the Binance weight budget** | 2c | BE-1 | 1 |
-| 6 | **[BE] Spike alerts: implement price spike detector with per-instrument cooldown and alert config** | 3 | BE-2 | 2 |
-| 7 | **[BE] Spike alerts: implement volume spike detector on 1m/5m quote volume** | 3 | BE-2 / BE-3 | 1–2 |
-| 8 | **[BE] Spike alerts: deliver alerts over WebSocket outside the book sequence, include recent alerts in snapshots, add admin alert endpoint** | 4 | BE-3 | 2–3 |
-| 9 | **[BE] Spike alerts: shadow-run detectors in production and calibrate thresholds before enabling delivery** | 5 | BE-2 | ~1 week elapsed, low effort |
-| 10 | **[FE] Spike alerts: handle alert WebSocket messages, show alert toast and recent-alerts list** | 6 | FE-1 | 3–4 |
-| 11 | **[FE] Spike alerts: present price and volume alerts (change %, old/new price, 1m/5m volume)** | 6 | FE-1 / FE-2 | 2–3 |
+| # | Epic | Story | Jira ticket | Phase | Owner | Estimate (days) |
+|---|---|---|---|---|---|---|
+| 1 | 1 — Market Data Engine | Kline stream ingestion | **[BE] Generalize the ingress pipeline for multiple stream kinds (no behaviour change)** | 1 | BE-1 | 2–3 |
+| 2 | 1 — Market Data Engine | Kline stream ingestion | **[BE] Ingest Binance futures and spot 1m klines into a per-instrument candle store** | 3 | BE-1 | 3–4 |
+| 3 | 1 — Market Data Engine | Kline stream ingestion | **[BE] Backfill recent candles over REST on startup within the Binance weight budget** | 3 | BE-1 | 1 |
+| 4 | 2 — Signals & Visualization | Common WebSocket envelope | **[BE] Move all WebSocket messages to a common envelope and split the broadcaster into feed channels** | 2 | BE-1 | 2–3 |
+| 5 | 2 — Signals & Visualization | Price & volume spike alerts | **[BE] Implement price and volume spike detectors with alert config and feature flags** | 4 | BE-2 | 3–4 |
+| 6 | 2 — Signals & Visualization | Price & volume spike alerts | **[BE] Deliver spike alerts over WebSocket and include recent alerts in snapshots** | 5 | BE-2 / BE-3 | 1–2 |
+| 7 | 2 — Signals & Visualization | Price & volume spike alerts | **[FE] Handle spike alert messages and present price and volume alerts** | 7 | FE-1 | FE's own breakdown |
 
 **Dependencies**
-- Ticket 1 blocks every ticket except two:
-  - ticket 2, because the refactor needs no product answers;
-  - ticket 3, because the candle ring needs only the `CandleWindow` shape, and ticket 1 settles that
-    first.
-- Ticket 4 needs tickets 2 and 3. Ticket 5 needs ticket 4.
-- Tickets 6, 7 and 8 start as soon as ticket 1 has agreed the interfaces and the contract. They run
-  against a fake `CandleWindow` and a stub producer, and do not wait for tickets 2–5.
-- Ticket 7 reuses the cooldown component from ticket 6. One developer runs them in sequence; two
-  developers agree the cooldown interface up front.
-- Ticket 9 needs tickets 4–8 merged. Delivery is switched on only after ticket 10 is released.
-- Tickets 10 and 11 start once ticket 1's contract is fixed.
+- Ticket 2 needs ticket 1. Ticket 3 needs ticket 2.
+- Ticket 5 needs only the `CandleWindow` interface (Phase 0) and runs in parallel with tickets 1–3
+  against a fake.
+- Ticket 6 needs ticket 4 and the `AlertSink` from ticket 5.
+- Ticket 7 needs ticket 4's envelope and runs against mocks.
+- The shadow run (Phase 6) needs tickets 2, 5 and 6 merged. Delivery is switched on only after
+  ticket 7 is released.
+- The order-cluster delivery ticket needs ticket 4.
 
 **Owner notes**
-- Tickets 2, 4 and 5 go to the pipeline owner: they touch streams, sharding and REST pacing.
-- Tickets 1, 6 and 9 go to the same person: whoever defines the detection rules should also tune
-  them. Ticket 3 also fits there, since that person owns `CandleWindow`.
-- Ticket 8 is ordinary broadcaster/WS work and suits a third backend developer. With only two
-  backend developers it goes to BE-2 after ticket 6, because BE-1's chain (2 → 4 → 5) is already
-  the critical path.
-- Tickets 10 and 11 can split across two FE developers, or run sequentially for one.
+- Tickets 1–3 (all of Epic 1) go to the pipeline owner: they touch streams, sharding and REST
+  pacing. Critical path: 1 → 2 → 3.
+- Ticket 4 also goes to BE-1, done **before** ticket 1: its envelope unblocks the frontend, spike
+  delivery and cluster delivery, and nothing in it waits on the engine. Its frontend parser switch
+  is done by FE-1 within the same story and release.
+- Ticket 5 and the shadow calibration go to the same person: whoever defines the detection rules
+  should also tune them. With two backend developers, ticket 6 follows ticket 5 for BE-2.
+- With a third backend developer, tickets 4 and 6 (and the cluster delivery ticket) form a delivery
+  role for BE-3, which takes ticket 4 off BE-1's critical path.
+- Ticket 7 is one frontend ticket; the frontend breaks it down on its own.
 
-**Total**: ~15 developer-days of backend effort. With 2–3 backend developers in parallel that is
-~1.5–2 weeks elapsed, plus the shadow-tuning week before delivery is switched on. Frontend is
-~1–1.5 weeks. Add ~1 week for per-user thresholds and ~2–3 days for persisted history. The riskiest
-ticket is #2, because it sits next to the code that keeps books alive.
+**Total**: ~12–17 developer-days of backend effort, 8–11 of them on BE-1. That is ~2 weeks elapsed,
+set by BE-1's chain, plus the shadow-tuning week before delivery is switched on. Add ~1 week for
+per-user thresholds and ~2–3 days for persisted history. The riskiest ticket is #1, because it sits
+next to the code that keeps books alive.
