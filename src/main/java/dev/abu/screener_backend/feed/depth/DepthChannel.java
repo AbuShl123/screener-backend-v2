@@ -46,6 +46,7 @@ public class DepthChannel implements FeedChannel {
 
     /** Wire {@code type} of every message this channel sends — an upsert, or a removal when {@code data} is null. */
     static final String TYPE = "DEPTH";
+    private static final double DISTANCE_SCALE = 1e4;
 
     private final OrderBookFeedStore globalFeed;
     private final UserFeedRegistry userFeedRegistry;
@@ -174,20 +175,32 @@ public class DepthChannel implements FeedChannel {
         return sb.toString();
     }
 
+    /**
+     * Each level is a positional tuple {@code [price, quantity, tier, firstSeenMillis, distance]}:
+     * field names would repeat in every level and roughly double the raw payload.
+     */
     private void appendLevels(ClassifiedLevel[] levels) {
         sb.append('[');
         boolean first = true;
         for (ClassifiedLevel level : levels) {
             if (level == null) break;
             if (!first) sb.append(',');
-            sb.append("{\"price\":").append(level.price());
-            sb.append(",\"quantity\":").append(level.quantity());
-            sb.append(",\"tier\":").append(level.tier());
-            sb.append(",\"firstSeenMillis\":").append(level.firstSeenMillis());
-            sb.append(",\"distance\":").append(level.distance()); // fraction (0.05 = 5%); client renders as %
-            sb.append('}');
+            sb.append('[').append(level.price());
+            sb.append(',').append(level.quantity());
+            sb.append(',').append(level.tier());
+            sb.append(',').append(level.firstSeenMillis());
+            sb.append(',').append(roundDistance(level.distance()));
+            sb.append(']');
             first = false;
         }
         sb.append(']');
+    }
+
+    /**
+     * Distance is a fraction (0.05 = 5%), rounded to 4 decimals (0.01%). Full-precision digits are
+     * effectively random and don't compress, so they dominated the deflated frame size.
+     */
+    private static double roundDistance(double distance) {
+        return Math.round(distance * DISTANCE_SCALE) / DISTANCE_SCALE;
     }
 }

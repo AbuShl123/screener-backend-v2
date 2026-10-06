@@ -191,18 +191,22 @@ Publisher claims with blocking `rb.next()`; a full ring stalls the publishing th
 arrive on their own connections, a stall only blocks the kline reader thread — acceptable.
 Re-check ring sizing with the added event rate.
 
-### D8. Alert delivery: same `/ws`, same `seq`, recent alerts in the snapshot
+### D8. Alert delivery: same `/ws`, recent alerts in the snapshot
 
-The current protocol is a **state stream**: snapshot, then `seq`-numbered deltas; a client-detected
-gap triggers `SNAPSHOT_REQUEST`. Alerts are **events**, but they join the same stream:
+The current protocol is a **state stream**: a snapshot, then deltas. Delivery is lossless while the
+connection is up: frames go over TCP, and the server never skips a batch — a session whose send
+queue is full is evicted, not trimmed. A client therefore loses messages only by disconnecting, and
+every (re)connect starts with a fresh snapshot. Alerts are **events**, but they join the same stream:
 
-- Spikes are `PRICE_SPIKE` / `VOLUME_SPIKE` messages in the common envelope (D16) and carry the
-  session's single `seq` counter like every other message.
-- The snapshot carries the **last N alerts** as entries. After a gap the client re-snapshots and
-  replaces its recent-alerts list with the snapshot's, so a lost alert is recovered in the list.
+- Spikes are `PRICE_SPIKE` / `VOLUME_SPIKE` messages in the common envelope (D16).
+- The snapshot carries the **last N alerts** as entries. On reconnect the client replaces its
+  recent-alerts list with the snapshot's, so alerts emitted while it was disconnected are recovered
+  up to N. Older ones are lost — accepted.
 - Toasts fire only for live alert messages, never for snapshot entries.
 - Shard threads produce alerts (multi-producer: N shards); `SpikeChannel` (D17) drains them on the
-  broadcaster's 100ms tick. The alert store is bounded (pending queue + recent-N ring).
+  broadcaster's 100ms tick. The alert store is bounded (pending queue + recent-N ring). The ring is
+  filled by the drain, not by producers, so the snapshot and the live stream split at the same tick
+  boundary and no alert arrives both as a snapshot entry and as a live message.
 - Entitlement is already enforced at `@OnOpen` — nothing new.
 
 ### D9. Hot-path refactor lands alone first
@@ -316,7 +320,7 @@ The `/ws` feed is about to carry depth, spikes and order clusters. Every server 
 except `SNAPSHOT` has one shape:
 
 ```json
-{ "seq": 12, "type": "DEPTH", "exchange": "BINANCE", "market": "FUTURES", "symbol": "BTCUSDT",
+{ "type": "DEPTH", "exchange": "BINANCE", "market": "FUTURES", "symbol": "BTCUSDT",
   "data": { "bids": [ ... ], "asks": [ ... ] } }
 ```
 
@@ -325,18 +329,23 @@ except `SNAPSHOT` has one shape:
 - **State types** (`DEPTH`, `CLUSTER`) are upserts; `"data": null` removes the instrument's entry.
   ADD / UPDATE / DROP leave the wire — the client already treats UPDATE as an upsert.
 - **`SNAPSHOT`** is the one message without identity, because it covers many instruments. Its
-  `data` is a list of the same envelopes the client receives live (without `seq`), so the client
-  handles a snapshot entry and a live message with the same code:
-  `{"seq":1,"type":"SNAPSHOT","data":[ {"type":"DEPTH",...}, {"type":"PRICE_SPIKE",...} ]}`.
+  `data` is a list of exactly the envelopes the client receives live, so the client handles a
+  snapshot entry and a live message with the same code:
+  `{"type":"SNAPSHOT","data":[ {"type":"DEPTH",...}, {"type":"PRICE_SPIKE",...} ]}`.
+- **No `seq` field.** It exists today but nothing reads it: delivery cannot gap without a
+  disconnect, and a reconnect always starts with a snapshot (D8). Dropping it also lets the
+  broadcaster send one shared body to every session instead of copying each body per session.
 - Clients ignore unknown `type`s, so new signals are additive.
 - Type names are uppercase, matching the existing enum-name convention.
-- Client → server messages (`SNAPSHOT_REQUEST`) are unchanged.
+- Client → server messages (`SNAPSHOT_REQUEST`) are unchanged; it stays as a manual resync.
 - This is a **breaking change** for depth messages: the frontend parser switch ships in the same
   release as the backend, and `.claude/docs/for-frontend/websocket-feed-api.md` is rewritten for it.
 
 ### D17. The broadcaster is split into feed channels
 
-`OrderBookBroadcaster` today mixes three jobs: the per-session loop (seq, snapshot status,
+Implementation detail: `.claude/plans/feed-channels-impl-plan.md`.
+
+`OrderBookBroadcaster` today mixes three jobs: the per-session loop (snapshot status,
 enqueue/evict), the depth-specific global + per-user merge with its `ruleKey` filter, and JSON
 building. Everything but the loop moves behind one interface:
 
@@ -348,9 +357,9 @@ interface FeedChannel {
 }
 ```
 
-- **`OrderBookBroadcaster`** keeps the loop: drain every channel once per tick, then per session
-  either collect snapshot entries from all channels into one `SNAPSHOT`, or collect updates,
-  inject `seq` and enqueue (evicting on a full queue). Drain timing metrics stay here.
+- **The broadcaster** (renamed `FeedBroadcaster`) keeps the loop: drain every channel once per
+  tick, then per session either collect snapshot entries from all channels into one `SNAPSHOT`, or
+  collect updates, and enqueue one batch (evicting on a full queue). Drain timing metrics stay here.
 - **`DepthChannel`** — today's global + per-user merge and `ruleKey` filter, moved unchanged.
 - **`SpikeChannel`** — drains the alert store (D8); every session gets the same bodies; snapshot
   entries are the last N alerts.
@@ -358,17 +367,17 @@ interface FeedChannel {
 - A shared helper writes the envelope head; each channel writes its own `data`. JSON stays
   `StringBuilder`-built, as today (`feed/` is hot path).
 - Channels are beans collected into a list; the broadcaster does not know which exist.
-- **Out of scope**: client-side channel subscriptions, per-channel `seq` counters, a generic event
-  bus, Jackson serialization of depth bodies.
+- **Out of scope**: client-side channel subscriptions, a generic event bus, Jackson serialization
+  of depth bodies.
 
 ### Draft alert contract (to agree before FE/BE split)
 
 ```json
-{ "seq": 14, "type": "PRICE_SPIKE", "exchange": "BINANCE", "market": "FUTURES", "symbol": "PEPEUSDT",
+{ "type": "PRICE_SPIKE", "exchange": "BINANCE", "market": "FUTURES", "symbol": "PEPEUSDT",
   "data": { "ts": 1759667423000, "oldPrice": 0.00001012, "newPrice": 0.00001076,
             "pct": 6.34, "windowSec": 300 } }
 
-{ "seq": 15, "type": "VOLUME_SPIKE", "exchange": "BINANCE", "market": "FUTURES", "symbol": "PEPEUSDT",
+{ "type": "VOLUME_SPIKE", "exchange": "BINANCE", "market": "FUTURES", "symbol": "PEPEUSDT",
   "data": { "ts": 1759667423000, "volPrev": 40000, "volNow": 126000,
             "pct": 215, "windowSec": 300 } }
 ```
@@ -442,7 +451,7 @@ separate branches.
 `order-cluster-plan.md` adds a call in the event handler — it belongs in the **depth** branch of the
 D4 dispatcher — and delivers clusters as a `ClusterChannel` (D17) with the `CLUSTER` envelope type
 (D16). Ticket 4 is therefore a prerequisite of the cluster delivery ticket. Clusters and spikes share
-the session's `seq` but are separate channels and types.
+the session's batches but are separate channels and types.
 
 ---
 
@@ -492,8 +501,8 @@ Preconditions, not tickets:
 
 ### Phase 5 — Spike delivery (ticket 6, Epic 2, after Phase 2, against a stub `AlertSink` producer)
 - Alert store implementing `AlertSink` (multi-producer from shards, bounded).
-- `SpikeChannel` (D17): `PRICE_SPIKE` / `VOLUME_SPIKE` envelopes in the session `seq`; last N alerts
-  as snapshot entries (D8).
+- `SpikeChannel` (D17): `PRICE_SPIKE` / `VOLUME_SPIKE` envelopes; last N alerts as snapshot
+  entries, filled at drain time (D8).
 - `delivery-enabled` flag; admin endpoint listing recent alerts (used by Phase 6).
 - Spike types added to `websocket-feed-api.md`.
 

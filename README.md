@@ -32,35 +32,7 @@ The frontend lives in [`screener-frontend-v2`](https://github.com/AbuShl123/scre
 
 Everything runs in one JVM: a Spring Boot MVC application on Tomcat, backed by PostgreSQL.
 
-```mermaid
-flowchart LR
-    subgraph Exchanges
-        BS[Binance Spot]
-        BF[Binance Futures]
-        MF[MEXC Futures]
-    end
-
-    subgraph Backend["Spring Boot (single JVM)"]
-        SM[StreamManager<br/>WebSocket clients]
-        RB[Disruptor ring buffers<br/>sharded by instrument]
-        OB[Local order books<br/>+ sync state machine]
-        SQ[Snapshot queues<br/>REST recovery]
-        CL[Classifier<br/>global + per-user rules]
-        BC[Broadcaster<br/>100 ms drain]
-        WS[/ws endpoint/]
-        API[REST API<br/>auth · billing · rules · admin]
-    end
-
-    DB[(PostgreSQL)]
-    MC[Multicard]
-    UI[Frontend]
-
-    BS & BF & MF -- depth diffs --> SM --> RB --> OB
-    OB -- gap / resync --> SQ -- snapshot --> RB
-    OB --> CL --> BC --> WS --> UI
-    UI --> API --> DB
-    API <--> MC
-```
+![High-level architecture](.claude/docs/images/architecture_highlevel.drawio.png)
 
 **The market-data pipeline:**
 

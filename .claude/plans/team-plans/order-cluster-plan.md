@@ -9,7 +9,8 @@ decisions, open questions, and a proposed phasing and team split. Nothing here i
 - `marketdata/core/ingress/DepthEventHandler` and `DisruptorShardManager` — where the detector is wired.
 - `marketdata/core/book/OrderBook`, `PriceLevelEntry` — the data the detector walks.
 - `analysis/OrderBookClassifier`, `SymbolState` — the per-shard, per-instrument pattern to mirror.
-- `feed/OrderBookFeedStore`, `feed/OrderBookBroadcaster` — the delivery path clusters join.
+- `feed/OrderBookFeedStore`, `feed/OrderBookBroadcaster` — the delivery path clusters join, and
+  `.claude/plans/feed-channels-impl-plan.md` — how it becomes `FeedBroadcaster` + `FeedChannel`.
 - `.claude/plans/team-plans/spike-alerts-plan.md` — renames the event handler into a dispatcher
   (D3/D4) and introduces the common WS envelope and feed channels (D16/D17) that cluster delivery
   is built on; see §7.
@@ -128,7 +129,7 @@ current `bidClusters[]` / `askClusters[]`, 100ms coalescing with the same ADD/UP
 and a snapshot map. Up to K clusters per side per instrument (K configurable). On the wire, ADD and
 UPDATE are both a `CLUSTER` upsert and DROP is `"data": null` (D4).
 
-### D4. Delivery: a `ClusterChannel` on the common envelope, inside `seq`
+### D4. Delivery: a `ClusterChannel` on the common envelope
 
 Clusters use the common WS envelope and feed channels from spike-alerts D16/D17:
 - `type: "CLUSTER"`. An upsert carries the instrument's current clusters; `"data": null` removes
@@ -136,10 +137,9 @@ Clusters use the common WS envelope and feed channels from spike-alerts D16/D17:
 - `ClusterChannel` implements `FeedChannel`: it drains `ClusterFeedStore` once per tick and gives
   every session the same bodies. There are no per-user cluster rules, so there is no `ruleKey`
   filter.
-- Clusters share the session's single `seq`. A lost message triggers `SNAPSHOT_REQUEST`, and the
-  snapshot includes one `CLUSTER` entry per instrument with clusters — so recovery works with no
-  new mechanism.
-- A reconnecting client sees exactly the clusters that exist now.
+- A client misses messages only by disconnecting (spike-alerts D8). Every (re)connect starts with a
+  snapshot that includes one `CLUSTER` entry per instrument with clusters, so a reconnecting client
+  sees exactly the clusters that exist now — recovery needs no new mechanism.
 - Entitlement is already enforced at `@OnOpen` — nothing new.
 
 ### D5. Payload carries the full ladder, copied on the shard thread
@@ -156,7 +156,7 @@ the shadow-tuning mode (Phase 3).
 ### Draft cluster contract (to agree before FE/BE split)
 
 ```json
-{ "seq": 412, "type": "CLUSTER", "exchange": "BINANCE", "market": "SPOT", "symbol": "ARBUSDT",
+{ "type": "CLUSTER", "exchange": "BINANCE", "market": "SPOT", "symbol": "ARBUSDT",
   "data": {
     "bidClusters": [
       { "priceFrom": 0.0700, "priceTo": 0.0740, "levelCount": 41,
@@ -166,11 +166,11 @@ the shadow-tuning mode (Phase 3).
     ],
     "askClusters": [] } }
 
-{ "seq": 413, "type": "CLUSTER", "exchange": "BINANCE", "market": "SPOT", "symbol": "ARBUSDT",
+{ "type": "CLUSTER", "exchange": "BINANCE", "market": "SPOT", "symbol": "ARBUSDT",
   "data": null }
 ```
 
-`SNAPSHOT` entries use the same envelope without `seq`. Field names inside `data` and compact
+`SNAPSHOT` entries are exactly these envelopes. Field names inside `data` and compact
 `[price, qty]` levels are open (Q-T3).
 
 ---
@@ -181,7 +181,7 @@ the shadow-tuning mode (Phase 3).
 |---|---|
 | **New** | `analysis/cluster/` (detector, per-instrument state, run builder, rules, hysteresis); `ClusterDetectionProperties` (`screener.clusters.*`); `ClusterFeedStore`; `ClusterChannel`; cluster DTO records |
 | **Changed (wiring)** | `DisruptorShardManager` (create detector per shard), `MarketEventHandler` (one call in the depth branch) |
-| **Changed (delivery)** | None beyond the new channel — `OrderBookBroadcaster` picks up `ClusterChannel` like any other channel; `websocket-feed-api.md` gains the `CLUSTER` type |
+| **Changed (delivery)** | None beyond the new channel — `FeedBroadcaster` picks up `ClusterChannel` like any other channel; `websocket-feed-api.md` gains the `CLUSTER` type |
 | **Changed (ops)** | `monitoring/` — admin view of current clusters for tuning; `PipelineMetrics` — detector time, active clusters |
 | **Unchanged** | Streams, sync strategies, recovery, adapters, auth, billing, entitlement, payment |
 
@@ -226,7 +226,7 @@ the shadow-tuning mode (Phase 3).
   rebases onto the first — plan for it in sprint scheduling.
 - Spike-alerts ticket 4 introduces the common envelope and `FeedChannel` (D16/D17 there). Cluster
   delivery (ticket 3 here) is built on it and starts after it lands.
-- Clusters and spike alerts share the session's `seq` but are separate channels and types.
+- Clusters and spike alerts share the session's batches but are separate channels and types.
 
 ---
 

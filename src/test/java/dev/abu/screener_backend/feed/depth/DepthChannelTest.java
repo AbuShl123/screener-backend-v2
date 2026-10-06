@@ -196,4 +196,20 @@ class DepthChannelTest {
         assertEquals(1, entries.size());
         assertEquals(live, entries);
     }
+
+    @Test
+    @DisplayName("levels are [price, quantity, tier, firstSeenMillis, distance] with distance rounded to 4 decimals")
+    void levelsArePositionalTuples() {
+        ClassifiedLevel[] bids = new ClassifiedLevel[5];
+        ClassifiedLevel[] asks = new ClassifiedLevel[5];
+        bids[0] = new ClassifiedLevel(1.5158, 411028.8, 2, 1791277955757L, 0.005939542754753302);
+        asks[0] = new ClassifiedLevel(1.53, 1000.0, 4, 1791277955000L, 0.0023559080200417706);
+        asks[1] = new ClassifiedLevel(1.6, 10.0, 1, 1791277955000L, 0.00004);
+        submit(global, new OrderBookUpdate(BINANCE_ETH, FeedEventType.ADD, bids, asks));
+
+        assertEquals(List.of("{\"type\":\"DEPTH\",\"exchange\":\"BINANCE\",\"market\":\"SPOT\",\"symbol\":\"ETHUSDT\",\"data\":"
+                        + "{\"bids\":[[1.5158,411028.8,2,1791277955757,0.0059]],"
+                        + "\"asks\":[[1.53,1000.0,4,1791277955000,0.0024],[1.6,10.0,1,1791277955000,0.0]]}}"),
+                updates(session()));
+    }
 }
