@@ -162,7 +162,7 @@ class DepthChannelTest {
     }
 
     @Test
-    @DisplayName("every message shape carries exchange, ahead of symbol and market")
+    @DisplayName("every message shape is a DEPTH envelope carrying exchange, market and symbol")
     void payloadCarriesExchange() {
         UserWebSocketSession session = session();
 
@@ -175,11 +175,25 @@ class DepthChannelTest {
 
         assertEquals(2, sent.size());
         assertTrue(snapshot.startsWith(
-                "{\"type\":\"SNAPSHOT\",\"data\":[{\"exchange\":\"BINANCE\",\"symbol\":\"ETHUSDT\",\"market\":\"SPOT\","));
-        String live = String.join("\n", sent);
-        assertTrue(live.contains(
-                "\"type\":\"DROP\",\"exchange\":\"BINANCE\",\"symbol\":\"ETHUSDT\",\"market\":\"SPOT\"}"));
-        assertTrue(live.contains(
-                "\"type\":\"ADD\",\"exchange\":\"BINANCE\",\"symbol\":\"BTCUSDT\",\"market\":\"SPOT\",\"bids\":"));
+                "{\"type\":\"SNAPSHOT\",\"data\":[{\"type\":\"DEPTH\",\"exchange\":\"BINANCE\",\"market\":\"SPOT\",\"symbol\":\"ETHUSDT\",\"data\":{\"bids\":"));
+        assertTrue(sent.contains(
+                "{\"type\":\"DEPTH\",\"exchange\":\"BINANCE\",\"market\":\"SPOT\",\"symbol\":\"ETHUSDT\",\"data\":null}"));
+        assertTrue(sent.stream().anyMatch(m -> m.startsWith(
+                "{\"type\":\"DEPTH\",\"exchange\":\"BINANCE\",\"market\":\"SPOT\",\"symbol\":\"BTCUSDT\",\"data\":{\"bids\":")));
+    }
+
+    @Test
+    @DisplayName("a snapshot entry equals the live message for the same update")
+    void snapshotEntryEqualsLiveBody() {
+        submit(global, add(BINANCE_ETH));
+        channel.drain();
+
+        List<String> entries = new ArrayList<>();
+        channel.collectSnapshot(session(), entries);
+        List<String> live = new ArrayList<>();
+        channel.collectUpdates(session(), live);
+
+        assertEquals(1, entries.size());
+        assertEquals(live, entries);
     }
 }

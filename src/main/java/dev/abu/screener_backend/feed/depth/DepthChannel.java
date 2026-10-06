@@ -2,8 +2,8 @@ package dev.abu.screener_backend.feed.depth;
 
 import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
+import dev.abu.screener_backend.feed.Envelope;
 import dev.abu.screener_backend.feed.FeedChannel;
-import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.ws.UserWebSocketSession;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.annotation.Order;
@@ -43,6 +43,9 @@ import java.util.Set;
 @Order(0)
 @RequiredArgsConstructor
 public class DepthChannel implements FeedChannel {
+
+    /** Wire {@code type} of every message this channel sends — an upsert, or a removal when {@code data} is null. */
+    static final String TYPE = "DEPTH";
 
     private final OrderBookFeedStore globalFeed;
     private final UserFeedRegistry userFeedRegistry;
@@ -110,7 +113,7 @@ public class DepthChannel implements FeedChannel {
         UserClassificationContext ctx = session.getContext(); // nullable
         Map<String, OrderBookUpdate> snapshot = (ctx == null) ? globalFeed.getSnapshot() : mergedSnapshot(ctx);
         for (OrderBookUpdate update : snapshot.values()) {
-            out.add(buildSnapshotEntry(update));
+            out.add(buildBody(update));
         }
     }
 
@@ -144,46 +147,31 @@ public class DepthChannel implements FeedChannel {
         if (pending.isEmpty()) return List.of();
         List<KeyedBody> bodies = new ArrayList<>(pending.size());
         for (OrderBookUpdate update : pending.values()) {
-            bodies.add(new KeyedBody(update.instrument().ruleKey(), buildUpdateBody(update)));
+            bodies.add(new KeyedBody(update.instrument().ruleKey(), buildBody(update)));
         }
         return bodies;
     }
 
-    private String buildUpdateBody(OrderBookUpdate update) {
+    /**
+     * One {@code DEPTH} envelope; serves live bodies and snapshot entries alike, so a snapshot
+     * entry is byte-identical to the live message for the same update. {@code ADD} and
+     * {@code UPDATE} carry the levels; {@code DROP} sends {@code "data":null}. The internal
+     * {@link FeedEventType} never reaches the wire — it exists for coalescing.
+     */
+    private String buildBody(OrderBookUpdate update) {
         sb.setLength(0);
-        sb.append("{\"type\":\"").append(update.type().name()).append("\",");
-        appendIdentity(update.instrument());
-        if (update.type() != FeedEventType.DROP) {
-            sb.append(",\"bids\":");
+        Envelope.head(sb, TYPE, update.instrument());
+        if (update.type() == FeedEventType.DROP) {
+            sb.append("null");
+        } else {
+            sb.append("{\"bids\":");
             appendLevels(update.bids());
             sb.append(",\"asks\":");
             appendLevels(update.asks());
+            sb.append('}');
         }
         sb.append('}');
         return sb.toString();
-    }
-
-    private String buildSnapshotEntry(OrderBookUpdate update) {
-        sb.setLength(0);
-        sb.append('{');
-        appendIdentity(update.instrument());
-        sb.append(",\"bids\":");
-        appendLevels(update.bids());
-        sb.append(",\"asks\":");
-        appendLevels(update.asks());
-        sb.append('}');
-        return sb.toString();
-    }
-
-    /**
-     * Appends {@code "exchange":…,"symbol":…,"market":…} with no surrounding separators. Every
-     * message that names an instrument (ADD, UPDATE, DROP and each SNAPSHOT entry) goes through
-     * here. {@code symbol} is the normalized {@code BASEQUOTE} form, matching the rule API.
-     */
-    private void appendIdentity(Instrument inst) {
-        sb.append("\"exchange\":\"").append(inst.exchange().name()).append('"');
-        sb.append(",\"symbol\":\"").append(inst.symbol()).append('"');
-        sb.append(",\"market\":\"").append(inst.market().name()).append('"');
     }
 
     private void appendLevels(ClassifiedLevel[] levels) {
