@@ -46,11 +46,6 @@ public class UserWebSocketSession {
 
     private volatile Thread virtualThread;
 
-    // Accessed only by the broadcaster's @Scheduled thread — no atomics needed.
-    // resetSeq() and getAndIncrementSeq() are both called exclusively from the broadcaster.
-    // setStatus() does NOT touch this field — it can be called from the @OnMessage Tomcat thread.
-    private int seqNumber = 0;
-
     public UserWebSocketSession(Session jakartaSession, UUID userId) {
         this.jakartaSession = jakartaSession;
         this.userId = userId;
@@ -58,14 +53,9 @@ public class UserWebSocketSession {
 
     // ---- Called by broadcaster (@Scheduled thread) ----
 
-    /** Called only by the broadcaster's @Scheduled thread, right before snapshot delivery. */
-    public void resetSeq() { seqNumber = 0; }
-
-    /** Increments before returning, matching existing broadcaster convention. */
-    public int getAndIncrementSeq() { return ++seqNumber; }
-
     /**
-     * Offers a pre-serialized, seq-injected batch to the send queue.
+     * Offers a pre-serialized batch to the send queue. The batch's Strings may be shared with
+     * other sessions — they are only read.
      * Non-blocking — returns false if the queue is full or the session is shutting down.
      * The broadcaster must call disconnect() when this returns false (queue-full eviction).
      */

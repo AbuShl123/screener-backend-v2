@@ -3,7 +3,7 @@ package dev.abu.screener_backend.analysis;
 import dev.abu.screener_backend.analysis.rule.ClassificationRuleService;
 import dev.abu.screener_backend.analysis.rule.RuleUpdatedEvent;
 import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
-import dev.abu.screener_backend.feed.OrderBookFeedStore;
+import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
 import dev.abu.screener_backend.ws.UserWebSocketSession;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;

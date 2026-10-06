@@ -4,10 +4,10 @@ import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.InstrumentTest;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
-import dev.abu.screener_backend.feed.ClassifiedLevel;
-import dev.abu.screener_backend.feed.FeedEventType;
-import dev.abu.screener_backend.feed.OrderBookFeedStore;
-import dev.abu.screener_backend.feed.OrderBookUpdate;
+import dev.abu.screener_backend.feed.depth.ClassifiedLevel;
+import dev.abu.screener_backend.feed.depth.FeedEventType;
+import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
+import dev.abu.screener_backend.feed.depth.OrderBookUpdate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

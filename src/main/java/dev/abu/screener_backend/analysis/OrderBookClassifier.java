@@ -4,10 +4,10 @@ import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
-import dev.abu.screener_backend.feed.ClassifiedLevel;
-import dev.abu.screener_backend.feed.FeedEventType;
-import dev.abu.screener_backend.feed.OrderBookFeedStore;
-import dev.abu.screener_backend.feed.OrderBookUpdate;
+import dev.abu.screener_backend.feed.depth.ClassifiedLevel;
+import dev.abu.screener_backend.feed.depth.FeedEventType;
+import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
+import dev.abu.screener_backend.feed.depth.OrderBookUpdate;
 import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
 import lombok.Setter;
 

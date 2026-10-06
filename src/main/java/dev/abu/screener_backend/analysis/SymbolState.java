@@ -1,7 +1,7 @@
 package dev.abu.screener_backend.analysis;
 
 import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
-import dev.abu.screener_backend.feed.ClassifiedLevel;
+import dev.abu.screener_backend.feed.depth.ClassifiedLevel;
 
 import java.util.Map;
 
