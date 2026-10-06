@@ -52,8 +52,7 @@ public class OrderBookBroadcaster {
     private final List<UserWebSocketSession> sessions = new CopyOnWriteArrayList<>();
 
     // Reused across every drain() call — safe because drain() runs on a single @Scheduled thread.
-    // Each build method resets it at entry and captures the result via toString() before returning,
-    // so injectSeq() can reuse the same buffer immediately after without risk of corruption.
+    // Each build method resets it at entry and captures the result via toString() before returning.
     private final StringBuilder sb = new StringBuilder(4096);
 
     /** A drain slower than this has eaten most of its 100ms budget and is worth a line of its own. */
@@ -130,9 +129,9 @@ public class OrderBookBroadcaster {
                 String body = (ctx == null)
                         ? buildSnapshotBody(globalFeed.getSnapshot())
                         : buildSnapshotBody(mergedSnapshot(ctx));
-                session.resetSeq(); // broadcaster thread resets seq — keeps seqNumber single-threaded
-                String seqMsg = injectSeq(body, session.getAndIncrementSeq());
-                if (!session.enqueueBatch(List.of(seqMsg))) {
+                // A batch that cannot be enqueued evicts the session — it is never skipped.
+                // Gap-free delivery depends on that.
+                if (!session.enqueueBatch(List.of(body))) {
                     session.disconnect();
                 } else {
                     session.setStatus(UserWebSocketSession.Status.READY);
@@ -147,8 +146,9 @@ public class OrderBookBroadcaster {
                 if (globalBodies == null) globalBodies = buildKeyedBodies(globalPending);
                 List<String> batch = new ArrayList<>(globalBodies.size());
                 for (KeyedBody kb : globalBodies) {
-                    batch.add(injectSeq(kb.body(), session.getAndIncrementSeq()));
+                    batch.add(kb.body()); // the tick's shared String — no per-session copy
                 }
+                // Evict, never skip: see the snapshot branch.
                 if (!session.enqueueBatch(batch)) session.disconnect();
             } else {
                 if (globalBodies == null && !globalPending.isEmpty()) {
@@ -170,16 +170,17 @@ public class OrderBookBroadcaster {
                 List<String> batch = new ArrayList<>();
                 // Personal feed — the user's configured keys with their custom tiers.
                 for (KeyedBody kb : personalBodies) {
-                    batch.add(injectSeq(kb.body(), session.getAndIncrementSeq()));
+                    batch.add(kb.body());
                 }
                 // Global feed — but only rule keys this user has NOT configured.
                 if (globalBodies != null) {
                     for (KeyedBody kb : globalBodies) {
                         if (!configured.contains(kb.ruleKey())) {
-                            batch.add(injectSeq(kb.body(), session.getAndIncrementSeq()));
+                            batch.add(kb.body());
                         }
                     }
                 }
+                // Evict, never skip: see the snapshot branch.
                 if (!batch.isEmpty() && !session.enqueueBatch(batch)) session.disconnect();
             }
         }
@@ -299,13 +300,5 @@ public class OrderBookBroadcaster {
             first = false;
         }
         sb.append(']');
-    }
-
-    // Injects seq as the first field: {"type":"...",...} → {"seq":N,"type":"...",...}
-    // Uses the shared sb; safe because the body String was already captured before this call.
-    private String injectSeq(String body, int seq) {
-        sb.setLength(0);
-        sb.append("{\"seq\":").append(seq).append(',').append(body, 1, body.length());
-        return sb.toString();
     }
 }

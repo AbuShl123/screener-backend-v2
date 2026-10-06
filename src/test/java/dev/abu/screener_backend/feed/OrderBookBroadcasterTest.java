@@ -174,7 +174,7 @@ class OrderBookBroadcasterTest {
 
         assertEquals(3, session.sent.size());
         assertTrue(session.sent.get(0).startsWith(
-                "{\"seq\":1,\"type\":\"SNAPSHOT\",\"data\":[{\"exchange\":\"BINANCE\",\"symbol\":\"ETHUSDT\",\"market\":\"SPOT\","));
+                "{\"type\":\"SNAPSHOT\",\"data\":[{\"exchange\":\"BINANCE\",\"symbol\":\"ETHUSDT\",\"market\":\"SPOT\","));
         String live = String.join("\n", session.sent.subList(1, 3));
         assertTrue(live.contains(
                 "\"type\":\"DROP\",\"exchange\":\"BINANCE\",\"symbol\":\"ETHUSDT\",\"market\":\"SPOT\"}"));
