@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** {@link VenueProperties} fails at startup on config that would otherwise misbehave at runtime. */
@@ -17,7 +18,7 @@ class VenuePropertiesTest {
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
     private static VenueProperties props(String topic, int chunkSize, int heartbeatSeconds) {
-        return new VenueProperties("wss://x", REST, topic, 1024, 1, 1, chunkSize, heartbeatSeconds);
+        return new VenueProperties("wss://x", REST, topic, 1024, 1, 1, chunkSize, heartbeatSeconds, null);
     }
 
     @Test
@@ -44,5 +45,20 @@ class VenuePropertiesTest {
     @DisplayName("a non-positive heartbeat interval is rejected")
     void badHeartbeat() {
         assertThrows(IllegalArgumentException.class, () -> props("{symbol}@depth", 400, 0));
+    }
+
+    private static VenueProperties withVisibleDistance(Double maxVisibleDistance) {
+        return new VenueProperties("wss://x", REST, "{symbol}", 1024, 1, 1, 400, 120, maxVisibleDistance);
+    }
+
+    @Test
+    @DisplayName("max-visible-distance is optional; when set it must be positive and finite")
+    void maxVisibleDistance() {
+        assertNull(withVisibleDistance(null).maxVisibleDistance());
+        assertEquals(0.01, withVisibleDistance(0.01).maxVisibleDistance());
+        assertThrows(IllegalArgumentException.class, () -> withVisibleDistance(0.0));
+        assertThrows(IllegalArgumentException.class, () -> withVisibleDistance(-0.01));
+        assertThrows(IllegalArgumentException.class, () -> withVisibleDistance(Double.NaN));
+        assertThrows(IllegalArgumentException.class, () -> withVisibleDistance(Double.POSITIVE_INFINITY));
     }
 }

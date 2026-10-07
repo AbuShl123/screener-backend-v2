@@ -23,6 +23,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,7 +35,7 @@ class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
         RestProperties rest = new RestProperties("https://example", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1, 1, 100, 120);
+        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1, 1, 100, 120, null);
     }
 
     private static ExchangesProperties binance(boolean enabled, Market... markets) {
@@ -102,6 +103,8 @@ class ExchangesPropertiesTest {
                 .bind("screener", ExchangesProperties.class)
                 .get();
 
+        assertEquals(0.01, props.venue(Venue.MEXC_FUTURES).maxVisibleDistance());
+        assertNull(props.venue(Venue.BINANCE_FUTURES).maxVisibleDistance());
         assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
         assertTrue(props.isEnabled(Venue.BINANCE_FUTURES));
         assertFalse(props.isEnabled(Venue.MEXC_FUTURES));

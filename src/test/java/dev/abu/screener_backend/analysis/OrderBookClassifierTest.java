@@ -32,6 +32,8 @@ class OrderBookClassifierTest {
 
     private static final Instrument BINANCE_BTC = Instrument.of(0, Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT");
     private static final Instrument OTHER_BTC = InstrumentTest.otherExchangeSpot(1, "BTC_USDT", "BTC", "USDT");
+    private static final Instrument BINANCE_XYZ = Instrument.of(2, Venue.BINANCE_FUTURES, "XYZUSDT", "XYZ", "USDT");
+    private static final Instrument MEXC_XYZ = Instrument.of(3, Venue.MEXC_FUTURES, "XYZ_USDT", "XYZ", "USDT");
 
     /** A synced book around 100,000 with a ~$10M bid at the spread — visible under every rule here. */
     private static OrderBook syncedBook() {
@@ -56,7 +58,7 @@ class OrderBookClassifierTest {
     @DisplayName("same symbol on two exchanges gets two global feed entries")
     void defaultPassKeepsExchangesApart() {
         OrderBookFeedStore global = new OrderBookFeedStore();
-        OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule());
+        OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(), Map.of());
 
         classifier.process(BINANCE_BTC, syncedBook());
         classifier.process(OTHER_BTC, syncedBook());
@@ -71,7 +73,7 @@ class OrderBookClassifierTest {
     @Test
     @DisplayName("one user rule applies on both exchanges, with separate state and feed entries")
     void userRuleAppliesOnEveryExchange() {
-        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule());
+        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule(), Map.of());
         UserClassificationContext ctx = contextWithRule("BTCUSDT:SPOT");
         classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
 
@@ -90,7 +92,7 @@ class OrderBookClassifierTest {
     @Test
     @DisplayName("a rule for another market does not run the user pass")
     void unconfiguredRuleKeyIsSkipped() {
-        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule());
+        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule(), Map.of());
         UserClassificationContext ctx = contextWithRule("BTCUSDT:FUTURES");
         classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
 
@@ -103,7 +105,7 @@ class OrderBookClassifierTest {
     @Test
     @DisplayName("tier-0 levels are never emitted, and a side with none ships empty")
     void tierZeroLevelsAreNeverEmitted() {
-        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule());
+        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule(), Map.of());
         UserClassificationContext ctx = contextWithRule("BTCUSDT:SPOT");
         classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
 
@@ -127,7 +129,7 @@ class OrderBookClassifierTest {
     @Test
     @DisplayName("a side losing its last tier-1+ level is cleared by an UPDATE")
     void sideLosingLastQualifyingLevelIsCleared() {
-        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule());
+        OrderBookClassifier classifier = new OrderBookClassifier(new OrderBookFeedStore(), new DefaultClassificationRule(), Map.of());
         UserClassificationContext ctx = contextWithRule("BTCUSDT:SPOT");
         classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
 
@@ -145,5 +147,64 @@ class OrderBookClassifierTest {
         assertEquals(FeedEventType.UPDATE, update.type());
         assertEquals(1, update.bids()[0].tier());
         for (ClassifiedLevel ask : update.asks()) assertNull(ask);
+    }
+
+    /**
+     * A synced book around 100,000 with dust at the spread and one ~$30.9M ask at 3% — tier 4 under
+     * the default (normal) rule, and nothing else qualifies.
+     */
+    private static OrderBook bookWithFarWall() {
+        OrderBook ob = new OrderBook(0.1);
+        ob.applyLevel(true, 99_990.0, 0.01, T0);
+        ob.applyLevel(false, 100_010.0, 0.01, T0);
+        ob.applyLevel(false, 103_000.0, 300.0, T0);
+        ob.computeDistance();
+        ob.markSynced();
+        return ob;
+    }
+
+    @Test
+    @DisplayName("a venue's max-visible-distance hides far levels from the default and user passes on that venue only")
+    void visibilityCapIsPerVenue() {
+        OrderBookFeedStore global = new OrderBookFeedStore();
+        OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(),
+                Map.of(Venue.MEXC_FUTURES, 0.01));
+        UserClassificationContext ctx = new UserClassificationContext(UUID.randomUUID(),
+                new UserClassificationRules(Map.of("XYZUSDT:FUTURES", ThresholdClassificationRule.of(List.of(
+                        new ThresholdClassificationRule.TierThreshold(1, 100_000, 0.05))))),
+                new OrderBookFeedStore(),
+                new ConcurrentHashMap<>());
+        classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
+
+        classifier.process(BINANCE_XYZ, bookWithFarWall());
+        classifier.process(MEXC_XYZ, bookWithFarWall());
+
+        OrderBookUpdate binance = global.getSnapshot().get(BINANCE_XYZ.feedKey());
+        assertEquals(103_000.0, binance.asks()[0].price());
+        assertEquals(4, binance.asks()[0].tier());
+        assertNull(global.getSnapshot().get(MEXC_XYZ.feedKey()));
+
+        Map<String, OrderBookUpdate> personal = ctx.feedStore().getSnapshot();
+        assertEquals(103_000.0, personal.get(BINANCE_XYZ.feedKey()).asks()[0].price());
+        assertNull(personal.get(MEXC_XYZ.feedKey()));
+    }
+
+    @Test
+    @DisplayName("levels inside a venue's max-visible-distance classify as usual")
+    void levelsInsideVisibilityCapClassify() {
+        OrderBookFeedStore global = new OrderBookFeedStore();
+        OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(),
+                Map.of(Venue.MEXC_FUTURES, 0.01));
+
+        OrderBook ob = bookWithFarWall();
+        ob.applyLevel(false, 100_500.0, 20.0, T0); // ~$2M at 0.5%: tier 3
+        ob.computeDistance();
+        classifier.process(MEXC_XYZ, ob);
+
+        OrderBookUpdate update = global.getSnapshot().get(MEXC_XYZ.feedKey());
+        assertEquals(FeedEventType.ADD, update.type());
+        assertEquals(100_500.0, update.asks()[0].price());
+        assertEquals(3, update.asks()[0].tier());
+        assertNull(update.asks()[1]); // the 3% wall stays hidden
     }
 }

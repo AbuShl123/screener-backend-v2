@@ -132,6 +132,11 @@ screener:
           subscribe-chunk-size: 1
           # MEXC disconnects after 60s without a ping; docs recommend 10–20s.
           heartbeat-interval-seconds: 15
+          # Levels further than this fraction from mid are never classified (default and user rules).
+          # MEXC is thin next to Binance: walls beyond 1% are market-maker ladders, not signal. The
+          # book itself still keeps levels out to screener.orderbook.price-filter-threshold.
+          # Absent = no cap (Binance). See .claude/plans/mexc-feed-noise.md.
+          max-visible-distance: 0.01
 
   discovery:
     # Per-source wait on each universe refresh. A source that overruns is cancelled and its venues

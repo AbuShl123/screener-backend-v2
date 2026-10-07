@@ -6,6 +6,7 @@ import dev.abu.screener_backend.marketdata.Venue;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.EnumMap;
 import java.util.Map;
 
 /**
@@ -67,6 +68,20 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     }
 
     /**
+     * {@link VenueProperties#maxVisibleDistance} of every enabled venue that sets one. A venue
+     * missing from the map has no cap.
+     */
+    public Map<Venue, Double> maxVisibleDistances() {
+        Map<Venue, Double> caps = new EnumMap<>(Venue.class);
+        for (Venue v : Venue.values()) {
+            if (!isEnabled(v)) continue;
+            Double cap = venue(v).maxVisibleDistance();
+            if (cap != null) caps.put(v, cap);
+        }
+        return caps;
+    }
+
+    /**
      * Instrument-inclusion policy is not configured per exchange: each adapter's eligibility filters
      * are hardcoded in its {@code InstrumentSource}, and the exclusion list is the exchange-agnostic
      * {@code screener.discovery.excluded-symbols} ({@link DiscoveryProperties}).
@@ -120,6 +135,12 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
      * @param maxConnections           ceiling on the derived connection count
      * @param subscribeChunkSize       instruments per subscribe frame (unrelated to connection count)
      * @param heartbeatIntervalSeconds how often a connection pings, preventing a server-side idle close
+     * @param maxVisibleDistance       fraction of mid beyond which this venue's levels are never
+     *                                 classified, by the default rule or any user rule; {@code null}
+     *                                 means no cap. The book still keeps levels out to
+     *                                 {@code screener.orderbook.price-filter-threshold}: that bound
+     *                                 deletes levels, and a deleted level that drifts back in range is
+     *                                 missing until the venue re-sends it, so it must stay wide
      */
     public record VenueProperties(
             String streamUrl,
@@ -129,7 +150,8 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
             int minConnections,
             int maxConnections,
             int subscribeChunkSize,
-            int heartbeatIntervalSeconds
+            int heartbeatIntervalSeconds,
+            Double maxVisibleDistance
     ) {
         public static final String SYMBOL_PLACEHOLDER = "{symbol}";
 
@@ -141,6 +163,10 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
             }
             if (subscribeChunkSize <= 0) throw new IllegalArgumentException("subscribe-chunk-size must be > 0");
             if (heartbeatIntervalSeconds <= 0) throw new IllegalArgumentException("heartbeat-interval-seconds must be > 0");
+            if (maxVisibleDistance != null && !(maxVisibleDistance > 0 && Double.isFinite(maxVisibleDistance))) {
+                throw new IllegalArgumentException("max-visible-distance must be positive and finite, got: "
+                        + maxVisibleDistance);
+            }
         }
 
         /**

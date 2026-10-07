@@ -39,7 +39,7 @@ class MexcAdapterConfigTest {
 
     private static final RestProperties REST =
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties FUTURES = new VenueProperties("wss://x", REST, "{symbol}", 300, 1, 8, 1, 15);
+    private static final VenueProperties FUTURES = new VenueProperties("wss://x", REST, "{symbol}", 300, 1, 8, 1, 15, null);
     private static final SnapshotQueueProperties QUEUE =
             new SnapshotQueueProperties(12, Duration.ofMillis(250), Duration.ofSeconds(20));
     private static final MexcSnapshotProperties SNAPSHOT = new MexcSnapshotProperties(Map.of(Market.FUTURES,

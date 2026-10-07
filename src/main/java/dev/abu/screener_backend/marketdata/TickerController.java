@@ -39,8 +39,8 @@ public class TickerController {
         List<InstrumentView> instruments = registry.all().stream()
                 .sorted(Comparator
                         .comparing((Instrument i) -> i.venue().ordinal())
-                        .thenComparing(Instrument::nativeSymbol))
-                .map(i -> new InstrumentView(i.id(), i.venue(), i.nativeSymbol()))
+                        .thenComparing(i -> i.symbol()))
+                .map(i -> new InstrumentView(i.id(), i.venue(), i.symbol()))
                 .toList();
 
         Map<Venue, Integer> byVenue = new EnumMap<>(Venue.class);
