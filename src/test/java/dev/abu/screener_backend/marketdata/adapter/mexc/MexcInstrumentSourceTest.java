@@ -29,14 +29,17 @@ class MexcInstrumentSourceTest {
 
     private static final String CONTRACTS = """
             [
-              {"symbol": "BTC_USDT",       "baseCoin": "BTC",  "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true,  "contractSize": 0.0001, "settleCoin": "USDT"},
+              {"symbol": "BTC_USDT",       "baseCoin": "BTC",  "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true,  "contractSize": 0.0001, "settleCoin": "USDT", "conceptPlate": ["mc-trade-zone-mainly", "mc-trade-zone-pow"]},
               {"symbol": "SHIB_USDT",      "baseCoin": "SHIB", "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true,  "contractSize": 1000},
               {"symbol": "ETH_USDT_DLV",   "baseCoin": "ETH",  "quoteCoin": "USDT", "futureType": 2, "state": 0, "apiAllowed": true,  "contractSize": 0.01},
               {"symbol": "LUNA_USDT",      "baseCoin": "LUNA", "quoteCoin": "USDT", "futureType": 1, "state": 3, "apiAllowed": true,  "contractSize": 1},
               {"symbol": "ZC_USDT",        "baseCoin": "ZC",   "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": false, "contractSize": 1},
               {"symbol": "BTC_USDC",       "baseCoin": "BTC",  "quoteCoin": "USDC", "futureType": 1, "state": 0, "apiAllowed": true,  "contractSize": 0.0001},
               {"symbol": "NOSTATE_USDT",   "baseCoin": "NOSTATE", "quoteCoin": "USDT", "futureType": 1, "apiAllowed": true, "contractSize": 1},
-              {"symbol": "PLTRSTOCK_USDT", "baseCoin": "PLTRSTOCK", "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true, "contractSize": 0.01}
+              {"symbol": "PLTRSTOCK_USDT", "baseCoin": "PLTRSTOCK", "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true, "contractSize": 0.01},
+              {"symbol": "XAU_USDT",       "baseCoin": "XAU",  "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true,  "contractSize": 0.001, "conceptPlate": ["mc-trade-zone-metals", "mc-trade-zone-tradfi"]},
+              {"symbol": "USOIL_USDT",     "baseCoin": "USOIL", "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true, "contractSize": 0.1, "conceptPlate": ["mc-trade-zone-OIL", "mc-trade-zone-tradfi"]},
+              {"symbol": "NVIDIA_USDT",    "baseCoin": "NVIDIA", "quoteCoin": "USDT", "futureType": 1, "state": 0, "apiAllowed": true, "contractSize": 0.01, "conceptPlate": ["mc-trade-zone-Stock", "mc-trade-zone-tradfi"]}
             ]
             """;
 
@@ -47,7 +50,7 @@ class MexcInstrumentSourceTest {
     }
 
     @Test
-    @DisplayName("USDT ∧ perpetual ∧ enabled ∧ apiAllowed ∧ not a tokenized stock; a missing state is not 'enabled'")
+    @DisplayName("USDT ∧ perpetual ∧ enabled ∧ apiAllowed ∧ not TradFi (tag or STOCK suffix); a missing state is not 'enabled'")
     void policy() {
         List<InstrumentCandidate> result = source(parse(CONTRACTS)).fetch().get(Venue.MEXC_FUTURES);
 

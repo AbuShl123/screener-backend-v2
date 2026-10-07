@@ -2,6 +2,8 @@ package dev.abu.screener_backend.marketdata.adapter.mexc.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+import java.util.List;
+
 /**
  * One contract from MEXC's {@code GET /api/v1/contract/detail}. Only the fields discovery needs are
  * mapped; the response carries ~80 per contract.
@@ -18,6 +20,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * @param apiAllowed   whether the contract is open to API trading
  * @param contractSize base asset per contract, e.g. {@code 0.0001} for BTC_USDT. Depth quantities
  *                     are contract counts, so this is the instrument's quantity multiplier
+ * @param conceptPlate MEXC's sector tags, e.g. {@code ["mc-trade-zone-mainly", "mc-trade-zone-pow"]};
+ *                     {@code mc-trade-zone-tradfi} marks stocks, ETFs, indices, commodities and forex
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record MexcContractDto(
@@ -27,5 +31,6 @@ public record MexcContractDto(
         Integer futureType,
         Integer state,
         Boolean apiAllowed,
-        Double contractSize
+        Double contractSize,
+        List<String> conceptPlate
 ) {}

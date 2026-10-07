@@ -16,12 +16,15 @@ import java.util.Set;
  *
  * <h3>Inclusion policy</h3>
  * <pre>
- * futures = quoteCoin USDT ∧ futureType 1 (perpetual) ∧ state 0 (enabled) ∧ apiAllowed ∧ symbol not *STOCK_USDT
+ * futures = quoteCoin USDT ∧ futureType 1 (perpetual) ∧ state 0 (enabled) ∧ apiAllowed ∧ not TradFi
+ * TradFi  = conceptPlate ∋ mc-trade-zone-tradfi ∨ symbol *STOCK_USDT
  * </pre>
  * Hardcoded, not configuration: it defines what the pipeline can handle, not a tunable — a non-USDT
- * quote, for one, needs different notional math. Tokenized-stock perpetuals ({@code PLTRSTOCK_USDT})
- * are a product decision instead: they track equities, not crypto, and are about a third of the
- * universe. No field marks them, so the name suffix is the filter. The exchange-agnostic exclusion list
+ * quote, for one, needs different notional math. TradFi perpetuals (stocks, ETFs, indices,
+ * commodities, forex) are a product decision instead: they track traditional markets, not crypto,
+ * and are over 40% of the universe. MEXC tags them with the {@code mc-trade-zone-tradfi} sector, which
+ * catches names like {@code XAU_USDT}, {@code USOIL_USDT} or {@code NVIDIA_USDT}; the
+ * {@code *STOCK_USDT} suffix stays as a backstop for the odd untagged tokenized stock. The exchange-agnostic exclusion list
  * ({@code screener.discovery.excluded-symbols}) is applied afterwards by core's
  * {@code InstrumentUniverseService}, so the count logged here includes excluded contracts.
  *
@@ -40,6 +43,7 @@ public class MexcInstrumentSource implements InstrumentSource {
     private static final int PERPETUAL = 1;
     private static final int STATE_ENABLED = 0;
     private static final String TOKENIZED_STOCK_SUFFIX = "STOCK_" + QUOTE_COIN;
+    private static final String TRADFI_PLATE = "mc-trade-zone-tradfi";
 
     private final MexcFuturesRestClient client;
 
@@ -84,11 +88,12 @@ public class MexcInstrumentSource implements InstrumentSource {
                 && Integer.valueOf(PERPETUAL).equals(contract.futureType())
                 && Integer.valueOf(STATE_ENABLED).equals(contract.state())
                 && Boolean.TRUE.equals(contract.apiAllowed())
-                && !isTokenizedStock(contract);
+                && !isTradFi(contract);
     }
 
-    private static boolean isTokenizedStock(MexcContractDto contract) {
-        return contract.symbol() != null && contract.symbol().endsWith(TOKENIZED_STOCK_SUFFIX);
+    private static boolean isTradFi(MexcContractDto contract) {
+        return (contract.conceptPlate() != null && contract.conceptPlate().contains(TRADFI_PLATE))
+                || (contract.symbol() != null && contract.symbol().endsWith(TOKENIZED_STOCK_SUFFIX));
     }
 
     /**
