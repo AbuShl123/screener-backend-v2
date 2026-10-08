@@ -68,17 +68,15 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     }
 
     /**
-     * {@link VenueProperties#maxVisibleDistance} of every enabled venue that sets one. A venue
-     * missing from the map has no cap.
+     * The config block of every enabled venue, e.g. for the classifier's per-venue cap and level
+     * filter. A disabled venue is missing from the map.
      */
-    public Map<Venue, Double> maxVisibleDistances() {
-        Map<Venue, Double> caps = new EnumMap<>(Venue.class);
+    public Map<Venue, VenueProperties> enabledVenues() {
+        Map<Venue, VenueProperties> enabled = new EnumMap<>(Venue.class);
         for (Venue v : Venue.values()) {
-            if (!isEnabled(v)) continue;
-            Double cap = venue(v).maxVisibleDistance();
-            if (cap != null) caps.put(v, cap);
+            if (isEnabled(v)) enabled.put(v, venue(v));
         }
-        return caps;
+        return enabled;
     }
 
     /**

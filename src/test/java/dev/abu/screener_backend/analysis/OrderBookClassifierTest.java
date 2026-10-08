@@ -11,11 +11,13 @@ import dev.abu.screener_backend.feed.depth.OrderBookUpdate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -168,7 +170,7 @@ class OrderBookClassifierTest {
     void visibilityCapIsPerVenue() {
         OrderBookFeedStore global = new OrderBookFeedStore();
         OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(),
-                Map.of(Venue.MEXC_FUTURES, 0.01));
+                Map.of(Venue.MEXC_FUTURES, VenueClassification.capped(0.01)));
         UserClassificationContext ctx = new UserClassificationContext(UUID.randomUUID(),
                 new UserClassificationRules(Map.of("XYZUSDT:FUTURES", ThresholdClassificationRule.of(List.of(
                         new ThresholdClassificationRule.TierThreshold(1, 100_000, 0.05))))),
@@ -194,7 +196,7 @@ class OrderBookClassifierTest {
     void levelsInsideVisibilityCapClassify() {
         OrderBookFeedStore global = new OrderBookFeedStore();
         OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(),
-                Map.of(Venue.MEXC_FUTURES, 0.01));
+                Map.of(Venue.MEXC_FUTURES, VenueClassification.capped(0.01)));
 
         OrderBook ob = bookWithFarWall();
         ob.applyLevel(false, 100_500.0, 20.0, T0); // ~$2M at 0.5%: tier 3
@@ -206,5 +208,33 @@ class OrderBookClassifierTest {
         assertEquals(100_500.0, update.asks()[0].price());
         assertEquals(3, update.asks()[0].tier());
         assertNull(update.asks()[1]); // the 3% wall stays hidden
+    }
+
+    @Test
+    @DisplayName("levels a venue's filter rejects free their slots, in the default and user passes alike")
+    void filteredLevelsFreeTheirSlots() {
+        // Seven tier-1+ asks; the filter rejects the two largest.
+        OrderBook ob = new OrderBook(0.1, 2.0);
+        ob.applyLevel(true, 99_990.0, 0.01, T0);
+        for (int i = 1; i <= 7; i++) ob.applyLevel(false, 100_000.0 + i * 10, i * 10.0, T0);
+        ob.computeDistance();
+        ob.markSynced();
+        LevelFilter rejectTwoLargest = (level, isBid, book, now) -> isBid || level.getKey() < 100_060.0;
+
+        OrderBookFeedStore global = new OrderBookFeedStore();
+        OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(),
+                Map.of(Venue.MEXC_FUTURES, new VenueClassification(0.01, rejectTwoLargest)));
+        UserClassificationContext ctx = contextWithRule("XYZUSDT:FUTURES");
+        classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
+
+        classifier.process(MEXC_XYZ, ob);
+
+        for (OrderBookUpdate update : List.of(global.getSnapshot().get(MEXC_XYZ.feedKey()),
+                ctx.feedStore().getSnapshot().get(MEXC_XYZ.feedKey()))) {
+            double[] prices = new double[OrderBookClassifier.TOP_LEVELS];
+            for (int i = 0; i < prices.length; i++) prices[i] = update.asks()[i].price();
+            Arrays.sort(prices);
+            assertArrayEquals(new double[]{100_010.0, 100_020.0, 100_030.0, 100_040.0, 100_050.0}, prices);
+        }
     }
 }

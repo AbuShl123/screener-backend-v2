@@ -81,7 +81,8 @@ import java.util.TreeMap;
  *       levels only, returning whether that side is visible (anything was selected). Because both
  *       maps iterate in monotonically increasing distance order, it early-breaks at the first
  *       level beyond {@link ClassificationRule#maxDistance}, past which every level is tier 0.
- *       The venue's visibility cap (see below) can stop it earlier.</li>
+ *       The venue's visibility cap (see below) can stop it earlier, and the venue's level filter
+ *       can skip a level.</li>
  *   <li>{@link #applyNewOrders applyNewOrders} writes the selected entries into the persistent
  *       {@code workBids}/{@code workAsks} arrays, allocating a {@link ClassifiedLevel} only when
  *       a slot's value actually changed.</li>
@@ -92,12 +93,18 @@ import java.util.TreeMap;
  * book is LOW and the apply stage is skipped entirely — <b>no {@link ClassifiedLevel} is
  * allocated for the LOW majority of books</b>, which is the dominant GC win.
  *
- * <h2>Per-venue visibility cap</h2>
- * A venue may set {@code max-visible-distance}: levels further from mid are never classified, in
- * the default pass or any user pass, whatever the rule's own distances. MEXC uses it (1%) because
- * its walls beyond that are market-maker ladders. It is a classifier cap and not a tighter
- * {@code price-filter-threshold}, because that filter deletes levels from the book, and a deleted
- * level is lost until the venue re-sends it.
+ * <h2>Per-venue classification</h2>
+ * The tier rules are the same on every venue; what varies is each venue's
+ * {@link VenueClassification}, applied in the default pass and every user pass alike:
+ * <ul>
+ *   <li><b>Visibility cap</b> ({@code max-visible-distance}): levels further from mid are never
+ *       classified, whatever the rule's own distances. MEXC uses it (1%) because its walls beyond
+ *       that are market-maker ladders. It is a classifier cap and not a tighter
+ *       {@code price-filter-threshold}, because that filter deletes levels from the book, and a
+ *       deleted level is lost until the venue re-sends it.</li>
+ *   <li><b>Level filter</b> ({@link LevelFilter}): a tier-&ge;1 level inside the cap that the
+ *       filter rejects never takes a top-K slot, so the next level that passes takes it.</li>
+ * </ul>
  */
 public class OrderBookClassifier {
 
@@ -110,8 +117,9 @@ public class OrderBookClassifier {
     private final DefaultClassificationRule defaultRule;
     private final Map<String, SymbolState> defaultStates = new HashMap<>();
 
-    /// Every venue has an entry (no cap = +∞), so the hot-path get never misses or boxes.
-    private final EnumMap<Venue, Double> maxVisibleDistances = new EnumMap<>(Venue.class);
+    /// Every venue has an entry ({@link VenueClassification#NONE} by default), so the hot-path get
+    /// never misses.
+    private final EnumMap<Venue, VenueClassification> venueClassifications = new EnumMap<>(Venue.class);
 
     /// Swapped atomically (never mutated in place) by the WebSocket connect/disconnect path via
     /// DisruptorShardManager.setActiveUserContexts(...).
@@ -119,15 +127,15 @@ public class OrderBookClassifier {
     private volatile UserClassificationContext[] activeUserContexts = EMPTY;
 
     /**
-     * @param maxVisibleDistances per-venue visibility cap as a fraction of mid; a venue absent from
-     *                            the map is uncapped
+     * @param venueClassifications per-venue cap and level filter; a venue absent from the map gets
+     *                             {@link VenueClassification#NONE}
      */
     public OrderBookClassifier(OrderBookFeedStore feedStore, DefaultClassificationRule defaultRule,
-                               Map<Venue, Double> maxVisibleDistances) {
+                               Map<Venue, VenueClassification> venueClassifications) {
         this.feedStore   = feedStore;
         this.defaultRule = defaultRule;
         for (Venue v : Venue.values()) {
-            this.maxVisibleDistances.put(v, maxVisibleDistances.getOrDefault(v, Double.POSITIVE_INFINITY));
+            this.venueClassifications.put(v, venueClassifications.getOrDefault(v, VenueClassification.NONE));
         }
     }
 
@@ -136,13 +144,12 @@ public class OrderBookClassifier {
         String stateKey = inst.feedKey();                                  // venue-specific, precomputed
         String ruleKey  = inst.ruleKey();                                  // venue-agnostic, precomputed
         boolean highLiquidity = defaultRule.isHighLiquidity(inst.symbol()); // computed ONCE per book
-        double visibleCap = maxVisibleDistances.get(inst.venue());          // applies to every pass
-
-        // TODO: parallel classification for default and per-user rules
+        VenueClassification venue = venueClassifications.get(inst.venue()); // applies to every pass
+        long nowMillis = System.currentTimeMillis();                        // one clock read per book
 
         // Pass 1 — default, always.
         SymbolState defaultState = defaultStates.computeIfAbsent(stateKey, k -> new SymbolState());
-        classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity, visibleCap);
+        classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity, venue, nowMillis);
 
         // Pass 2 — per user, only if any context is active. A rule applies on every exchange,
         // but each exchange's book keeps its own state and feed entry.
@@ -151,7 +158,7 @@ public class OrderBookClassifier {
             ThresholdClassificationRule rule = ctx.rule().ruleFor(ruleKey);
             if (rule != null) {
                 SymbolState state = ctx.states().computeIfAbsent(stateKey, k -> new SymbolState());
-                classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity, visibleCap);
+                classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity, venue, nowMillis);
             }
         }
     }
@@ -168,7 +175,8 @@ public class OrderBookClassifier {
             ClassificationRule rule,
             OrderBookFeedStore feedStore,
             boolean highLiquidity,
-            double visibleCap
+            VenueClassification venue,
+            long nowMillis
     ) {
         if (ob.getState() != OrderBookState.SYNCED) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
@@ -189,8 +197,8 @@ public class OrderBookClassifier {
         }
 
         // Computing best K bids and asks
-        boolean bidVisible = selectTopK(bids, state.bidScratch, rule, highLiquidity, visibleCap);
-        boolean askVisible = selectTopK(asks, state.askScratch, rule, highLiquidity, visibleCap);
+        boolean bidVisible = selectTopK(bids, true,  ob, state.bidScratch, rule, highLiquidity, venue, nowMillis);
+        boolean askVisible = selectTopK(asks, false, ob, state.askScratch, rule, highLiquidity, venue, nowMillis);
 
         // No visible tiers? Then no need to update working bids/asks in the state
         if (!bidVisible && !askVisible) {
@@ -216,15 +224,18 @@ public class OrderBookClassifier {
      * Iterates all entries in {@code levels} (best→worst by distance) and selects the top
      * {@value #TOP_LEVELS} tier-&ge;1 levels by (tier DESC, notional DESC, distance ASC) into
      * {@code s}. Tier-0 levels are never selected. Returns {@code true} if the side is visible,
-     * i.e. at least one level was selected. Levels beyond {@code visibleCap} are never selected.
+     * i.e. at least one level was selected. Levels beyond the venue's visibility cap, or rejected by
+     * its level filter, are never selected.
      */
     private boolean selectTopK(
-            TreeMap<Double, PriceLevelEntry> levels,
+            TreeMap<Double, PriceLevelEntry> levels, boolean isBid, OrderBook ob,
             SymbolState.Scratch s,
-            ClassificationRule rule, boolean highLiquidity, double visibleCap
+            ClassificationRule rule, boolean highLiquidity,
+            VenueClassification venue, long nowMillis
     ) {
         s.topCount = 0;
-        double maxDist = Math.min(rule.maxDistance(highLiquidity), visibleCap);
+        double maxDist = Math.min(rule.maxDistance(highLiquidity), venue.maxVisibleDistance());
+        LevelFilter filter = venue.filter();
 
         for (Map.Entry<Double, PriceLevelEntry> e : levels.entrySet()) {
             double distance = e.getValue().distance;
@@ -237,6 +248,9 @@ public class OrderBookClassifier {
             double notional = e.getKey() * e.getValue().quantity;
             int tier = rule.computeTier(notional, distance, highLiquidity);
             if (tier == 0) continue; // tier-0 levels are never sent to clients
+            // After the tier check only because it is cheaper; both must pass. A rejected level
+            // never takes a slot, so the next level that passes can.
+            if (!filter.accept(e, isBid, ob, nowMillis)) continue;
             tryInsert(s, e, tier, notional, distance);
         }
 

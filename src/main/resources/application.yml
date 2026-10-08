@@ -41,7 +41,7 @@ screener:
 
   exchanges:
     binance:
-      enabled: ${BINANCE_ENABLED:true}
+      enabled: ${BINANCE_ENABLED:false}
       # Core snapshot request queue, one per Binance venue, all shaped alike. max-batch-size also
       # caps how many books buffer diffs at once. batch-timeout is a safety net for a batch that
       # never completes and must exceed every venue's rest.response-timeout.
