@@ -387,7 +387,7 @@ class InstrumentUniverseServiceTest {
         private final List<String> calls;
 
         RecordingSlotTable(List<String> calls) {
-            super(new OrderbookProperties(0.1), new SyncStrategyRegistry(List.of(
+            super(new OrderbookProperties(0.1, 2.0), new SyncStrategyRegistry(List.of(
                     new VenueStrategyBinding(Venue.BINANCE_SPOT, new NoopStrategy()),
                     new VenueStrategyBinding(Venue.BINANCE_FUTURES, new NoopStrategy()))));
             this.calls = calls;

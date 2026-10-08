@@ -17,6 +17,9 @@ public class OrderBook {
 
     private final double filterThreshold;
 
+    /** Growth over the level's lowest quantity since its last reset that resets {@code firstSeenMillis}. */
+    private final double ageResetGrowth;
+
     /** Live bids TreeMap. Must only be accessed by this shard's consumer thread. */
     @Getter
     private final TreeMap<Double, PriceLevelEntry> bids; // reverseOrder → firstKey() = best bid
@@ -25,8 +28,9 @@ public class OrderBook {
     @Getter
     private final TreeMap<Double, PriceLevelEntry> asks; // natural order → firstKey() = best ask
 
-    public OrderBook(double filterThreshold) {
+    public OrderBook(double filterThreshold, double ageResetGrowth) {
         this.filterThreshold = filterThreshold;
+        this.ageResetGrowth = ageResetGrowth;
         this.bids = new TreeMap<>(Comparator.reverseOrder());
         this.asks = new TreeMap<>();
     }
@@ -46,6 +50,11 @@ public class OrderBook {
     /**
      * Stores a price level into a tree set. If qty is 0, removes the price entry.
      * If an entry with a given price exists - updates the existing value.
+     * <p>
+     * {@code firstSeenMillis} is the age of the current order at this price, not of the price itself:
+     * it resets when the quantity grows to {@code ageResetGrowth} times the lowest quantity since the
+     * last reset (e.g. a large order placed on top of a small resting one, or pulled and re-placed).
+     * Shrinking never resets it — a wall being eaten by fills keeps its age.
      * @param isBid true if a given price level is a bid order, false otherwise
      * @param price order price
      * @param qty quantity being traded
@@ -61,6 +70,12 @@ public class OrderBook {
         if (entry == null) {
             map.put(price, new PriceLevelEntry(qty, millis));
         } else {
+            if (qty < entry.minQuantity) {
+                entry.minQuantity = qty;
+            } else if (qty >= entry.minQuantity * ageResetGrowth) {
+                entry.firstSeenMillis = millis;
+                entry.minQuantity = qty;
+            }
             entry.quantity = qty;
         }
     }

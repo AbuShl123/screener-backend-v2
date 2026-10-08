@@ -60,7 +60,7 @@ final class SyncTestSupport {
                     : new BinanceFuturesSyncStrategy(sink, metrics);
             this.slot = new BookSlot(
                     Instrument.of(1, venue, "BTCUSDT", "BTC", "USDT"),
-                    new OrderBook(filterThreshold),
+                    new OrderBook(filterThreshold, 2.0),
                     strategy,
                     strategy.newContext());
         }

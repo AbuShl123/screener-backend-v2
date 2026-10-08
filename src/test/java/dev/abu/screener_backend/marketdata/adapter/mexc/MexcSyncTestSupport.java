@@ -50,7 +50,7 @@ final class MexcSyncTestSupport {
             MexcFuturesSyncStrategy strategy = new MexcFuturesSyncStrategy(sink, metrics);
             this.slot = new BookSlot(
                     Instrument.of(1, VENUE, "BTC_USDT", "BTC", "USDT", contractSize),
-                    new OrderBook(FILTER),
+                    new OrderBook(FILTER, 2.0),
                     strategy,
                     strategy.newContext());
         }

@@ -54,7 +54,7 @@ class SnapshotRequestQueueTest {
 
     private static BookSlot slot(int id) {
         return new BookSlot(Instrument.of(id, VENUE, "S" + id + "USDT", "S" + id, "USDT"),
-                new OrderBook(0.1), null, null);
+                new OrderBook(0.1, 2.0), null, null);
     }
 
     private static List<Integer> ids(List<BookSlot> slots) {

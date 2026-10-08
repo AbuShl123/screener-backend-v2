@@ -105,7 +105,7 @@ class MexcSnapshotFetcherTest {
         for (int i = 0; i < symbols.length; i++) {
             String base = symbols[i].replace("_USDT", "");
             slots.add(new BookSlot(Instrument.of(i, Venue.MEXC_FUTURES, symbols[i], base, "USDT", 0.0001),
-                    new OrderBook(0.1), null, null));
+                    new OrderBook(0.1, 2.0), null, null));
         }
         return slots;
     }

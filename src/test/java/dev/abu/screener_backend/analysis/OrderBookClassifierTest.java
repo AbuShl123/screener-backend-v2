@@ -37,7 +37,7 @@ class OrderBookClassifierTest {
 
     /** A synced book around 100,000 with a ~$10M bid at the spread — visible under every rule here. */
     private static OrderBook syncedBook() {
-        OrderBook ob = new OrderBook(0.1);
+        OrderBook ob = new OrderBook(0.1, 2.0);
         ob.applyLevel(true, 99_990.0, 100.0, T0);
         ob.applyLevel(false, 100_010.0, 0.01, T0);
         ob.computeDistance();
@@ -154,7 +154,7 @@ class OrderBookClassifierTest {
      * the default (normal) rule, and nothing else qualifies.
      */
     private static OrderBook bookWithFarWall() {
-        OrderBook ob = new OrderBook(0.1);
+        OrderBook ob = new OrderBook(0.1, 2.0);
         ob.applyLevel(true, 99_990.0, 0.01, T0);
         ob.applyLevel(false, 100_010.0, 0.01, T0);
         ob.applyLevel(false, 103_000.0, 300.0, T0);

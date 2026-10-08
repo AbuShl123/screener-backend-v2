@@ -160,6 +160,9 @@ screener:
   orderbook:
     # Price levels further than this fraction from the mid-price are discarded to bound memory.
     price-filter-threshold: 0.1
+    # A level's firstSeenMillis resets when its quantity grows to this multiple of the lowest
+    # quantity since the last reset (a new order placed at the price). Shrinking never resets it.
+    age-reset-growth: 2.0
 
   disruptor:
     shard-count: 2

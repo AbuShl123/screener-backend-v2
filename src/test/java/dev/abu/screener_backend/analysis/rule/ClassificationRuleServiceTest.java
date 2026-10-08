@@ -68,7 +68,7 @@ class ClassificationRuleServiceTest {
                 stub(UserRepository.class),
                 instruments,
                 publisher,
-                new OrderbookProperties(0.3),
+                new OrderbookProperties(0.3, 2.0),
                 200);
     }
 

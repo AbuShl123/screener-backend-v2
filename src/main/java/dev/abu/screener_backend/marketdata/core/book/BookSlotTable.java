@@ -53,7 +53,7 @@ public class BookSlotTable {
             staging = Arrays.copyOf(staging, Math.max(id + 1, staging.length * 2));
         }
         DepthSyncStrategy strategy = strategyRegistry.forVenue(instrument.venue());
-        staging[id] = new BookSlot(instrument, new OrderBook(props.priceFilterThreshold()),
+        staging[id] = new BookSlot(instrument, new OrderBook(props.priceFilterThreshold(), props.ageResetGrowth()),
                 strategy, strategy.newContext());
     }
 
