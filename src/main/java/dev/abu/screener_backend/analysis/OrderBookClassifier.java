@@ -1,5 +1,6 @@
 package dev.abu.screener_backend.analysis;
 
+import dev.abu.screener_backend.analysis.filter.LevelFilter;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;

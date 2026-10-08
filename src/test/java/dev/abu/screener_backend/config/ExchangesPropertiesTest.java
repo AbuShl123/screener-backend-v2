@@ -3,6 +3,8 @@ package dev.abu.screener_backend.config;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.FingerprintProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.LevelFilterProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
@@ -35,7 +37,7 @@ class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
         RestProperties rest = new RestProperties("https://example", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1, 1, 100, 120, null);
+        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1, 1, 100, 120, null, null);
     }
 
     private static ExchangesProperties binance(boolean enabled, Market... markets) {
@@ -105,6 +107,10 @@ class ExchangesPropertiesTest {
 
         assertEquals(0.01, props.venue(Venue.MEXC_FUTURES).maxVisibleDistance());
         assertNull(props.venue(Venue.BINANCE_FUTURES).maxVisibleDistance());
+        assertEquals(new LevelFilterProperties(Duration.ofSeconds(30), new FingerprintProperties(0.02, 0.001, 0.01, 0.25)),
+                props.venue(Venue.MEXC_FUTURES).levelFilter());
+        assertNull(props.venue(Venue.BINANCE_SPOT).levelFilter());
+        assertNull(props.venue(Venue.BINANCE_FUTURES).levelFilter());
         assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
         assertTrue(props.isEnabled(Venue.BINANCE_FUTURES));
         assertFalse(props.isEnabled(Venue.MEXC_FUTURES));

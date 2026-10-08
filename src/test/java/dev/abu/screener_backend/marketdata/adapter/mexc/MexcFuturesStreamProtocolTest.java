@@ -33,7 +33,7 @@ class MexcFuturesStreamProtocolTest {
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
     private static VenueProperties props(String topic, int chunkSize) {
-        return new VenueProperties("wss://x", REST, topic, 300, 1, 8, chunkSize, 15, null);
+        return new VenueProperties("wss://x", REST, topic, 300, 1, 8, chunkSize, 15, null, null);
     }
 
     private static final MexcFuturesStreamProtocol PROTOCOL =

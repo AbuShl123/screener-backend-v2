@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.analysis;
 
+import dev.abu.screener_backend.analysis.filter.LevelFilter;
+import dev.abu.screener_backend.analysis.filter.MinAgeFilter;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.InstrumentTest;
 import dev.abu.screener_backend.marketdata.Venue;
@@ -11,6 +13,7 @@ import dev.abu.screener_backend.feed.depth.OrderBookUpdate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -231,10 +234,65 @@ class OrderBookClassifierTest {
 
         for (OrderBookUpdate update : List.of(global.getSnapshot().get(MEXC_XYZ.feedKey()),
                 ctx.feedStore().getSnapshot().get(MEXC_XYZ.feedKey()))) {
-            double[] prices = new double[OrderBookClassifier.TOP_LEVELS];
-            for (int i = 0; i < prices.length; i++) prices[i] = update.asks()[i].price();
-            Arrays.sort(prices);
-            assertArrayEquals(new double[]{100_010.0, 100_020.0, 100_030.0, 100_040.0, 100_050.0}, prices);
+            assertArrayEquals(new double[]{100_010.0, 100_020.0, 100_030.0, 100_040.0, 100_050.0},
+                    sortedAskPrices(update));
         }
+    }
+
+    /** The ask prices of {@code update}'s top 5, sorted. */
+    private static double[] sortedAskPrices(OrderBookUpdate update) {
+        double[] prices = new double[OrderBookClassifier.TOP_LEVELS];
+        for (int i = 0; i < prices.length; i++) prices[i] = update.asks()[i].price();
+        Arrays.sort(prices);
+        return prices;
+    }
+
+    @Test
+    @DisplayName("with the five largest levels too young, the next five fill the top 5 on the filtered venue only")
+    void minAgeFilterPassesOlderLevels() {
+        // Ten tier-1+ asks inside 1%: the five largest just placed, the five smaller ones a minute old.
+        long now = System.currentTimeMillis();
+        OrderBook ob = new OrderBook(0.1, 2.0);
+        ob.applyLevel(true, 99_990.0, 0.01, now - 60_000);
+        for (int i = 1; i <= 10; i++) {
+            ob.applyLevel(false, 100_000.0 + i * 10, i * 10.0, i <= 5 ? now - 60_000 : now);
+        }
+        ob.computeDistance();
+        ob.markSynced();
+
+        OrderBookFeedStore global = new OrderBookFeedStore();
+        OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(),
+                Map.of(Venue.MEXC_FUTURES, new VenueClassification(0.01, new MinAgeFilter(Duration.ofSeconds(30)))));
+        UserClassificationContext ctx = contextWithRule("XYZUSDT:FUTURES");
+        classifier.setActiveUserContexts(new UserClassificationContext[]{ctx});
+
+        classifier.process(MEXC_XYZ, ob);
+        classifier.process(BINANCE_XYZ, ob);
+
+        double[] old = {100_010.0, 100_020.0, 100_030.0, 100_040.0, 100_050.0};
+        double[] largest = {100_060.0, 100_070.0, 100_080.0, 100_090.0, 100_100.0};
+        assertArrayEquals(old, sortedAskPrices(global.getSnapshot().get(MEXC_XYZ.feedKey())));
+        assertArrayEquals(old, sortedAskPrices(ctx.feedStore().getSnapshot().get(MEXC_XYZ.feedKey())));
+        assertArrayEquals(largest, sortedAskPrices(global.getSnapshot().get(BINANCE_XYZ.feedKey())));
+        assertArrayEquals(largest, sortedAskPrices(ctx.feedStore().getSnapshot().get(BINANCE_XYZ.feedKey())));
+    }
+
+    @Test
+    @DisplayName("a book whose every tier-1+ level is filtered out is LOW and emits nothing")
+    void fullyFilteredBookIsLow() {
+        long now = System.currentTimeMillis();
+        OrderBook ob = new OrderBook(0.1, 2.0);
+        ob.applyLevel(true, 99_990.0, 100.0, now);  // ~$10M, just placed
+        ob.applyLevel(false, 100_010.0, 0.01, now);
+        ob.computeDistance();
+        ob.markSynced();
+
+        OrderBookFeedStore global = new OrderBookFeedStore();
+        OrderBookClassifier classifier = new OrderBookClassifier(global, new DefaultClassificationRule(),
+                Map.of(Venue.MEXC_FUTURES, new VenueClassification(0.01, new MinAgeFilter(Duration.ofSeconds(30)))));
+
+        classifier.process(MEXC_XYZ, ob);
+
+        assertNull(global.getSnapshot().get(MEXC_XYZ.feedKey()));
     }
 }

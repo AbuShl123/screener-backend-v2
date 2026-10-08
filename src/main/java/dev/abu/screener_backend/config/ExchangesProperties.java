@@ -139,6 +139,8 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
      *                                 {@code screener.orderbook.price-filter-threshold}: that bound
      *                                 deletes levels, and a deleted level that drifts back in range is
      *                                 missing until the venue re-sends it, so it must stay wide
+     * @param levelFilter              conditions this venue's levels must meet to be classified, by the
+     *                                 default rule or any user rule; {@code null} means no filtering
      */
     public record VenueProperties(
             String streamUrl,
@@ -149,7 +151,8 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
             int maxConnections,
             int subscribeChunkSize,
             int heartbeatIntervalSeconds,
-            Double maxVisibleDistance
+            Double maxVisibleDistance,
+            LevelFilterProperties levelFilter
     ) {
         public static final String SYMBOL_PLACEHOLDER = "{symbol}";
 
@@ -173,6 +176,52 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
          */
         public String streamTopic(String symbol) {
             return streamTopic.replace(SYMBOL_PLACEHOLDER, symbol);
+        }
+
+        /**
+         * The venue's level filters ({@code analysis.filter}). Each one is optional; absent means off.
+         *
+         * @param minAge      how long a level's current order must have sat at its price
+         * @param fingerprint exact market-maker fingerprints to reject
+         */
+        public record LevelFilterProperties(Duration minAge, FingerprintProperties fingerprint) {
+            public LevelFilterProperties {
+                if (minAge != null && !minAge.isPositive()) {
+                    throw new IllegalArgumentException("level-filter.min-age must be positive, got: " + minAge);
+                }
+            }
+        }
+
+        /**
+         * Tolerances are fractions of the candidate level's own value ({@code 0.001} = 0.1%). All four
+         * are required when the block is present.
+         *
+         * @param twinMaxDistance         fraction of mid within which a same-side level with the same
+         *                                quantity counts as a twin
+         * @param twinQuantityTolerance   quantity difference that still counts as the same quantity
+         * @param mirrorNotionalTolerance notional difference that still counts as a mirror on the other side
+         * @param mirrorDistanceTolerance distance-from-mid difference that still counts as a mirror
+         */
+        public record FingerprintProperties(
+                double twinMaxDistance,
+                double twinQuantityTolerance,
+                double mirrorNotionalTolerance,
+                double mirrorDistanceTolerance
+        ) {
+            public FingerprintProperties {
+                requirePositive("twin-max-distance", twinMaxDistance);
+                requirePositive("twin-quantity-tolerance", twinQuantityTolerance);
+                requirePositive("mirror-notional-tolerance", mirrorNotionalTolerance);
+                requirePositive("mirror-distance-tolerance", mirrorDistanceTolerance);
+            }
+
+            private static void requirePositive(String name, double value) {
+                // A missing key binds as 0, so this also catches an incomplete block.
+                if (!(value > 0 && Double.isFinite(value))) {
+                    throw new IllegalArgumentException("level-filter.fingerprint." + name
+                            + " must be positive and finite, got: " + value);
+                }
+            }
         }
 
         /**

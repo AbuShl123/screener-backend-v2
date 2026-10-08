@@ -137,6 +137,21 @@ screener:
           # book itself still keeps levels out to screener.orderbook.price-filter-threshold.
           # Absent = no cap (Binance). See .claude/plans/mexc-feed-noise.md.
           max-visible-distance: 0.01
+          # Conditions a level inside the cap must meet to be classified (default and user rules); a
+          # rejected level frees its top-5 slot. Each part is optional; remove the block to turn the
+          # filtering off. See .claude/plans/mexc-noise-reduction/mexc-filter-v1.md.
+          level-filter:
+            # The level's current order has sat at its price this long (firstSeenMillis, which
+            # resets when the quantity doubles). MM quotes follow mid and rarely stay put.
+            min-age: PT30S
+            # Exact MM fingerprints. Tolerances are fractions of the candidate's own value.
+            fingerprint:
+              # A same-side level within this fraction of mid with the same quantity (±0.1%).
+              twin-max-distance: 0.02
+              twin-quantity-tolerance: 0.001
+              # An other-side level with the same notional (±1%) at a similar distance (±25%).
+              mirror-notional-tolerance: 0.01
+              mirror-distance-tolerance: 0.25
 
   discovery:
     # Per-source wait on each universe refresh. A source that overruns is cancelled and its venues

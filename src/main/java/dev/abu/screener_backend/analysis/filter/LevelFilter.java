@@ -1,5 +1,6 @@
-package dev.abu.screener_backend.analysis;
+package dev.abu.screener_backend.analysis.filter;
 
+import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
 
