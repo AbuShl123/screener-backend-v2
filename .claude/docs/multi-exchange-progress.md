@@ -1,7 +1,7 @@
 # Market-Data Pipeline — Current State
 
-**As of**: 2026-10-04, branch `feature/multi-exchange` (after the `exchange/` → `marketdata/` package
-restructure).
+**As of**: 2026-10-10, branch `feature/mexc-spot` (MEXC spot added, with the binary-frame path in
+core).
 
 This file describes the market-data pipeline as the code stands: what exists, how it fits together,
 what each adapter does, and what is still missing. It ends at a `SYNCED` local order book.
@@ -16,18 +16,16 @@ All paths below are relative to `src/main/java/dev/abu/screener_backend/marketda
 
 | Venue | Adapter | Default | Live-verified |
 |---|---|---|---|
-| `BINANCE_SPOT` | `adapter/binance/` | enabled (`BINANCE_ENABLED`) | yes: ~354 books `SYNCED` ~2 min after start, held |
-| `BINANCE_FUTURES` | `adapter/binance/` | enabled (`BINANCE_ENABLED`) | yes: ~525 books `SYNCED` ~2.5 min after start, held |
-| `MEXC_FUTURES` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED`, until Phase 5 of `.claude/plans/mexc-impl-plan.md`) | yes: ~678 books `SYNCED` ~3.5 min after the sockets open; zero steady-state resyncs over 25–40 min runs |
-
-MEXC spot has no `Venue` constant and no adapter, because its stream is Protobuf and the pipeline
-only handles text.
+| `BINANCE_SPOT` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_SPOT_ENABLED`) | yes: ~354 books `SYNCED` ~2 min after start, held |
+| `BINANCE_FUTURES` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_FUTURES_ENABLED`) | yes: ~525 books `SYNCED` ~2.5 min after start, held |
+| `MEXC_SPOT` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_SPOT_ENABLED`) | yes (2026-10-10 local run): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures |
+| `MEXC_FUTURES` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_FUTURES_ENABLED`, until Phase 5 of `.claude/plans/mexc-impl-plan.md`) | yes: ~678 books `SYNCED` ~3.5 min after the sockets open; zero steady-state resyncs over 25–40 min runs |
 
 | Area | State |
 |---|---|
 | Identity (`Venue`, `Instrument`, dense ids, `BookSlotTable`) | Done |
-| Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC futures) |
-| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done |
+| Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC spot, MEXC futures) |
+| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames |
 | Snapshot recovery (core queue + per-venue `SnapshotFetcher`) | Done |
 | Discovery (`InstrumentSource` per exchange, merged by core) | Done; no startup retry (§12) |
 | Config consolidation under `screener.exchanges.*` | Partial: `screener.orderbook.*` and `screener.websocket.*` still sit outside it |
@@ -69,7 +67,7 @@ marketdata/
 ### 3.1 Types
 
 - **`Venue = (Exchange, Market)`** is the adapter unit: `BINANCE_SPOT`, `BINANCE_FUTURES`,
-  `MEXC_FUTURES`. `Market` stays the persistence- and API-facing type. `Venue.of(exchange, market)`
+  `MEXC_SPOT`, `MEXC_FUTURES`. `Market` stays the persistence- and API-facing type. `Venue.of(exchange, market)`
   bridges the two.
 - **`Instrument`** (record) is one tradable pair on one venue: `id`, `venue`, `nativeSymbol`, `base`,
   `quote`, `quantityMultiplier`, plus four strings precomputed once:
@@ -81,8 +79,8 @@ marketdata/
   | `feedKey` | `MEXC:FUTURES:BTCUSDT` | venue-specific classification state and feed-store entries |
   | `logName` | `MEXC_FUTURES/BTC_USDT` | log lines only |
 
-  `quantityMultiplier` converts wire quantity to base asset. It is 1.0 on Binance and the contract
-  size on MEXC futures. Strategies apply it at parse time, so every `OrderBook` holds base asset.
+  `quantityMultiplier` converts wire quantity to base asset. It is 1.0 on Binance and MEXC spot, and
+  the contract size on MEXC futures. Strategies apply it at parse time, so every `OrderBook` holds base asset.
 - **`InstrumentRegistry`** hands out dense `int` ids. They are **dense** (`[0, everRegistered)`), so
   the book store can be an array. They are **stable**: re-registering returns the same id. They are
   **never transferred**: a delisted id is left as a hole. They are **never persisted**:
@@ -100,8 +98,15 @@ brings the pipeline up.
 `InstrumentUniverseService` is exchange-agnostic. It merges every `InstrumentSource` bean:
 
 - **At construction**, it validates source claims. Each claims a non-empty set of venues of one
-  exchange, and no venue is claimed twice. A source whose venues are all disabled is skipped. A
-  partly-enabled source is a startup error.
+  exchange, and no venue is claimed twice. A source whose venues are all disabled is skipped.
+- **Per-venue switch**: a partly enabled source (e.g. MEXC with `MEXC_FUTURES_ENABLED=false`) is
+  still fetched in full, and its result must still cover its whole claim. Core then keeps only the
+  enabled venues: a disabled venue is never registered, gets no book slots, never enters the
+  added/removed diff or the event, so it gets no WebSocket pool and is absent from `/api/tickers`.
+  Sources never learn the switches. Cross-venue inclusion rules (spot ⊆ futures) therefore select
+  the same universe for a venue whatever its sibling's switch says, at the cost of one extra REST
+  call per refresh, and spot discovery still depends on the futures endpoint: if it fails, the
+  source fails as a whole and spot retains its previous universe.
 - **On refresh**, it fetches every source concurrently on virtual threads under one
   `screener.discovery.source-timeout` deadline. Failure is **isolated per source**: a source that
   throws, times out, returns the wrong venues or empties a previously non-empty venue keeps its
@@ -125,10 +130,10 @@ process-local and must never be used as an identity.
 ## 4. Threads and data flow
 
 ```
- venue WS ──► StreamConnection.onMessage (reader thread, one per connection)
+ venue WS ──► StreamConnection.onMessage(String | ByteBuffer)  (reader thread, one per connection)
                 │  protocol.route(frame, SubscriptionIndex) → instrument id
                 ▼
-            DepthEventPublisher.publishFrame ──► ring[id & (shards-1)]  (WS_MSG)
+            DepthEventPublisher.publishFrame ──► ring[id & (shards-1)]  (WS_MSG, rawJson | rawBytes)
                                                       │
  snapshot-queue thread ──► SnapshotFetcher.fetchAll   │
                 │  HTTP threads report each slot      │
@@ -168,7 +173,7 @@ fill-and-publish site, so an instrument's events can never split across shards.
 | `RecoverySink` | interface | `boolean requestRecovery(slot)`; `false` = refused, ask again later |
 | `SnapshotFetcher` | interface | `isAcceptingRequests()` (hot, volatile reads only) + `fetchAll(batch, outcome)` |
 | `SnapshotOutcome` | interface, core-implemented | `delivered(slot, body)` / `failed(slot)` |
-| `StreamProtocol` | interface | `subscribeFrame`, `routingKey`, `route` (hot), `heartbeat` |
+| `StreamProtocol` | interface | `subscribeFrame`, `routingKey`, `route(String)` and `route(ByteBuffer)` (hot; the binary one defaults to `IGNORED`), `heartbeat` |
 | `Heartbeat` | sealed | `ProtocolPing(interval)` (WS control frame) or `TextPing(interval, payload)` |
 | `InstrumentSource` | interface | `venues()` + blocking `fetch()` → `Map<Venue, List<InstrumentCandidate>>` |
 | `InstrumentCandidate` | record | `nativeSymbol, base, quote, quantityMultiplier` (validated positive and finite) |
@@ -204,22 +209,35 @@ that does this. Removing it fails the context.
 - **`ConnectionPool`** splits a venue's instruments evenly over
   `clamp(ceil(streams / max-streams-per-connection), min-connections, max-connections)` connections.
 - **`StreamConnection`** (a java-websocket `WebSocketClient`) sends subscribe frames on open, chunked
-  by `subscribe-chunk-size` and built by the protocol. It routes each text frame through
-  `protocol.route` and publishes it (`PipelineMetrics.recordFrame`). It schedules the protocol's
-  heartbeat. It reconnects with exponential backoff (`screener.websocket.reconnect-*`) and
-  resubscribes everything. Frames for an unsubscribed key and **binary frames** are dropped with a
-  rate-limited WARN.
+  by `subscribe-chunk-size` and built by the protocol. It routes each frame, text or binary, through
+  the matching `protocol.route` overload and publishes it (`PipelineMetrics.recordFrame`). It
+  schedules the protocol's heartbeat. It reconnects with exponential backoff
+  (`screener.websocket.reconnect-*`) and resubscribes everything. A frame for an unsubscribed key
+  (text or binary) and a binary frame the protocol returns `IGNORED` for are dropped with a
+  rate-limited WARN. Venues send control frames as text, so an ignored binary frame is always an
+  anomaly: a text venue that switched encoding, or a binary push the protocol could not read.
+- **Binary frames are published without a copy.** Java-WebSocket allocates a fresh payload
+  `ByteBuffer` per frame, so the routed buffer goes into the ring as-is
+  (`JavaWebSocketBufferOwnershipTest` pins this; a library upgrade that reuses buffers would corrupt
+  books silently). The reader thread routes the buffer and the shard thread parses it later, so both
+  read with **absolute indexes** and never move `position` or `limit`.
 - **`SubscriptionIndex`** is the per-connection `routingKey → id` map (`HashMap`, one `substring` per
-  frame). It rejects two instruments sharing a key on one connection.
+  text frame). `resolve(ByteBuffer, start, end)` is the binary twin: it decodes the key range as
+  **UTF-8**, not ASCII, because MEXC spot lists CJK symbols (`龙虾USDT`). It rejects two instruments
+  sharing a key on one connection.
 
 ### 6.2 `core/ingress/` — Disruptor
 
 - `DisruptorShardManager`: N shards, each a `Disruptor<DepthEvent>` with `ProducerType.MULTI`,
   `BlockingWaitStrategy`, `ring-buffer-size` slots, one consumer thread and its own
   `OrderBookClassifier`.
-- `DepthEvent` is a reused mutable slot: `type`, `instrumentId`, `rawJson`.
-- `EventType` records **provenance, not semantics**: `WS_MSG`, `REST_MSG`, `REST_FAILED` (null
-  body). Whether a payload is a snapshot is the strategy's call. Neither REST type may ever be
+- `DepthEvent` is a reused mutable slot: `type`, `instrumentId`, and at most one payload: `rawJson`
+  (a text frame or a REST body) or `rawBytes` (a binary frame). The publisher writes both fields on
+  every claim, so a stale payload cannot leak from the slot's previous use.
+- `EventType` records **provenance, not semantics** or encoding: `WS_MSG`, `REST_MSG`, `REST_FAILED`
+  (no payload). A venue's `WS_MSG` is always text or always binary, fixed by its wire protocol, so
+  its strategy reads the right field without checking. Whether a payload is a snapshot is the
+  strategy's call. Neither REST type may ever be
   dropped, because each is the single outcome of a request.
 - `DisruptorDepthEventPublisher` claims with the **blocking** `rb.next()`. A full ring stalls the
   producer, which for `WS_MSG` is a reader thread and therefore its whole connection.
@@ -265,7 +283,7 @@ For a venue that recovers from REST snapshots, the adapter builds one queue thro
 **`SnapshotQueueFactory`** owns the `@Lazy` publisher and the single `snapshot-queue` thread. That
 thread is not Boot's shared `@Scheduled` thread, which a discovery refresh can block. The factory
 requires the exchange's `snapshot-queue` block and checks `batch-timeout > rest.response-timeout`.
-It cannot know a fetcher's pacing, so a pacing adapter adds its own check (§9.2).
+It cannot know a fetcher's pacing, so a pacing adapter adds its own check (§9.4).
 
 ### 6.5 `core/health/` and the health log
 
@@ -278,7 +296,8 @@ then msgs/s and free ring slots per shard, and the feed drain's worst tick. Noth
 
 ## 7. The sync-strategy contract
 
-Every current strategy has the same shape (`BinanceDepthSyncStrategy`, `MexcFuturesSyncStrategy`).
+Every current strategy has the same shape (`BinanceDepthSyncStrategy`, `MexcFuturesSyncStrategy`,
+`MexcSpotSyncStrategy`).
 A new strategy that recovers through `SnapshotRequestQueue` must follow it. The `DepthSyncStrategy`
 javadoc states the `REST_FAILED` part.
 
@@ -420,32 +439,54 @@ The ramp is weight-limited, not queue-limited.
 
 ---
 
-## 9. MEXC futures adapter — `adapter/mexc/`
+## 9. MEXC adapter — `adapter/mexc/`
 
-Background measurements are in `external-docs/mexc/`: API contracts, versioning, rate limits and WS
-limits. Where the empirical files disagree with the documentation-derived ones, the empirical files
-win.
+Two venues on two different APIs (decision 20):
 
-### 9.1 Sync — `MexcFuturesSyncStrategy` + `MexcSyncContext`
+| | `MEXC_FUTURES` | `MEXC_SPOT` |
+|---|---|---|
+| REST | `/api/v1/contract/*`, `{success, code, data}` envelope | `/api/v3/*`, bare bodies, errors as non-2xx |
+| Native symbol | `BTC_USDT` | `BTCUSDT` (not always ASCII: `龙虾USDT`) |
+| Stream | `wss://contract.mexc.com/edge`, JSON text | `wss://wbs-api.mexc.com/ws`, **Protobuf binary** pushes, text control frames |
+| Quantities | contracts (× `contractSize`) | base asset |
 
-The dispatch, recovery and buffering are §7 exactly. `MexcSyncContext` holds `diffBuffer` (≤500)
-and `lastVersion` (-1 = none). Three things differ from Binance:
+What they share: the sequence rule (`MexcVersionRange`), the snapshot fetcher class
+(`MexcSnapshotFetcher`, one instance per venue), one discovery source, one `mexc.enabled` master
+switch and one `snapshot-queue` shape. Each venue also has its own `enabled` switch (§10).
 
-- **Sequence rule on `begin` / `end`, not `version`.** MEXC documents `version == previous + 1`, which
-  is false: pushes are aggregated. Every push carries undocumented, contiguous `begin` / `end`
-  fields (`external-docs/mexc/mexc-depth-versioning-empirical.md`). That makes the stream
-  Binance-spot-shaped:
-  ```
-  end < lastVersion          → IGNORE
-  begin <= lastVersion + 1   → OK, lastVersion = end
-  otherwise                  → DE_SYNCED
-  ```
-  The snapshot `version` is on the same counter, but about a third of snapshots land inside a
-  push's range, which the predicate accepts. A push without `begin` / `end` throws → resync.
+Background measurements are in `external-docs/mexc/`: API contracts, versioning, rate limits, WS
+limits, and `mexc-spot-depth-empirical.md` for spot. Where the empirical files disagree with the
+documentation-derived ones, the empirical files win.
+
+### 9.1 The shared sequence rule — `MexcVersionRange`
+
+MEXC documents `version == previous + 1`, which is false: pushes are aggregated. Every push carries a
+version range instead — undocumented `begin` / `end` on futures
+(`mexc-depth-versioning-empirical.md`), `fromVersion` / `toVersion` on spot (spot empirical §2) — and
+consecutive ranges are exactly contiguous. That makes both streams Binance-spot-shaped, and one
+predicate both finds the post-snapshot sync point and validates every push after it:
+
+```
+end < lastVersion          → IGNORE
+begin <= lastVersion + 1   → OK, lastVersion = end
+otherwise                  → DE_SYNCED
+```
+
+The snapshot's version (`version` on futures, `lastUpdateId` on spot) is on the same counter but not
+aligned to push boundaries: snapshots often land inside a push's range, which the predicate accepts.
+The snapshot version is inclusive on both venues, so the strict `<` (decision 8) re-applies at most
+one push, harmlessly. `check` is pure; each strategy moves its own cursor on `OK`.
+
+### 9.2 Futures sync — `MexcFuturesSyncStrategy` + `MexcFuturesSyncContext`
+
+The dispatch, recovery and buffering are §7 exactly. `MexcFuturesSyncContext` holds `diffBuffer` (≤500)
+and `lastVersion` (-1 = none). Beyond the §9.1 rule, two things differ from Binance:
+
 - **Sequence fields come after the levels**, as
   `{"symbol":…,"data":{"asks","bids","end","begin","version"},"channel":"push.depth","ts"}`. So
   `check()` finds `begin` / `end` with `lastIndexOf` on the raw frame and parses them by hand. Only
-  an `OK` push is then streamed through `JsonParser`. This is independent of field order.
+  an `OK` push is then streamed through `JsonParser`. This is independent of field order. A push
+  without `begin` / `end` throws → resync.
 - **Levels are JSON numbers, in contracts.** Rows are `[price, vol, orderCount]`. `vol ×
   quantityMultiplier` (contract size) goes to `applyLevel`, and `orderCount` is skipped.
 
@@ -453,62 +494,135 @@ Pushes and snapshot bodies share one walk: find the top-level `data` object, str
 read `version`. A body with no `data.version` (including a throttled `success:false`) returns -1 →
 resync.
 
-### 9.2 Recovery — `MexcSnapshotFetcher`
+### 9.3 Spot sync — `MexcSpotSyncStrategy` + `MexcSpotSyncContext` + `MexcSpotFrameReader`
 
-MEXC's limit is ~10 requests per 2s **per IP, across all symbols and both hosts**. `limit` 100–1500
-all cost the same, and `/contract/detail` is not counted.
+Same §7 shape and the §9.1 rule on `fromVersion` / `toVersion`. A `WS_MSG` is always a binary frame
+in `rawBytes`; a `REST_MSG` is always JSON in `rawJson`. `MexcSpotSyncContext` buffers the push
+`ByteBuffer`s as delivered (≤500, no copy, §6.1).
 
-- **Classify before reporting.** MEXC throttles with an HTTP 200, so `classify(body)` reads only the
-  envelope's `success` / `code` and returns as soon as `success:true`:
+**Frame layout** (`aggre.depth` channel; field numbers measured, spot empirical §1):
+
+```
+PushDataV3ApiWrapper
+  1    channel            string  "spot@public.aggre.depth.v3.api.pb@100ms@BTCUSDT"
+  3    symbol             string  "BTCUSDT"                  ← routing key, before the body
+  6    sendTime           varint
+  313  publicAggreDepths  message                            ← the body
+         1 asks, 2 bids   repeated item {1 price, 2 quantity}, both strings; "0" deletes
+         3 eventType      string
+         4 fromVersion    string, ASCII digits
+         5 toVersion      string, ASCII digits
+```
+
+**`MexcSpotFrameReader`** is a hand-written Protobuf wire reader: static, allocation-free, no
+generated classes and no `String` per price (decision 24). It matches fields by number, skips unknown
+fields by wire type, and uses absolute indexes only, returning byte ranges packed into a `long`.
+Prices and quantities go straight from the backing array to `JavaDoubleParser`, so it needs a heap
+buffer (`hasArray()`), which java-websocket provides. As on futures, the versions follow the levels,
+so the strategy reads `fromVersion` / `toVersion` first with a walk that skips each level item by its
+length prefix, and only an `OK` push has its levels walked and applied. A malformed varint, a field
+running past its message, or a missing body, version, price or quantity throws → resync.
+
+**Snapshot**: `GET /api/v3/depth` is Binance-spot-shaped, `{"lastUpdateId":…,"bids":[["p","q"],…],
+"asks":[…]}`, streamed into the book. Snapshot numbers are padded to tick precision (`375.80`) where
+pushes are trimmed (`375.8`); both parse to the same `double` key.
+
+### 9.4 Recovery — `MexcSnapshotFetcher`
+
+One fetcher per venue, each with its own send clock and cooldown, over `MexcDepthClient`
+(`venue()`, `depth(symbol, limit)`, `classifyDepth(body)`), implemented by both REST clients.
+
+- **Classify before reporting.** A 2xx is not a snapshot until the client says so. Futures throttles
+  with an HTTP 200, so its `classifyDepth` reads only the envelope's `success` / `code`. Spot's
+  returns `OK` as soon as it reads a numeric `lastUpdateId` (the first field), and `REJECTED` for a
+  2xx carrying `code`. Neither parses the levels.
 
   | Response | Report | Cooldown |
   |---|---|---|
-  | 200, `success:true` | delivered | — |
-  | 200, `success:false, code:510` | failed | `throttle-cooldown` (3s) |
-  | 200, other `success:false` / unreadable body | failed, WARN | — |
+  | 2xx, `OK` | delivered | — |
+  | 2xx, `THROTTLED` (futures `success:false, code:510`) | failed | `throttle-cooldown` (3s) |
+  | 2xx, `REJECTED` / `MALFORMED` | failed, WARN | — |
   | 403 (Akamai WAF, HTML) or 429 | failed | `waf-cooldown` (90s) |
   | timeout / connection error / other status | failed | — |
 
 - **One persistent send clock.** Each slot reserves `nextSendAt` and advances it by
-  `request-interval` (250ms, so 4 req/s, and never more than 8 in any 2s window). The send waits on
-  `Mono.delay` on the Reactor parallel scheduler, never sleeping the queue thread. Sends are merged,
-  so their spacing does not depend on response latency. The clock persists across batches.
+  `request-interval`. The send waits on `Mono.delay` on the Reactor parallel scheduler, never
+  sleeping the queue thread. Sends are merged, so their spacing does not depend on response latency.
+  The clock persists across batches.
 - **Cooldown is checked at send time**, so a 510 or 403 mid-batch fails the rest of that batch
   without sending. Cooldowns only extend. `isAcceptingRequests()` = `now >= cooldownUntil`. A
   cooldown's start (or a throttle-to-WAF escalation) logs a WARN, and repeats log at debug.
-- **Fail-fast in `MexcAdapterConfig`**: `batch-timeout` must exceed `max-batch-size ×
-  request-interval + rest.response-timeout` (12 × 0.25s + 10s = 13s; configured 20s).
+- **Budgets are independent.** Futures' 510 window is ~10 requests per 2s per IP; spot depth does
+  not draw from it (4 + 4 req/s concurrently produced no 510, spot empirical §4). The Akamai WAF,
+  however, blocks per IP and host-wide, and both venues use `api.mexc.com`, so a spot-triggered 403
+  would stall futures snapshots too. The WAF fires at ~20–30 req/s sustained; the two fetchers
+  together send at most 14 req/s. Each fetcher cools down only on its own 403 (§12).
+- **Fail-fast in `MexcAdapterConfig`**, per venue: `batch-timeout` must exceed `max-batch-size ×
+  request-interval + rest.response-timeout` (futures 12 × 0.25s + 10s = 13s, spot 12 × 0.1s + 10s =
+  11.2s; configured 20s).
 
 Config: `mexc.snapshot-queue` (`max-batch-size: 12`, `flush-interval: PT0.25S`,
-`batch-timeout: PT20S`). `MexcSnapshotProperties` (`venues.FUTURES.snapshot`) holds
-`depth-limit: 1500` (server cap, validated 1–1500), `request-interval: PT0.25S`,
-`throttle-cooldown: PT3S` and `waf-cooldown: PT90S`. Here `max-batch-size` bounds only how many books
-buffer at once; the fetcher sets the rate. Measured cold start: ~3m25s for 678 books, about 10% over
-the ideal because batches do not overlap.
+`batch-timeout: PT20S`), shared by both venues' queues. `MexcSnapshotProperties`
+(`venues.<MARKET>.snapshot`):
 
-### 9.3 Discovery and transport
+| | `depth-limit` (server cap, validated) | `request-interval` | `throttle-cooldown` | `waf-cooldown` |
+|---|---|---|---|---|
+| `FUTURES` | 1500 (1500) | `PT0.25S` (4 req/s) | `PT3S` | `PT90S` |
+| `SPOT` | 2000 (2000) | `PT0.1S` (10 req/s) | not set: optional on spot, which never throttles in a 200 | `PT90S` |
 
-- **`MexcInstrumentSource`** reads `GET /api/v1/contract/detail` (~2.3 MB, hence
-  `codec-buffer-size-mb: 8`). Its filter is `quoteCoin USDT ∧ futureType 1 ∧ state 0 ∧ apiAllowed ∧
-  not TradFi`, where TradFi is `conceptPlate ∋ mc-trade-zone-tradfi ∨ symbol *STOCK_USDT`. MEXC's
-  TradFi sector tag covers stocks, ETFs, indices, commodities and forex (~465 contracts, including
-  names without the `STOCK` suffix like `XAU_USDT`, `USOIL_USDT`, `NVIDIA_USDT`); the suffix catches the odd
-  untagged tokenized stock.
-  `BTC_USDT` maps to `base BTC`, `quote USDT`, so `symbol = BTCUSDT` and user rules apply unchanged.
-  `contractSize` becomes `quantityMultiplier`. A row with a missing or bad `contractSize` is skipped
-  with a WARN rather than failing the refresh.
-- **`MexcFuturesRestClient`** is futures-only. MEXC spot is a different API (no envelope, other
-  DTOs) and will get its own client. `contractDetail()` unwraps `{success, code, data}`:
-  `success:false` → `MexcApiException`, non-2xx → `ExchangeApiException`. `depth(symbol, limit)`
-  returns the **raw body**, envelope included, for the fetcher to classify.
+`max-batch-size` bounds only how many books buffer at once; the fetcher sets the rate. Measured
+futures cold start: ~3m25s for 678 books, about 10% over the ideal because batches do not overlap.
+
+### 9.5 Discovery and transport
+
+- **`MexcInstrumentSource`** is one source for both venues, because spot inclusion needs the
+  eligible futures list (as on Binance). With one venue disabled it still fetches both, and core
+  drops the disabled one (§3.2). It fetches
+  `GET /api/v3/exchangeInfo` and `GET /api/v1/contract/detail` (~2.3 MB, hence
+  `codec-buffer-size-mb: 8`) concurrently (`Mono.zip`).
+  - **Futures**: `quoteCoin USDT ∧ futureType 1 ∧ state 0 ∧ apiAllowed ∧ not TradFi`, where TradFi is
+    `conceptPlate ∋ mc-trade-zone-tradfi ∨ symbol *STOCK_USDT`. MEXC's TradFi sector tag covers
+    stocks, ETFs, indices, commodities and forex (~465 contracts, including names without the
+    `STOCK` suffix like `XAU_USDT`, `USOIL_USDT`, `NVIDIA_USDT`); the suffix catches the odd untagged
+    tokenized stock. `BTC_USDT` maps to `base BTC`, `quote USDT`, so `symbol = BTCUSDT` and user rules
+    apply unchanged. `contractSize` becomes `quantityMultiplier`. A row with a missing or bad
+    `contractSize` is skipped with a WARN rather than failing the refresh.
+  - **Spot**: `quoteAsset USDT ∧ status "1" ∧ isSpotTradingAllowed ∧ baseAsset ∈ baseCoinName(eligible
+    futures)`, so spot inherits the TradFi exclusion. The match is on `baseCoinName`, not `baseCoin`:
+    on some contracts `baseCoin` is an internal id (`FILECOIN`, `TRUMPOFFICIAL`), and matching on it
+    gives 533 pairs instead of 549 (decision 25). `nativeSymbol`, `base` and `quote` come from the
+    spot row; multiplier 1.
+  - Futures `base` stays `baseCoin`, so `TRUMPUSDT` on spot sits next to `TRUMPOFFICIALUSDT` on
+    futures, and one user rule does not cover both. Accepted.
+- **`MexcFuturesRestClient`**: `contractDetail()` unwraps `{success, code, data}`: `success:false` →
+  `MexcApiException`, non-2xx → `ExchangeApiException`. `depth(symbol, limit)` returns the **raw
+  body**, envelope included, for `classifyDepth`.
+- **`MexcSpotRestClient`**: `exchangeInfo()` and `depth(symbol, limit)`; every failure is a non-2xx
+  → `ExchangeApiException`. The depth symbol is a URI template variable, so WebClient percent-encodes
+  CJK symbols exactly once.
 - **`MexcFuturesStreamProtocol`** (`wss://contract.mexc.com/edge`) sends one
   `{"method":"sub.depth","param":{"symbol":…}}` per instrument. Its constructor rejects any
-  `subscribe-chunk-size` other than 1 and any `stream-topic` other than `{symbol}`. Delivered pushes
+  `subscribe-chunk-size` other than 1. Delivered pushes
   start `{"symbol":"…` (channel last), so the symbol is read at a fixed offset. Frames starting
   `{"channel":"` are control frames: a `rs.sub.depth` ack (no symbol echoed, debug), `pong`, or
   `rs.error` (WARN). A depth push in the documented channel-first order is still routed. Heartbeat
   is `TextPing(15s, {"method":"ping"})`; MEXC drops a connection after 60s without one. 300 streams
   per connection (no server cap observed) → 3 connections, so one dropped socket resyncs ~300 books.
+- **`MexcSpotStreamProtocol`** (`wss://wbs-api.mexc.com/ws`) subscribes with
+  `{"method":"SUBSCRIPTION","params":["spot@public.aggre.depth.v3.api.pb@100ms@BTCUSDT",…]}`,
+  uppercase symbols (lowercase is rejected). The server allows **30 subscriptions per connection**,
+  counted cumulatively, so the constructor rejects `max-streams-per-connection` or
+  `subscribe-chunk-size` above 30. The channel is hardcoded: `aggre.depth` is the only body the
+  reader understands. ~549 pairs → 19 connections
+  (`max-connections: 30`).
+  - **Binary** pushes route on the wrapper's `symbol` (field 3), falling back to the suffix of
+    `channel` after its last `@`. A frame the reader cannot walk is logged at debug and returned
+    `IGNORED`, which core counts and WARNs about, rate-limited.
+  - **Text** frames are control replies, all `{"id":0,"code":0,"msg":…}`. `code` is 0 even when a
+    subscription is rejected, so the only sign is `msg` containing a non-empty
+    `Not Subscribed successfully! [`, logged at WARN. PONGs and other acks are ignored (debug).
+  - Heartbeat is `TextPing(20s, {"method":"PING"})`. The server drops a connection whose
+    subscriptions are all quiet after ~60s without one, with no close frame.
 
 ---
 
@@ -516,10 +630,11 @@ the ideal because batches do not overlap.
 
 | Key | Bound by | Holds |
 |---|---|---|
-| `screener.exchanges.<exchange>.enabled` | `ExchangesProperties` (core) | venue on/off; `isEnabled(venue)` gates discovery, streaming and the registry checks |
+| `screener.exchanges.<exchange>.enabled` | `ExchangesProperties` (core) | exchange master switch: off turns every venue off; `isEnabled(venue)` gates discovery, streaming and the registry checks |
+| `screener.exchanges.<exchange>.venues.<MARKET>.enabled` | `ExchangesProperties` (core) | venue switch (`<EXCHANGE>_<MARKET>_ENABLED`, default on), consulted only under an enabled exchange. A disabled venue keeps its block: discovery may still read its `rest` config |
 | `screener.exchanges.<exchange>.snapshot-queue` | core | `max-batch-size`, `flush-interval`, `batch-timeout`; required only when an adapter creates a queue |
 | `screener.exchanges.<exchange>.venues.<MARKET>.rest` | core | `base-url`, `codec-buffer-size-mb`, `connect-timeout`, `response-timeout` |
-| `screener.exchanges.<exchange>.venues.<MARKET>.*` | core | `stream-url`, `stream-topic` (`{symbol}` template), `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds` |
+| `screener.exchanges.<exchange>.venues.<MARKET>.*` | core | `stream-url`, `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds` |
 | `screener.exchanges.<exchange>.venues.<MARKET>.snapshot` | the adapter (`BinanceSnapshotProperties`, `MexcSnapshotProperties`) | fetcher pricing / pacing; core ignores this key and the adapter ignores core's |
 | `screener.discovery.source-timeout`, `.excluded-symbols` | `DiscoveryProperties` | per-source fetch deadline; the exchange-agnostic exclusion list |
 | `screener.ticker.refresh-interval` | `@Scheduled` | universe refresh delay (PT4H) |
@@ -550,11 +665,12 @@ startup, and an allocated book with no strategy throws.
 **Not yet exercised:**
 - **In-stream snapshot / resubscribe-to-recover** (Bybit's model): the SPI allows it (a custom
   `RecoverySink`, `EventType` as provenance), but no adapter has done it.
-- **Binary frames** (MEXC spot's Protobuf): the pipeline is text end to end. `DepthEvent.rawJson` is a
-  `String`, `StreamProtocol.route` takes a `String`, and `StreamConnection.onMessage(ByteBuffer)`
-  only warns. This is the first SPI change MEXC spot needs.
-- **A rate limit shared by two venues of one exchange**: each fetcher paces itself. If MEXC spot
-  depth shares the futures window, the fetchers would need a shared per-exchange budget.
+- **A rate limit shared by two venues of one exchange**: each fetcher paces itself. MEXC spot and
+  futures turned out to have independent request windows (§9.4); a venue pair that does share one
+  would need a shared per-exchange budget.
+
+**Binary frames** are exercised since MEXC spot: implement `StreamProtocol.route(ByteBuffer, …)`
+with absolute reads only, and read `DepthEvent.rawBytes` in the strategy (§6.1, §6.2).
 
 ---
 
@@ -579,7 +695,16 @@ startup, and an allocated book with no strategy throws.
 - **No per-instrument snapshot cooldown.** A symbol whose snapshot fails persistently re-asks on
   every diff. Add one only if the failure counter shows it.
 - **Health is a log, not a surface.** Missing: connection up/down and reconnect counts, batch
-  latency, dropped-event counters, MEXC sub-ack counting. None of it is queryable.
+  latency, dropped-event counters, MEXC sub-ack counting. None of it is queryable. A rejected MEXC
+  spot subscription is only a WARN line; its book stays `PENDING` forever.
+- **MEXC WAF cooldown is per venue.** Both MEXC fetchers hit `api.mexc.com`, and Akamai blocks per
+  IP and host-wide, but a 403 cools down only the fetcher that received it; the other keeps sending
+  into the block until it gets its own 403. Cheap to share if it ever shows up (§9.4).
+- **MEXC spot connection lifetime untested.** MEXC documents a 24h limit. A drop reconnects and
+  resubscribes; books stay `SYNCED` across it (no reset lane) and resync on the first push whose
+  range does not continue.
+- **Java-WebSocket buffer ownership** is an implementation detail the zero-copy binary path depends
+  on (§6.1). `JavaWebSocketBufferOwnershipTest` must keep passing across library upgrades.
 - **No read-side storage seam.** `OrderBookClassifier` reads `getBids()` / `getAsks()` directly, so
   replacing `TreeMap<Double, …>` with primitive arrays touches several classes.
 - **Config not fully per venue**: `price-filter-threshold` and reconnect backoff (§10).
@@ -633,12 +758,22 @@ Settled; the reasoning is kept so they are not relitigated.
     `quantityMultiplier`, so the classifier stays venue-agnostic.
 20. **REST clients are per API, not per exchange.** Binance spot and futures are one API with two
     prefixes; MEXC spot and futures are two APIs.
-21. **MEXC snapshots are paced at a fixed 4 req/s**, with one persistent send clock and the cooldown
-    checked at send time. Probing upward would gain ~10% of cold start, while one trip costs a
-    failed slot plus a 3s pause.
+21. **MEXC snapshots are paced at a fixed interval** (futures 4 req/s, spot 10 req/s), with one
+    persistent send clock per venue and the cooldown checked at send time. Probing upward would gain
+    ~10% of futures cold start, while one trip costs a failed slot plus a 3s pause.
 22. **MEXC TradFi perpetuals are excluded.** Stocks, ETFs, indices, commodities and forex are thin
     trackers of traditional markets that go quiet out of trading hours. Binance's equivalents are
     `TRADIFI_PERPETUAL`, already outside its `PERPETUAL` filter.
+23. **Binary frames enter the ring without a copy**, in a second typed field (`DepthEvent.rawBytes`)
+    rather than one `Object payload`, so the hot path never casts. `EventType` stays provenance: a
+    venue's `WS_MSG` encoding is fixed by its protocol.
+24. **MEXC spot Protobuf is read by a hand-written wire reader, not `protobuf-java` codegen.**
+    Generated classes build an object graph with a `String` per price and quantity on every frame,
+    the full-POJO decode the hot-path rules forbid, and add `protoc` to the build. About ten fields
+    across three messages are needed.
+25. **MEXC spot universe = spot ∩ eligible futures, matched on `baseCoinName`**, the Binance rule.
+    Futures instruments keep `base = baseCoin`; switching them to `baseCoinName` was rejected
+    (`mexc-spot-depth-empirical.md` §6).
 
 ---
 
@@ -653,10 +788,11 @@ Test packages mirror the main ones (package-private access). All live under
 | `spi/` | `StreamProtocolRegistryTest`; `FakeRecoverySink`, shared by both adapters' sync suites |
 | `core/book/` | `OrderBookTest` (venue-free: levels, clear, distance sweep) |
 | `core/recovery/` | `SnapshotRequestQueueTest` (accept/refuse, batching, one outcome per slot, timeout) |
-| `core/stream/` | `StreamConnectionTest`, `StreamManagerTest`, `SubscriptionIndexTest` |
+| `core/stream/` | `StreamConnectionTest` (text and binary routing), `StreamManagerTest`, `SubscriptionIndexTest` (incl. UTF-8 byte resolve), `JavaWebSocketBufferOwnershipTest` (pins a fresh buffer per frame, §6.1) |
 | `adapter/binance/` | `BinanceDepthSyncStrategyTest` (+ `SyncTestSupport`), `BinanceSnapshotFetcherTest`, `WeightGuardTest`, `BinanceStreamProtocolTest`, `BinanceInstrumentSourceTest`, `BinanceRestClientTest`, `BinanceSnapshotPropertiesTest`, `BinanceAdapterConfigTest` |
-| `adapter/mexc/` | `MexcFuturesSyncStrategyTest` (+ `MexcSyncTestSupport`), `MexcSnapshotFetcherTest` (virtual time via `ManualScheduler`), `MexcFuturesStreamProtocolTest`, `MexcInstrumentSourceTest`, `MexcFuturesRestClientTest`, `MexcSnapshotPropertiesTest`, `MexcAdapterConfigTest` |
+| `adapter/mexc/` | `MexcFuturesSyncStrategyTest` (+ `MexcFuturesSyncTestSupport`), `MexcSnapshotFetcherTest` (virtual time via `ManualScheduler`), `MexcFuturesStreamProtocolTest`, `MexcInstrumentSourceTest`, `MexcFuturesRestClientTest`, `MexcSnapshotPropertiesTest`, `MexcAdapterConfigTest` (both venues bound); spot: `MexcSpotSyncStrategyTest` (+ `MexcSpotTestSupport`, incl. a captured MINTUSDT snapshot + 120 pushes replayed to equal the next snapshot), `MexcSpotFrameReaderTest`, `MexcSpotStreamProtocolTest`, `MexcSpotRestClientTest` |
 
-The sync suites drive real exchange-shaped JSON, in the delivered field order, through the real
-`JsonParser` and the real `onEvent`. The harness builds a `DepthEvent` and has no dispatch logic of
+Spot fixtures (captured frames and snapshots) live in `src/test/resources/mexc/spot/`. The sync
+suites drive real exchange-shaped payloads (JSON, or Protobuf built field by field), in the delivered
+field order, through the real parsers and the real `onEvent`. The harness builds a `DepthEvent` and has no dispatch logic of
 its own. Tests that load `application-local.yml` skip when it is absent.

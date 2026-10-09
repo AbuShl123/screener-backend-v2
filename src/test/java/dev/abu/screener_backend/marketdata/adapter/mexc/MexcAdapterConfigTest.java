@@ -23,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,15 +40,17 @@ class MexcAdapterConfigTest {
 
     private static final RestProperties REST =
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties FUTURES = new VenueProperties("wss://x", REST, "{symbol}", 300, 1, 8, 1, 15, null);
+    private static final VenueProperties FUTURES = new VenueProperties(true, "wss://x", REST, 300, 1, 8, 1, 15, null);
+    private static final VenueProperties SPOT = new VenueProperties(true, "wss://x", REST, 30, 1, 30, 30, 20, null);
     private static final SnapshotQueueProperties QUEUE =
             new SnapshotQueueProperties(12, Duration.ofMillis(250), Duration.ofSeconds(20));
-    private static final MexcSnapshotProperties SNAPSHOT = new MexcSnapshotProperties(Map.of(Market.FUTURES,
-            new VenueBlock(new MarketSnapshot(1500, Duration.ofMillis(250), Duration.ofSeconds(3), Duration.ofSeconds(90)))));
+    private static final MexcSnapshotProperties SNAPSHOT = new MexcSnapshotProperties(Map.of(
+            Market.FUTURES, new VenueBlock(new MarketSnapshot(1500, Duration.ofMillis(250), Duration.ofSeconds(3), Duration.ofSeconds(90))),
+            Market.SPOT, new VenueBlock(new MarketSnapshot(2000, Duration.ofMillis(100), Duration.ofSeconds(3), Duration.ofSeconds(90)))));
 
     private static ExchangesProperties exchanges(SnapshotQueueProperties queue) {
-        return new ExchangesProperties(
-                Map.of(Exchange.MEXC, new ExchangeProperties(true, Map.of(Market.FUTURES, FUTURES), queue)));
+        return new ExchangesProperties(Map.of(Exchange.MEXC,
+                new ExchangeProperties(true, Map.of(Market.FUTURES, FUTURES, Market.SPOT, SPOT), queue)));
     }
 
     @Test
@@ -60,33 +63,51 @@ class MexcAdapterConfigTest {
 
         assertInstanceOf(MexcFuturesSyncStrategy.class, strategy);
         assertNotSame(strategy.newContext(), strategy.newContext(), "newContext must be per book");
-        assertEquals(-1, ((MexcSyncContext) strategy.newContext()).lastVersion, "a fresh context has no sync point");
+        assertEquals(-1, ((MexcFuturesSyncContext) strategy.newContext()).lastVersion, "a fresh context has no sync point");
     }
 
     @Test
-    @DisplayName("with MEXC enabled, the stream registry accepts its binding and resolves the MEXC protocol")
-    void futuresStreamBound() {
+    @DisplayName("MEXC spot is bound to its own sync strategy, with a context per book")
+    void spotStrategyBound() {
+        SyncStrategyRegistry registry = new SyncStrategyRegistry(List.of(
+                new MexcAdapterConfig().mexcSpotStrategyBinding(new FakeRecoverySink(), new PipelineMetrics())));
+
+        DepthSyncStrategy strategy = registry.forVenue(Venue.MEXC_SPOT);
+
+        assertInstanceOf(MexcSpotSyncStrategy.class, strategy);
+        assertNotSame(strategy.newContext(), strategy.newContext(), "newContext must be per book");
+    }
+
+    @Test
+    @DisplayName("with MEXC enabled, the stream registry needs and accepts both bindings, one protocol per venue")
+    void bothStreamsBound() {
         ExchangesProperties exchanges = exchanges(null);
-
-        StreamProtocolRegistry registry = new StreamProtocolRegistry(
-                List.of(new MexcAdapterConfig().mexcFuturesStreamBinding(exchanges)), exchanges);
-
-        assertInstanceOf(MexcFuturesStreamProtocol.class, registry.forVenue(Venue.MEXC_FUTURES));
-    }
-
-    @Test
-    @DisplayName("the instrument source claims exactly MEXC futures")
-    void sourceClaimsFutures() {
         MexcAdapterConfig config = new MexcAdapterConfig();
 
-        assertEquals(Set.of(Venue.MEXC_FUTURES),
-                config.mexcInstrumentSource(new MexcFuturesRestClient(null)).venues());
+        StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
+                config.mexcSpotStreamBinding(exchanges), config.mexcFuturesStreamBinding(exchanges)), exchanges);
+
+        assertInstanceOf(MexcSpotStreamProtocol.class, registry.forVenue(Venue.MEXC_SPOT));
+        assertInstanceOf(MexcFuturesStreamProtocol.class, registry.forVenue(Venue.MEXC_FUTURES));
+        // Spot is enabled by the same switch: a futures-only binding set fails at startup.
+        assertThrows(IllegalStateException.class, () -> new StreamProtocolRegistry(
+                List.of(config.mexcFuturesStreamBinding(exchanges)), exchanges));
+    }
+
+    @Test
+    @DisplayName("one instrument source claims both MEXC venues")
+    void sourceClaimsBothVenues() {
+        MexcAdapterConfig config = new MexcAdapterConfig();
+
+        assertEquals(Set.of(Venue.MEXC_SPOT, Venue.MEXC_FUTURES),
+                config.mexcInstrumentSource(new MexcSpotRestClient(null), new MexcFuturesRestClient(null)).venues());
     }
 
     // --- Snapshot recovery wiring --------------------------------------------------------------
 
     private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
         @Override public void publishFrame(int instrumentId, String payload) { }
+        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
@@ -110,11 +131,17 @@ class MexcAdapterConfigTest {
     }
 
     @Test
-    @DisplayName("MEXC futures recovers through its own snapshot queue")
-    void futuresHasItsOwnQueue() {
+    @DisplayName("each MEXC venue recovers through its own snapshot queue")
+    void eachVenueHasItsOwnQueue() {
         ExchangesProperties exchanges = exchanges(QUEUE);
+        SnapshotQueueFactory queues = queues(exchanges);
 
-        assertEquals(Venue.MEXC_FUTURES, queue(queues(exchanges), exchanges, SNAPSHOT).venue());
+        SnapshotRequestQueue futures = queue(queues, exchanges, SNAPSHOT);
+        SnapshotRequestQueue spot = new MexcAdapterConfig()
+                .mexcSpotSnapshotQueue(queues, new MexcSpotRestClient(null), SNAPSHOT, exchanges);
+
+        assertEquals(Venue.MEXC_FUTURES, futures.venue());
+        assertEquals(Venue.MEXC_SPOT, spot.venue());
     }
 
     @Test

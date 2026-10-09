@@ -10,6 +10,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * Typed REST client for one Binance venue (spot or futures). Built twice — once per venue, each
@@ -66,6 +67,7 @@ public class BinanceRestClient {
 
     private <T> Mono<T> logErrors(Mono<T> call, String uriTemplate, Object... uriVariables) {
         return call.doOnError(ex -> log.warn("[{}] REST call failed [{} {}]: {}",
-                venue, uriTemplate, Arrays.toString(uriVariables), ex.getMessage()));
+                venue, uriTemplate, Arrays.toString(uriVariables),
+                Objects.toString(ex.getMessage(), ex.getClass().getSimpleName())));
     }
 }

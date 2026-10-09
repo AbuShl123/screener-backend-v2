@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.marketdata.core.ingress;
 
+import java.nio.ByteBuffer;
+
 /**
  * The only way events enter the sharded pipeline. Implementations pick the shard from the id
  * ({@code id & (shardCount - 1)}), so both producers route an instrument to the same shard.
@@ -13,6 +15,15 @@ public interface DepthEventPublisher {
      * @param payload      the frame exactly as received
      */
     void publishFrame(int instrumentId, String payload);
+
+    /**
+     * Hot path, WebSocket reader threads. The binary twin of {@link #publishFrame(int, String)}:
+     * the buffer goes into the ring as-is, so the caller must not touch it afterwards.
+     *
+     * @param instrumentId already resolved by the transport; always a valid, published id
+     * @param payload      the frame exactly as received, {@code position} and {@code limit} untouched
+     */
+    void publishFrame(int instrumentId, ByteBuffer payload);
 
     /**
      * Snapshot-fetch completion threads (Reactor). Publishing — rather than writing to the book

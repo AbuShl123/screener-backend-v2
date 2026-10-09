@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcVersionRange.CheckResult;
 import dev.abu.screener_backend.marketdata.core.book.BookSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
@@ -31,8 +32,8 @@ import tools.jackson.core.json.JsonFactory;
  * {@code begin} / {@code end} fields giving the version range it covers, and those are contiguous
  * ({@code external-docs/mexc/mexc-depth-versioning-empirical.md}). That makes the stream
  * Binance-spot-shaped, with {@code begin} ≙ {@code U} and {@code end} ≙ {@code u}, and one
- * predicate (see {@link #check}) both finds the post-snapshot sync point and validates every push
- * after it. The snapshot's {@code version} is on the same counter but not aligned to push
+ * predicate ({@link MexcVersionRange}, shared with MEXC spot) both finds the post-snapshot sync
+ * point and validates every push after it. The snapshot's {@code version} is on the same counter but not aligned to push
  * boundaries — about a third of snapshots land inside a push's range, which the predicate accepts.
  *
  * <h3>Sequence fields come after the levels</h3>
@@ -55,10 +56,6 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
     private static final String BEGIN_FIELD = "\"begin\":";
     private static final String END_FIELD = "\"end\":";
 
-    enum CheckResult {
-        OK, IGNORE, DE_SYNCED
-    }
-
     private final RecoverySink recoverSink;
     private final PipelineMetrics metrics;
 
@@ -69,12 +66,12 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
 
     @Override
     public BookSyncContext newContext() {
-        return new MexcSyncContext();
+        return new MexcFuturesSyncContext();
     }
 
     @Override
     public void onEvent(BookSlot slot, DepthEvent event) {
-        MexcSyncContext ctx = (MexcSyncContext) slot.ctx();
+        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
         OrderBookState state = slot.book().getState();
 
         if (event.type == EventType.REST_MSG) {
@@ -117,37 +114,24 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
     }
 
     /**
-     * Validates one push against the book's cursor, by its {@code begin} / {@code end} range.
-     *
-     * <pre>
-     * end   &lt;  lastVersion       → IGNORE     (wholly covered by what the book has)
-     * begin &lt;= lastVersion + 1   → OK         (contiguous or overlapping; cursor → end)
-     * otherwise                  → DE_SYNCED  (a gap)
-     * </pre>
-     *
-     * {@code OK} holds exactly when {@code lastVersion ∈ [begin - 1, end]}. Accepting an overlap is
-     * safe because quantities are absolute and an accepted push has {@code end >= lastVersion}, so
-     * its values are at least as new as the book's. The strict {@code <} keeps a push whose
-     * {@code end} equals the snapshot's {@code version} — the same choice as Binance spot (decision
-     * 8 in the progress doc); re-applying it is harmless.
+     * Validates one push against the book's cursor, by its {@code begin} / {@code end} range — the
+     * rule in {@link MexcVersionRange#check}. Moves the cursor to {@code end} on {@code OK}.
      *
      * @throws IllegalStateException if the frame carries no {@code begin} / {@code end} — they are
      *         undocumented, so their disappearance must be loud rather than a silent drift
      */
-    CheckResult check(String rawJson, MexcSyncContext ctx, String logName) {
+    CheckResult check(String rawJson, MexcFuturesSyncContext ctx, String logName) {
         long begin = readVersionField(rawJson, BEGIN_FIELD);
         long end = readVersionField(rawJson, END_FIELD);
 
-        if (end < ctx.lastVersion) {
-            return CheckResult.IGNORE;
-        } else if (begin <= ctx.lastVersion + 1) {
+        CheckResult result = MexcVersionRange.check(begin, end, ctx.lastVersion);
+        if (result == CheckResult.OK) {
             ctx.lastVersion = end;
-            return CheckResult.OK;
-        } else {
+        } else if (result == CheckResult.DE_SYNCED) {
             log.debug("[{}] sequence gap: expected begin <= {}, got begin={} (end={})",
                     logName, ctx.lastVersion + 1, begin, end);
-            return CheckResult.DE_SYNCED;
         }
+        return result;
     }
 
     /**
@@ -174,7 +158,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
     }
 
     boolean handleDiff(BookSlot slot, String rawJson) {
-        MexcSyncContext ctx = (MexcSyncContext) slot.ctx();
+        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
 
         try {
             CheckResult result = check(rawJson, ctx, slot.instrument().logName());
@@ -202,7 +186,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
             if (version == -1) return false;
             slot.book().computeDistance();
 
-            MexcSyncContext ctx = (MexcSyncContext) slot.ctx();
+            MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
             ctx.lastVersion = version;
 
             while (!ctx.diffBuffer.isEmpty()) {
@@ -305,7 +289,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
      * The single recovery path — called from {@link #onEvent} and nowhere else, which is what
      * bounds the sink to at most one request per event.
      */
-    private void recover(BookSlot slot, MexcSyncContext ctx) {
+    private void recover(BookSlot slot, MexcFuturesSyncContext ctx) {
         metrics.recordResync(slot.instrument().venue());
         ctx.reset();
         slot.book().clearLevels();

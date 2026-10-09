@@ -9,8 +9,14 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
+import tools.jackson.core.ObjectReadContext;
+import tools.jackson.core.json.JsonFactory;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Typed REST client for MEXC's futures (contract) API. Built by {@link MexcAdapterConfig}.
@@ -28,12 +34,14 @@ import java.util.List;
  *       throttled request ({@code code 510}).</li>
  * </ul>
  * {@link #depth} is the exception to the second: it returns the raw body, envelope included, and
- * leaves classifying it to its caller.
+ * leaves classifying it to {@link #classifyDepth}.
  */
 @Slf4j
-public class MexcFuturesRestClient {
+public class MexcFuturesRestClient implements MexcDepthClient {
 
     private static final Venue VENUE = Venue.MEXC_FUTURES;
+    private static final JsonFactory JSON_FACTORY = JsonFactory.builder().build();
+    private static final int THROTTLED_CODE = 510;
     private static final String CONTRACT_DETAIL_PATH = "/api/v1/contract/detail";
     private static final String DEPTH_PATH = "/api/v1/contract/depth/{symbol}?limit={limit}";
     private static final ParameterizedTypeReference<MexcResponse<List<MexcContractDto>>> CONTRACT_DETAIL_TYPE =
@@ -43,6 +51,11 @@ public class MexcFuturesRestClient {
 
     public MexcFuturesRestClient(WebClient webClient) {
         this.webClient = webClient;
+    }
+
+    @Override
+    public Venue venue() {
+        return VENUE;
     }
 
     /** Every contract MEXC lists, of every quote coin, type and state — unfiltered. */
@@ -58,8 +71,48 @@ public class MexcFuturesRestClient {
      *
      * <p>The symbol is a URI variable, never pre-encoded into the path, as in {@code BinanceRestClient}.
      */
+    @Override
     public Mono<String> depth(String symbol, int limit) {
         return logErrors(retrieve(DEPTH_PATH, symbol, limit).bodyToMono(String.class), DEPTH_PATH + " " + symbol);
+    }
+
+    /**
+     * Reads the envelope only: returns as soon as {@code success} is {@code true}, so {@code data}
+     * is never tokenized when MEXC sends {@code success} first (it does). Indifferent to field
+     * order otherwise. {@code success:false} with {@code code 510} is {@code THROTTLED}, with any
+     * other code {@code REJECTED}.
+     */
+    @Override
+    public BodyKind classifyDepth(String body) {
+        return classify(body);
+    }
+
+    static BodyKind classify(String body) {
+        if (body == null || body.isEmpty()) return BodyKind.MALFORMED;
+        try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), body)) {
+            if (p.nextToken() != JsonToken.START_OBJECT) return BodyKind.MALFORMED;
+            boolean failed = false;
+            int code = -1;
+            while (p.nextToken() == JsonToken.PROPERTY_NAME) {
+                String field = p.currentName();
+                JsonToken value = p.nextToken();
+                if (field.equals("success")) {
+                    if (value == JsonToken.VALUE_TRUE) return BodyKind.OK;
+                    if (value != JsonToken.VALUE_FALSE) return BodyKind.MALFORMED;
+                    failed = true;
+                    if (code != -1) break;
+                } else if (field.equals("code") && value == JsonToken.VALUE_NUMBER_INT) {
+                    code = p.getIntValue();
+                    if (failed) break;
+                } else {
+                    p.skipChildren();
+                }
+            }
+            if (!failed) return BodyKind.MALFORMED;
+            return code == THROTTLED_CODE ? BodyKind.THROTTLED : BodyKind.REJECTED;
+        } catch (JacksonException e) {
+            return BodyKind.MALFORMED;   // e.g. an HTML page with a 200
+        }
     }
 
     private <T> T unwrap(MexcResponse<T> response) {
@@ -80,6 +133,7 @@ public class MexcFuturesRestClient {
     }
 
     private static <T> Mono<T> logErrors(Mono<T> call, String path) {
-        return call.doOnError(ex -> log.warn("[{}] REST call failed [{}]: {}", VENUE, path, ex.getMessage()));
+        return call.doOnError(ex -> log.warn("[{}] REST call failed [{}]: {}", VENUE, path,
+                Objects.toString(ex.getMessage(), ex.getClass().getSimpleName())));
     }
 }

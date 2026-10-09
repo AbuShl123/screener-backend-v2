@@ -6,6 +6,7 @@ import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcAdapterConfig;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.VenueBlock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -57,23 +58,49 @@ class MexcSnapshotPropertiesTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {0, -1, 1501})
-    @DisplayName("depth-limit outside [1, 1500] is rejected")
+    @ValueSource(ints = {0, -1})
+    @DisplayName("a non-positive depth-limit is rejected")
     void badDepthLimit(int depthLimit) {
         assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(depthLimit, INTERVAL, THROTTLE, WAF));
+    }
+
+    @Test
+    @DisplayName("depth-limit is capped per market: 1500 on futures, 2000 on spot")
+    void depthLimitCapPerMarket() {
+        MexcSnapshotProperties at2000 = new MexcSnapshotProperties(Map.of(
+                Market.SPOT, new VenueBlock(new MarketSnapshot(2000, INTERVAL, THROTTLE, WAF)),
+                Market.FUTURES, new VenueBlock(new MarketSnapshot(2000, INTERVAL, THROTTLE, WAF))));
+        MexcSnapshotProperties overSpot = new MexcSnapshotProperties(Map.of(
+                Market.SPOT, new VenueBlock(new MarketSnapshot(2001, INTERVAL, THROTTLE, WAF))));
+
+        assertEquals(2000, at2000.forMarket(Market.SPOT).depthLimit());
+        assertThrows(IllegalArgumentException.class, () -> at2000.forMarket(Market.FUTURES));
+        assertThrows(IllegalArgumentException.class, () -> overSpot.forMarket(Market.SPOT));
     }
 
     @Test
     @DisplayName("non-positive or missing durations are rejected")
     void badDurations() {
         assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, Duration.ZERO, THROTTLE, WAF));
-        assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, null, WAF));
+        assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, Duration.ZERO, WAF));
         assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, THROTTLE, Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, THROTTLE, null));
+    }
+
+    @Test
+    @DisplayName("throttle-cooldown is optional on spot, required on futures")
+    void throttleCooldownOnlyOnFutures() {
+        MexcSnapshotProperties props = new MexcSnapshotProperties(Map.of(
+                Market.SPOT, new VenueBlock(new MarketSnapshot(2000, INTERVAL, null, WAF)),
+                Market.FUTURES, new VenueBlock(new MarketSnapshot(1500, INTERVAL, null, WAF))));
+
+        assertDoesNotThrow(() -> props.forMarket(Market.SPOT));
+        assertThrows(IllegalArgumentException.class, () -> props.forMarket(Market.FUTURES));
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"application.yml", "application-local.yml"})
-    @DisplayName("the shipped YAML binds, and its batch-timeout covers a paced batch")
+    @DisplayName("the shipped YAML binds for both venues, and its batch-timeout covers a paced batch")
     void shippedYaml(String file) throws IOException {
         ClassPathResource resource = new ClassPathResource(file);
         // application-local.yml is gitignored: present on a dev box, absent on a fresh checkout.
@@ -82,11 +109,14 @@ class MexcSnapshotPropertiesTest {
         new YamlPropertySourceLoader().load(file, resource).forEach(sources::addLast);
         Binder binder = new Binder(ConfigurationPropertySources.from(sources), new PropertySourcesPlaceholdersResolver(sources));
 
-        MarketSnapshot snapshot = binder.bind("screener.exchanges.mexc", MexcSnapshotProperties.class).get()
-                .forMarket(Market.FUTURES);
+        MexcSnapshotProperties props = binder.bind("screener.exchanges.mexc", MexcSnapshotProperties.class).get();
+        MarketSnapshot futures = props.forMarket(Market.FUTURES);
+        MarketSnapshot spot = props.forMarket(Market.SPOT);
         ExchangesProperties exchanges = binder.bind("screener", ExchangesProperties.class).get();
 
-        assertEquals(new MarketSnapshot(1500, INTERVAL, THROTTLE, WAF), snapshot);
-        assertDoesNotThrow(() -> MexcAdapterConfig.requireBatchTimeoutCoversPacing(exchanges, Venue.MEXC_FUTURES, snapshot));
+        assertEquals(new MarketSnapshot(1500, INTERVAL, THROTTLE, WAF), futures);
+        assertEquals(new MarketSnapshot(2000, Duration.ofMillis(100), null, WAF), spot);
+        assertDoesNotThrow(() -> MexcAdapterConfig.requireBatchTimeoutCoversPacing(exchanges, Venue.MEXC_FUTURES, futures));
+        assertDoesNotThrow(() -> MexcAdapterConfig.requireBatchTimeoutCoversPacing(exchanges, Venue.MEXC_SPOT, spot));
     }
 }

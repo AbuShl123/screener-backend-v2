@@ -6,7 +6,6 @@ import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesRestClient;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotFetcher;
 import dev.abu.screener_backend.marketdata.core.book.BookSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
-import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotFetcher.BodyKind;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
 import org.junit.jupiter.api.DisplayName;
@@ -313,31 +312,45 @@ class MexcSnapshotFetcherTest {
         assertTrue(fetcher.isAcceptingRequests());
     }
 
-    // --- Envelope classification ---------------------------------------------------------------
+    // --- Spot: same fetcher, the spot client's bodies ------------------------------------------
 
     @Test
-    @DisplayName("classify stops at success:true — the levels after it are never parsed")
-    void classifyStopsAtSuccess() {
-        // Truncated mid-data: a full parse would fail.
-        assertEquals(BodyKind.OK, MexcSnapshotFetcher.classify("{\"success\":true,\"code\":0,\"data\":{\"asks\":[[1,"));
+    @DisplayName("spot: a bare lastUpdateId body is delivered, an unknown symbol (400) fails alone, a 403 pauses")
+    void spotClient() {
+        String okBody = "{\"lastUpdateId\":42,\"bids\":[[\"100\",\"2\"]],\"asks\":[[\"100.5\",\"3\"]],\"timestamp\":1}";
+        WebClient webClient = WebClient.builder()
+                .baseUrl("https://api.mexc.com")
+                .exchangeFunction(request -> {
+                    String symbol = UriComponentsBuilder.fromUri(request.url()).build().getQueryParams().getFirst("symbol");
+                    sent.add(new Sent(symbol, scheduler.nowMs(), request.url()));
+                    return Mono.just(switch (symbol) {
+                        case "NOPEUSDT" -> json(HttpStatus.BAD_REQUEST, "{\"code\":-1121,\"msg\":\"Invalid symbol.\"}");
+                        case "WAFUSDT" -> html(HttpStatus.FORBIDDEN);
+                        default -> json(HttpStatus.OK, okBody);
+                    });
+                })
+                .build();
+        MexcSnapshotFetcher spot = new MexcSnapshotFetcher(new MexcSpotRestClient(webClient),
+                new MarketSnapshot(2000, Duration.ofMillis(INTERVAL), Duration.ofMillis(THROTTLE_COOLDOWN),
+                        Duration.ofMillis(WAF_COOLDOWN)),
+                scheduler);
+        List<BookSlot> batch = List.of(spotSlot(0, "BTCUSDT"), spotSlot(1, "NOPEUSDT"), spotSlot(2, "WAFUSDT"),
+                spotSlot(3, "ETHUSDT"));
+
+        spot.fetchAll(batch, outcome);
+        scheduler.advanceBy(batch.size() * INTERVAL);
+
+        assertEquals(List.of("BTCUSDT"), outcome.delivered);
+        assertEquals(List.of(okBody), outcome.bodies);
+        assertEquals(List.of("NOPEUSDT", "WAFUSDT", "ETHUSDT"), outcome.failed, "ETHUSDT comes up inside the WAF pause");
+        assertEquals("/api/v3/depth", sent.getFirst().url().getPath());
+        assertEquals("2000", UriComponentsBuilder.fromUri(sent.getFirst().url()).build().getQueryParams().getFirst("limit"));
+        assertFalse(spot.isAcceptingRequests());
+        assertTrue(fetcher.isAcceptingRequests(), "each venue's fetcher has its own cooldown");
     }
 
-    @Test
-    @DisplayName("classify does not depend on field order")
-    void classifyAnyOrder() {
-        assertEquals(BodyKind.THROTTLED, MexcSnapshotFetcher.classify("{\"code\":510,\"message\":\"x\",\"success\":false}"));
-        assertEquals(BodyKind.OK, MexcSnapshotFetcher.classify("{\"data\":{\"asks\":[],\"bids\":[]},\"code\":0,\"success\":true}"));
-    }
-
-    @Test
-    @DisplayName("classify: other failure codes are REJECTED; anything without a boolean success is MALFORMED")
-    void classifyOther() {
-        assertEquals(BodyKind.REJECTED, MexcSnapshotFetcher.classify("{\"success\":false,\"code\":1001}"));
-        assertEquals(BodyKind.REJECTED, MexcSnapshotFetcher.classify("{\"success\":false}"));
-        assertEquals(BodyKind.MALFORMED, MexcSnapshotFetcher.classify("{\"code\":0,\"data\":{}}"));
-        assertEquals(BodyKind.MALFORMED, MexcSnapshotFetcher.classify("{\"success\":\"true\"}"));
-        assertEquals(BodyKind.MALFORMED, MexcSnapshotFetcher.classify("[1,2]"));
-        assertEquals(BodyKind.MALFORMED, MexcSnapshotFetcher.classify("<HTML></HTML>"));
-        assertEquals(BodyKind.MALFORMED, MexcSnapshotFetcher.classify(""));
+    private static BookSlot spotSlot(int id, String symbol) {
+        return new BookSlot(Instrument.of(id, Venue.MEXC_SPOT, symbol, symbol.replace("USDT", ""), "USDT"),
+                new OrderBook(0.1), null, null);
     }
 }

@@ -20,45 +20,70 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "screener.exchanges.mexc")
 public record MexcSnapshotProperties(Map<Market, VenueBlock> venues) {
 
-    /** MEXC returns at most this many levels per side; a larger {@code limit} is silently capped. */
-    static final int MAX_DEPTH_LIMIT = 1500;
+    /**
+     * MEXC returns at most this many levels per side, and silently caps a larger {@code limit}:
+     * 1500 on futures, 2000 on spot ({@code mexc-spot-depth-empirical.md} §3).
+     */
+    static int maxDepthLimit(Market market) {
+        return switch (market) {
+            case FUTURES -> 1500;
+            case SPOT -> 2000;
+        };
+    }
 
     public MexcSnapshotProperties {
         venues = venues == null ? Map.of() : Map.copyOf(venues);
     }
 
-    /** @throws IllegalStateException if the market has no {@code snapshot} block */
+    /**
+     * @throws IllegalStateException    if the market has no {@code snapshot} block
+     * @throws IllegalArgumentException if its {@code depth-limit} exceeds the market's server cap, or
+     *                                  futures has no {@code throttle-cooldown}
+     */
     public MarketSnapshot forMarket(Market market) {
         VenueBlock block = venues.get(market);
         if (block == null || block.snapshot() == null) {
             throw new IllegalStateException("Missing configuration for screener.exchanges.mexc.venues."
                     + market + ".snapshot");
         }
-        return block.snapshot();
+        MarketSnapshot snapshot = block.snapshot();
+        if (snapshot.depthLimit() > maxDepthLimit(market)) {
+            throw new IllegalArgumentException("screener.exchanges.mexc.venues." + market + ".snapshot.depth-limit must be in [1, "
+                    + maxDepthLimit(market) + "], got " + snapshot.depthLimit());
+        }
+        if (market == Market.FUTURES && snapshot.throttleCooldown() == null) {
+            throw new IllegalArgumentException("screener.exchanges.mexc.venues.FUTURES.snapshot.throttle-cooldown is required");
+        }
+        return snapshot;
     }
 
     /** The slice of one venue block this adapter binds. */
     public record VenueBlock(MarketSnapshot snapshot) {}
 
     /**
-     * @param depthLimit       {@code limit} on every depth request, 1–{@value #MAX_DEPTH_LIMIT}. Every
+     * @param depthLimit       {@code limit} on every depth request, from 1 to the market's server cap
+     *                         ({@link #maxDepthLimit}, checked by {@link #forMarket}). On futures every
      *                         value costs the same against MEXC's window (V2c), so the cap is the
      *                         sensible default
-     * @param requestInterval  spacing between consecutive snapshot sends — MEXC's limit is ~10 per 2s
+     * @param requestInterval  spacing between consecutive snapshot sends. Futures' limit is ~10 per 2s
      *                         per IP, and evenly spaced sends at 250ms never put more than 8 in one
-     *                         window
-     * @param throttleCooldown how long to stop after a throttled request (HTTP 200, {@code code 510})
+     *                         window; spot's own budget is wider
+     * @param throttleCooldown how long to stop after a throttled request (HTTP 200, {@code code 510}).
+     *                         Required on futures ({@link #forMarket}); optional on spot, which has no
+     *                         such response
      * @param wafCooldown      how long to stop after an HTTP 403 (Akamai WAF block) or 429
      */
     public record MarketSnapshot(int depthLimit, Duration requestInterval, Duration throttleCooldown,
                                  Duration wafCooldown) {
 
         public MarketSnapshot {
-            if (depthLimit < 1 || depthLimit > MAX_DEPTH_LIMIT) {
-                throw new IllegalArgumentException("depth-limit must be in [1, " + MAX_DEPTH_LIMIT + "], got " + depthLimit);
+            if (depthLimit < 1) {
+                throw new IllegalArgumentException("depth-limit must be positive, got " + depthLimit);
             }
             requirePositive(requestInterval, "request-interval");
-            requirePositive(throttleCooldown, "throttle-cooldown");
+            if (throttleCooldown != null) {
+                requirePositive(throttleCooldown, "throttle-cooldown");
+            }
             requirePositive(wafCooldown, "waf-cooldown");
         }
 

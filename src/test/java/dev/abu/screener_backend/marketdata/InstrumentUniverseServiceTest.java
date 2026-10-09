@@ -89,14 +89,60 @@ class InstrumentUniverseServiceTest {
             assertEquals(0, source.fetchCount);
             assertTrue(events.isEmpty(), "nothing succeeded, so no event");
         }
+    }
+
+    // ---------------------------------------------------------------- per-venue switch
+
+    @Nested
+    @DisplayName("a partly enabled source")
+    class PartlyEnabled {
+
+        private final FakeSource source = new FakeSource(BOTH)
+                .returning(() -> both(candidates("A", "B"), candidates("A", "B", "C")));
+
+        private InstrumentUniverseService spotOnly() {
+            return service(List.of(source), exchanges(true, true, false), timeout());
+        }
 
         @Test
-        @DisplayName("a source whose venues are only partly enabled throws")
-        void partiallyEnabledThrows() {
-            FakeSource source = new FakeSource(BOTH);
+        @DisplayName("is fetched in full, but only its enabled venue is registered and announced")
+        void onlyEnabledVenueRegistered() {
+            spotOnly().refresh();
 
-            assertThrows(IllegalStateException.class,
-                    () -> service(List.of(source), exchanges(true, true, false), timeout()));
+            assertEquals(1, source.fetchCount);
+            assertEquals(List.of("A", "B"), symbols(events.getFirst().getAdded()));
+            assertTrue(events.getFirst().getAdded().stream().allMatch(i -> i.venue() == Venue.BINANCE_SPOT));
+            assertTrue(registry.find(Venue.BINANCE_FUTURES, "A").isEmpty());
+            assertEquals(List.of("allocate", "allocate", "publish", "event"), calls,
+                    "no slots for the disabled venue");
+        }
+
+        @Test
+        @DisplayName("failing retains the enabled venue's previous universe, with zero removals")
+        void failureRetainsEnabledVenue() {
+            InstrumentUniverseService service = spotOnly();
+            service.refresh();
+
+            source.returning(() -> { throw new IllegalStateException("futures endpoint down"); });
+            service.refresh();
+            assertEquals(1, events.size(), "the only source failed, so no event");
+
+            source.returning(() -> both(candidates("A"), candidates("A")));
+            service.refresh();
+            assertEquals(List.of("B"), symbols(events.get(1).getRemoved()),
+                    "spot's universe was carried through the failure, so B is removed now and only now");
+            assertEquals(Venue.BINANCE_SPOT, events.get(1).getRemoved().getFirst().venue());
+        }
+
+        @Test
+        @DisplayName("a result missing the disabled venue is still rejected: the contract is unchanged")
+        void missingDisabledVenueRejected() {
+            source.returning(() -> Map.of(Venue.BINANCE_SPOT, candidates("A")));
+
+            spotOnly().refresh();
+
+            assertTrue(events.isEmpty());
+            assertTrue(registry.find(Venue.BINANCE_SPOT, "A").isEmpty());
         }
     }
 
@@ -327,13 +373,17 @@ class InstrumentUniverseServiceTest {
         return exchanges(true, true, true);
     }
 
+    /** Binance with both venue blocks present: the exchange's master switch and each venue's own. */
     private static ExchangesProperties exchanges(boolean enabled, boolean spot, boolean futures) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties props = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 100, 120, null);
-        if (spot) venues.put(Market.SPOT, props);
-        if (futures) venues.put(Market.FUTURES, props);
+        venues.put(Market.SPOT, venueProps(spot));
+        venues.put(Market.FUTURES, venueProps(futures));
         return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(enabled, venues, null)));
+    }
+
+    private static VenueProperties venueProps(boolean enabled) {
+        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
+        return new VenueProperties(enabled, "wss://x", rest, 1024, 1, 1, 100, 120, null);
     }
 
     private static Map<Venue, List<InstrumentCandidate>> both(List<InstrumentCandidate> spot,

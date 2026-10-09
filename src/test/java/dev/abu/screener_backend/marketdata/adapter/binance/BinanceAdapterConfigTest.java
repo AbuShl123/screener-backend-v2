@@ -25,6 +25,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -101,8 +102,8 @@ class BinanceAdapterConfigTest {
     void everyBinanceVenueHasStreamBinding() {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties spot = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 400, 120, null);
-        VenueProperties futures = new VenueProperties("wss://x", rest, "{symbol}@depth@500ms", 1024, 1, 1, 400, 120, null);
+        VenueProperties spot = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
+        VenueProperties futures = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), null)));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
@@ -144,6 +145,7 @@ class BinanceAdapterConfigTest {
 
     private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
         @Override public void publishFrame(int instrumentId, String payload) { }
+        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
@@ -157,8 +159,8 @@ class BinanceAdapterConfigTest {
 
     private SnapshotQueueFactory queues(SnapshotQueueProperties snapshotQueue, Duration responseTimeout) {
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), responseTimeout);
-        VenueProperties spot = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 400, 120, null);
-        VenueProperties futures = new VenueProperties("wss://x", rest, "{symbol}@depth@500ms", 1024, 1, 1, 400, 120, null);
+        VenueProperties spot = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
+        VenueProperties futures = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), snapshotQueue)));
         SnapshotQueueFactory factory = new SnapshotQueueFactory(NO_OP_PUBLISHER, new PipelineMetrics(), exchanges);

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.bind.PropertySourcesPlaceholdersResolver;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.io.ClassPathResource;
@@ -19,6 +20,8 @@ import org.springframework.core.io.ClassPathResource;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,19 +31,27 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link ExchangesProperties#isEnabled} — the single chokepoint for the {@code enabled} switch — the
+ * {@link ExchangesProperties#isEnabled} — the single chokepoint for the {@code enabled} switches — the
  * exchange-level {@code snapshot-queue} validation, and the shipped {@code application.yml}.
  */
 class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
+        return venueProps(true);
+    }
+
+    static VenueProperties venueProps(boolean enabled) {
         RestProperties rest = new RestProperties("https://example", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1, 1, 100, 120, null);
+        return new VenueProperties(enabled, "wss://example", rest, 1024, 1, 1, 100, 120, null);
     }
 
     private static ExchangesProperties binance(boolean enabled, Market... markets) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
         for (Market m : markets) venues.put(m, venueProps());
+        return binance(enabled, venues);
+    }
+
+    private static ExchangesProperties binance(boolean enabled, Map<Market, VenueProperties> venues) {
         return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(enabled, venues, null)));
     }
 
@@ -79,6 +90,50 @@ class ExchangesPropertiesTest {
     }
 
     @Test
+    @DisplayName("a venue's enabled: false turns off that venue only; its sibling stays on")
+    void venueDisabled() {
+        ExchangesProperties props = binance(true, Map.of(
+                Market.SPOT, venueProps(true),
+                Market.FUTURES, venueProps(false)));
+
+        assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
+        assertFalse(props.isEnabled(Venue.BINANCE_FUTURES));
+    }
+
+    @Test
+    @DisplayName("the exchange's enabled: false overrides a venue's enabled: true")
+    void exchangeSwitchIsMaster() {
+        ExchangesProperties props = binance(false, Map.of(
+                Market.SPOT, venueProps(true),
+                Market.FUTURES, venueProps(true)));
+
+        assertFalse(props.isEnabled(Venue.BINANCE_SPOT));
+        assertFalse(props.isEnabled(Venue.BINANCE_FUTURES));
+    }
+
+    @Test
+    @DisplayName("a venue block without an enabled key binds as enabled")
+    void missingVenueFlagDefaultsToEnabled() {
+        Map<String, String> yaml = new HashMap<>();
+        yaml.put("screener.exchanges.binance.enabled", "true");
+        for (String market : List.of("SPOT", "FUTURES")) {
+            String prefix = "screener.exchanges.binance.venues." + market + ".";
+            yaml.put(prefix + "stream-url", "wss://example");
+            yaml.put(prefix + "subscribe-chunk-size", "100");
+            yaml.put(prefix + "heartbeat-interval-seconds", "120");
+        }
+        yaml.put("screener.exchanges.binance.venues.FUTURES.enabled", "false");
+
+        ExchangesProperties props = new Binder(new MapConfigurationPropertySource(yaml))
+                .bind("screener", ExchangesProperties.class)
+                .get();
+
+        assertTrue(props.venue(Venue.BINANCE_SPOT).enabled());
+        assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
+        assertFalse(props.isEnabled(Venue.BINANCE_FUTURES), "an explicit enabled: false still binds");
+    }
+
+    @Test
     @DisplayName("a snapshot-queue block with a non-positive batch size or duration is rejected")
     void badSnapshotQueueBlock() {
         Duration ok = Duration.ofMillis(250);
@@ -91,7 +146,7 @@ class ExchangesPropertiesTest {
     }
 
     @Test
-    @DisplayName("the shipped application.yml binds: Binance on, MEXC futures configured but off by default")
+    @DisplayName("the shipped application.yml binds: Binance on, both MEXC venues configured but off by default")
     void shippedYamlBinds() throws IOException {
         MutablePropertySources sources = new MutablePropertySources();
         new YamlPropertySourceLoader()
@@ -108,9 +163,15 @@ class ExchangesPropertiesTest {
         assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
         assertTrue(props.isEnabled(Venue.BINANCE_FUTURES));
         assertFalse(props.isEnabled(Venue.MEXC_FUTURES));
+        assertFalse(props.isEnabled(Venue.MEXC_SPOT));
+        assertTrue(props.venue(Venue.MEXC_SPOT).enabled(), "only the MEXC master switch is off");
+        assertTrue(props.venue(Venue.MEXC_FUTURES).enabled(), "only the MEXC master switch is off");
 
         VenueProperties mexc = props.venue(Venue.MEXC_FUTURES);
-        assertEquals("BTC_USDT", mexc.streamTopic("BTC_USDT"));
         assertEquals(1, mexc.subscribeChunkSize());
+
+        VenueProperties mexcSpot = props.venue(Venue.MEXC_SPOT);
+        assertEquals(30, mexcSpot.maxStreamsPerConnection());
+        assertEquals(0.01, mexcSpot.maxVisibleDistance());
     }
 }

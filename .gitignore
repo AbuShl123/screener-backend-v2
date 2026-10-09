@@ -12,8 +12,8 @@ target/
 ### Captured monitoring runs (OrderBookCsvRecorder) ###
 /monitoring-data/
 
-### Output of tools/analyze_orderbook_monitoring.py ###
-/monitoring-analysis/
+### Output of local data collections ###
+/data/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

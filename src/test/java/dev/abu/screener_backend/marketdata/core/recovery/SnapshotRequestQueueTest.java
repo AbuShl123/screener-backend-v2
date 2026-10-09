@@ -15,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -320,6 +321,11 @@ class SnapshotRequestQueueTest {
 
         @Override
         public synchronized void publishFrame(int instrumentId, String payload) {
+            throw new AssertionError("the snapshot queue never publishes frames");
+        }
+
+        @Override
+        public synchronized void publishFrame(int instrumentId, ByteBuffer payload) {
             throw new AssertionError("the snapshot queue never publishes frames");
         }
 

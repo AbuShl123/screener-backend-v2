@@ -2,6 +2,7 @@ package dev.abu.screener_backend.marketdata.adapter.binance;
 
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
@@ -15,7 +16,8 @@ import java.util.Locale;
 /**
  * Binance's depth-stream wire protocol, shared by spot and futures (one instance per venue).
  *
- * <p>Subscribes with {@code {"method":"SUBSCRIBE","params":[…],"id":N}}, routes depth frames by
+ * <p>Subscribes with {@code {"method":"SUBSCRIBE","params":[…],"id":N}} to {@code <symbol>@depth}
+ * on spot (1s) and {@code <symbol>@depth@500ms} on futures, routes depth frames by
  * their {@code "s"} field (the upper-case native symbol), and keeps the connection alive with a
  * WebSocket control-frame PING.
  */
@@ -26,10 +28,12 @@ public final class BinanceStreamProtocol implements StreamProtocol {
 
     private final Venue venue;
     private final VenueProperties props;
+    private final String topicSuffix;
 
     public BinanceStreamProtocol(Venue venue, VenueProperties props) {
         this.venue = venue;
         this.props = props;
+        this.topicSuffix = venue.market() == Market.SPOT ? "@depth" : "@depth@500ms";
     }
 
     @Override
@@ -39,7 +43,7 @@ public final class BinanceStreamProtocol implements StreamProtocol {
         for (int i = 0; i < chunk.size(); i++) {
             if (i > 0) sb.append(',');
             String symbol = chunk.get(i).nativeSymbol().toLowerCase(Locale.ROOT);
-            sb.append('"').append(props.streamTopic(symbol)).append('"');
+            sb.append('"').append(symbol).append(topicSuffix).append('"');
         }
         return sb.append("],\"id\":").append(requestId).append('}').toString();
     }

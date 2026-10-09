@@ -14,6 +14,10 @@ import java.util.Set;
  * spot requires futures); independent venues should be independent sources, so a failure in one
  * does not freeze the other.
  *
+ * <p>A source may be partly enabled ({@code ExchangesProperties#isEnabled}). It never learns which
+ * of its venues are: it always fetches all of them, and core drops the disabled ones. A venue's
+ * universe therefore does not depend on its siblings' switches.
+ *
  * <p>Core ({@code InstrumentUniverseService}) enforces that at most one source claims a venue, and
  * owns everything id-shaped: ordering, registration and the added/removed diff. A source therefore
  * never sorts its output.

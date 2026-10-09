@@ -17,38 +17,24 @@ class VenuePropertiesTest {
     private static final RestProperties REST =
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
-    private static VenueProperties props(String topic, int chunkSize, int heartbeatSeconds) {
-        return new VenueProperties("wss://x", REST, topic, 1024, 1, 1, chunkSize, heartbeatSeconds, null);
-    }
-
-    @Test
-    @DisplayName("streamTopic renders the template for one symbol, casing untouched")
-    void rendersTopic() {
-        assertEquals("btcusdt@depth", props("{symbol}@depth", 400, 120).streamTopic("btcusdt"));
-        assertEquals("orderbook.50.BTCUSDT", props("orderbook.50.{symbol}", 400, 120).streamTopic("BTCUSDT"));
-    }
-
-    @Test
-    @DisplayName("a stream-topic without {symbol} is rejected — e.g. the old \"@depth\" suffix form")
-    void topicWithoutPlaceholder() {
-        assertThrows(IllegalArgumentException.class, () -> props("@depth", 400, 120));
-        assertThrows(IllegalArgumentException.class, () -> props(null, 400, 120));
+    private static VenueProperties props(int chunkSize, int heartbeatSeconds) {
+        return new VenueProperties(true, "wss://x", REST, 1024, 1, 1, chunkSize, heartbeatSeconds, null);
     }
 
     @Test
     @DisplayName("a non-positive subscribe chunk size is rejected")
     void badChunkSize() {
-        assertThrows(IllegalArgumentException.class, () -> props("{symbol}@depth", 0, 120));
+        assertThrows(IllegalArgumentException.class, () -> props(0, 120));
     }
 
     @Test
     @DisplayName("a non-positive heartbeat interval is rejected")
     void badHeartbeat() {
-        assertThrows(IllegalArgumentException.class, () -> props("{symbol}@depth", 400, 0));
+        assertThrows(IllegalArgumentException.class, () -> props(400, 0));
     }
 
     private static VenueProperties withVisibleDistance(Double maxVisibleDistance) {
-        return new VenueProperties("wss://x", REST, "{symbol}", 1024, 1, 1, 400, 120, maxVisibleDistance);
+        return new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, maxVisibleDistance);
     }
 
     @Test

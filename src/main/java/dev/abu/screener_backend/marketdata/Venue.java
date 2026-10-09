@@ -15,8 +15,7 @@ public enum Venue {
 
     BINANCE_SPOT(Exchange.BINANCE, Market.SPOT),
     BINANCE_FUTURES(Exchange.BINANCE, Market.FUTURES),
-    // MEXC spot is deliberately absent: its stream is Protobuf-encoded and has no adapter. A venue
-    // constant without an adapter is safe only while disabled — add it with its adapter.
+    MEXC_SPOT(Exchange.MEXC, Market.SPOT),
     MEXC_FUTURES(Exchange.MEXC, Market.FUTURES);
 
     private final Exchange exchange;

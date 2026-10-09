@@ -31,28 +31,27 @@ class BinanceStreamProtocolTest {
     private static final RestProperties REST =
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
-    private static VenueProperties props(String topic) {
-        return new VenueProperties("wss://x", REST, topic, 1024, 1, 1, 400, 120, null);
-    }
+    private static final VenueProperties PROPS =
+            new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, null);
 
     private static final BinanceStreamProtocol SPOT =
-            new BinanceStreamProtocol(Venue.BINANCE_SPOT, props("{symbol}@depth"));
+            new BinanceStreamProtocol(Venue.BINANCE_SPOT, PROPS);
     private static final BinanceStreamProtocol FUTURES =
-            new BinanceStreamProtocol(Venue.BINANCE_FUTURES, props("{symbol}@depth@500ms"));
+            new BinanceStreamProtocol(Venue.BINANCE_FUTURES, PROPS);
 
     private static SubscriptionIndex index(StreamProtocol protocol, Instrument... instruments) {
         return new SubscriptionIndex(List.of(instruments), protocol::routingKey);
     }
 
     @Test
-    @DisplayName("spot subscribe frame: lower-cased symbols, template applied, id passed through")
+    @DisplayName("spot subscribe frame: lower-cased symbols, @depth topic, id passed through")
     void spotSubscribeFrame() {
         assertEquals("{\"method\":\"SUBSCRIBE\",\"params\":[\"btcusdt@depth\",\"ethusdt@depth\"],\"id\":3}",
                 SPOT.subscribeFrame(List.of(BTC_SPOT, ETH_SPOT), 3));
     }
 
     @Test
-    @DisplayName("futures subscribe frame uses the futures topic template")
+    @DisplayName("futures subscribe frame uses the 500ms topic")
     void futuresSubscribeFrame() {
         assertEquals("{\"method\":\"SUBSCRIBE\",\"params\":[\"btcusdt@depth@500ms\"],\"id\":0}",
                 FUTURES.subscribeFrame(List.of(BTC_FUT), 0));

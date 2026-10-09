@@ -2,6 +2,8 @@ package dev.abu.screener_backend.marketdata.core.stream;
 
 import dev.abu.screener_backend.marketdata.Instrument;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +55,30 @@ public final class SubscriptionIndex {
      */
     public int resolve(String msg, int start, int end) {
         Integer id = byRoutingKey.get(msg.substring(start, end));
+        return id == null ? -1 : id;
+    }
+
+    /**
+     * The binary twin of {@link #resolve(String, int, int)}: resolves the routing key occupying
+     * {@code [start, end)} of {@code buf}, decoded as UTF-8. The indexes are absolute, and
+     * {@code buf}'s position and limit are left alone.
+     *
+     * <p>UTF-8, not ASCII: some venues list symbols in CJK script (MEXC spot's {@code 龙虾USDT}).
+     * The decoded {@code String} is the same single allocation as the text path's
+     * {@code substring}; a direct buffer costs one extra {@code byte[]}.
+     *
+     * @return the instrument id, or {@code -1} if this connection never subscribed to that key
+     */
+    public int resolve(ByteBuffer buf, int start, int end) {
+        String key;
+        if (buf.hasArray()) {
+            key = new String(buf.array(), buf.arrayOffset() + start, end - start, StandardCharsets.UTF_8);
+        } else {
+            byte[] bytes = new byte[end - start];
+            buf.get(start, bytes);
+            key = new String(bytes, StandardCharsets.UTF_8);
+        }
+        Integer id = byRoutingKey.get(key);
         return id == null ? -1 : id;
     }
 

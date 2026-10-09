@@ -15,13 +15,17 @@ package dev.abu.screener_backend.marketdata.core.ingress;
  * both REST types keep the blocking one.
  */
 public enum EventType {
-    /** A frame delivered on a venue's WebSocket stream. */
+    /**
+     * A frame delivered on a venue's WebSocket stream: text in {@code rawJson} or binary in
+     * {@code rawBytes}, whichever the venue's wire protocol uses.
+     */
     WS_MSG,
-    /** A response body from a venue's REST API. */
+    /** A response body from a venue's REST API, in {@code rawJson}. */
     REST_MSG,
     /**
-     * A REST request for this instrument completed without a usable body. {@code rawJson} is
-     * {@code null}. Still provenance: it says the call ended with nothing to apply, not why.
+     * A REST request for this instrument completed without a usable body. Both {@code rawJson} and
+     * {@code rawBytes} are {@code null}. Still provenance: it says the call ended with nothing to
+     * apply, not why.
      */
     REST_FAILED
 }
