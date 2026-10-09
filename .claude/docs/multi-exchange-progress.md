@@ -16,10 +16,10 @@ All paths below are relative to `src/main/java/dev/abu/screener_backend/marketda
 
 | Venue | Adapter | Default | Live-verified |
 |---|---|---|---|
-| `BINANCE_SPOT` | `adapter/binance/` | enabled (`BINANCE_ENABLED`) | yes: ~354 books `SYNCED` ~2 min after start, held |
-| `BINANCE_FUTURES` | `adapter/binance/` | enabled (`BINANCE_ENABLED`) | yes: ~525 books `SYNCED` ~2.5 min after start, held |
-| `MEXC_SPOT` | `adapter/mexc/` | same switch as `MEXC_FUTURES` | yes (2026-10-10 local run): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures |
-| `MEXC_FUTURES` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED`, until Phase 5 of `.claude/plans/mexc-impl-plan.md`) | yes: ~678 books `SYNCED` ~3.5 min after the sockets open; zero steady-state resyncs over 25–40 min runs |
+| `BINANCE_SPOT` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_SPOT_ENABLED`) | yes: ~354 books `SYNCED` ~2 min after start, held |
+| `BINANCE_FUTURES` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_FUTURES_ENABLED`) | yes: ~525 books `SYNCED` ~2.5 min after start, held |
+| `MEXC_SPOT` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_SPOT_ENABLED`) | yes (2026-10-10 local run): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures |
+| `MEXC_FUTURES` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_FUTURES_ENABLED`, until Phase 5 of `.claude/plans/mexc-impl-plan.md`) | yes: ~678 books `SYNCED` ~3.5 min after the sockets open; zero steady-state resyncs over 25–40 min runs |
 
 | Area | State |
 |---|---|
@@ -98,8 +98,15 @@ brings the pipeline up.
 `InstrumentUniverseService` is exchange-agnostic. It merges every `InstrumentSource` bean:
 
 - **At construction**, it validates source claims. Each claims a non-empty set of venues of one
-  exchange, and no venue is claimed twice. A source whose venues are all disabled is skipped. A
-  partly-enabled source is a startup error.
+  exchange, and no venue is claimed twice. A source whose venues are all disabled is skipped.
+- **Per-venue switch**: a partly enabled source (e.g. MEXC with `MEXC_FUTURES_ENABLED=false`) is
+  still fetched in full, and its result must still cover its whole claim. Core then keeps only the
+  enabled venues: a disabled venue is never registered, gets no book slots, never enters the
+  added/removed diff or the event, so it gets no WebSocket pool and is absent from `/api/tickers`.
+  Sources never learn the switches. Cross-venue inclusion rules (spot ⊆ futures) therefore select
+  the same universe for a venue whatever its sibling's switch says, at the cost of one extra REST
+  call per refresh, and spot discovery still depends on the futures endpoint: if it fails, the
+  source fails as a whole and spot retains its previous universe.
 - **On refresh**, it fetches every source concurrently on virtual threads under one
   `screener.discovery.source-timeout` deadline. Failure is **isolated per source**: a source that
   throws, times out, returns the wrong venues or empties a previously non-empty venue keeps its
@@ -444,8 +451,8 @@ Two venues on two different APIs (decision 20):
 | Quantities | contracts (× `contractSize`) | base asset |
 
 What they share: the sequence rule (`MexcVersionRange`), the snapshot fetcher class
-(`MexcSnapshotFetcher`, one instance per venue), one discovery source, one `mexc.enabled` switch and
-one `snapshot-queue` shape.
+(`MexcSnapshotFetcher`, one instance per venue), one discovery source, one `mexc.enabled` master
+switch and one `snapshot-queue` shape. Each venue also has its own `enabled` switch (§10).
 
 Background measurements are in `external-docs/mexc/`: API contracts, versioning, rate limits, WS
 limits, and `mexc-spot-depth-empirical.md` for spot. Where the empirical files disagree with the
@@ -569,7 +576,8 @@ futures cold start: ~3m25s for 678 books, about 10% over the ideal because batch
 ### 9.5 Discovery and transport
 
 - **`MexcInstrumentSource`** is one source for both venues, because spot inclusion needs the
-  eligible futures list (as on Binance); so both venues are enabled together. It fetches
+  eligible futures list (as on Binance). With one venue disabled it still fetches both, and core
+  drops the disabled one (§3.2). It fetches
   `GET /api/v3/exchangeInfo` and `GET /api/v1/contract/detail` (~2.3 MB, hence
   `codec-buffer-size-mb: 8`) concurrently (`Mono.zip`).
   - **Futures**: `quoteCoin USDT ∧ futureType 1 ∧ state 0 ∧ apiAllowed ∧ not TradFi`, where TradFi is
@@ -622,7 +630,8 @@ futures cold start: ~3m25s for 678 books, about 10% over the ideal because batch
 
 | Key | Bound by | Holds |
 |---|---|---|
-| `screener.exchanges.<exchange>.enabled` | `ExchangesProperties` (core) | venue on/off; `isEnabled(venue)` gates discovery, streaming and the registry checks |
+| `screener.exchanges.<exchange>.enabled` | `ExchangesProperties` (core) | exchange master switch: off turns every venue off; `isEnabled(venue)` gates discovery, streaming and the registry checks |
+| `screener.exchanges.<exchange>.venues.<MARKET>.enabled` | `ExchangesProperties` (core) | venue switch (`<EXCHANGE>_<MARKET>_ENABLED`, default on), consulted only under an enabled exchange. A disabled venue keeps its block: discovery may still read its `rest` config |
 | `screener.exchanges.<exchange>.snapshot-queue` | core | `max-batch-size`, `flush-interval`, `batch-timeout`; required only when an adapter creates a queue |
 | `screener.exchanges.<exchange>.venues.<MARKET>.rest` | core | `base-url`, `codec-buffer-size-mb`, `connect-timeout`, `response-timeout` |
 | `screener.exchanges.<exchange>.venues.<MARKET>.*` | core | `stream-url`, `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds` |

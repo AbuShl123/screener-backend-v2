@@ -26,8 +26,9 @@ import java.time.Duration;
  * <p>Like {@code BinanceAdapterConfig}, strategies and sources are constructed here and never
  * component-scanned; a stray {@code @Component} on any of them yields a duplicate binding or a
  * second claim on a MEXC venue at startup. One set of beans per venue, except discovery: one
- * {@link MexcInstrumentSource} spans both, because spot inclusion depends on the futures list. Both
- * venues are therefore enabled together, by {@code mexc.enabled}.
+ * {@link MexcInstrumentSource} spans both, because spot inclusion depends on the futures list.
+ * {@code mexc.enabled} is the master switch and each venue has its own; with one venue off, the
+ * source still fetches both and core registers only the enabled one.
  *
  * <p>Each venue recovers through its own core {@link SnapshotRequestQueue}, fed by its own
  * {@link MexcSnapshotFetcher} that classifies and paces every request — the two do not share a

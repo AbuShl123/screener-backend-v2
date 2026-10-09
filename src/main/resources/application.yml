@@ -48,6 +48,7 @@ screener:
         batch-timeout: PT30S
       venues:
         SPOT:
+          enabled: ${BINANCE_SPOT_ENABLED:true}
           rest:
             base-url: https://api.binance.com
             codec-buffer-size-mb: 18
@@ -66,6 +67,7 @@ screener:
           subscribe-chunk-size: 400
           heartbeat-interval-seconds: 120
         FUTURES:
+          enabled: ${BINANCE_FUTURES_ENABLED:true}
           rest:
             base-url: https://fapi.binance.com
             codec-buffer-size-mb: 18
@@ -91,13 +93,13 @@ screener:
         batch-timeout: PT20S
       venues:
         SPOT:
+          enabled: ${MEXC_SPOT_ENABLED:true}
           rest:
             base-url: https://api.mexc.com
             codec-buffer-size-mb: 8
             connect-timeout: PT5S
             response-timeout: PT10S
           snapshot:
-            # Server cap is 2000 per side.
             depth-limit: 2000
             request-interval: PT0.1S
             waf-cooldown: PT90S
@@ -111,6 +113,7 @@ screener:
           heartbeat-interval-seconds: 20
           max-visible-distance: 0.01
         FUTURES:
+          enabled: ${MEXC_FUTURES_ENABLED:true}
           rest:
             base-url: https://api.mexc.com
             codec-buffer-size-mb: 8
@@ -125,10 +128,8 @@ screener:
           max-streams-per-connection: 300
           min-connections: 1
           max-connections: 8
-          # sub.depth takes one symbol per frame.
           subscribe-chunk-size: 1
           heartbeat-interval-seconds: 15
-          # Levels further than this fraction from mid are never classified (default and user rules).
           max-visible-distance: 0.01
 
   discovery:

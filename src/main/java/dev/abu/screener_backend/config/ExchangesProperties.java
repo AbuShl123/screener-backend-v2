@@ -4,14 +4,15 @@ import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.time.Duration;
 import java.util.EnumMap;
 import java.util.Map;
 
 /**
- * Binds {@code screener.exchanges.*} — the venue-dimensioned transport config and the per-exchange
- * {@code enabled} switch.
+ * Binds {@code screener.exchanges.*} — the venue-dimensioned transport config and the
+ * {@code enabled} switches: one master switch per exchange, one per venue.
  *
  * <p>The prefix is {@code screener} rather than {@code screener.exchanges} so that the single
  * {@code exchanges} component binds as a {@link Map} keyed by {@link Exchange}; Spring's relaxed
@@ -38,21 +39,22 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     }
 
     /**
-     * The single chokepoint for the {@code enabled} switch.
+     * The single chokepoint for the {@code enabled} switches. The exchange's switch is the master:
+     * when it is off, every venue of the exchange is off whatever its own switch says; when it is
+     * on, each venue's own switch decides.
      *
      * <p>Unlike {@link #exchange} and {@link #venue}, a missing block does not throw: it means
      * disabled. That lets a {@link Venue} constant exist before its adapter has YAML.
      *
      * @return {@code false} when the venue's exchange is disabled or has no configuration block,
-     *         or the venue itself has no block under {@code venues} — a venue without transport
-     *         config could not be streamed anyway
+     *         the venue itself has no block under {@code venues} — a venue without transport
+     *         config could not be streamed anyway — or the venue's own switch is off
      */
     public boolean isEnabled(Venue venue) {
         ExchangeProperties props = exchanges == null ? null : exchanges.get(venue.exchange());
-        return props != null
-                && props.enabled()
-                && props.venues() != null
-                && props.venues().containsKey(venue.market());
+        if (props == null || !props.enabled() || props.venues() == null) return false;
+        VenueProperties venueProps = props.venues().get(venue.market());
+        return venueProps != null && venueProps.enabled();
     }
 
     /** @throws IllegalStateException if the venue has no configuration block */
@@ -86,8 +88,10 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
      * are hardcoded in its {@code InstrumentSource}, and the exclusion list is the exchange-agnostic
      * {@code screener.discovery.excluded-symbols} ({@link DiscoveryProperties}).
      *
-     * @param enabled       safe-rollout switch — an adapter can ship dark and be turned on
-     *                      independently. Read through {@link ExchangesProperties#isEnabled}
+     * @param enabled       master switch, for safe rollout — an adapter can ship dark and be turned
+     *                      on independently. Off overrides every venue's own
+     *                      {@link VenueProperties#enabled}. Read through
+     *                      {@link ExchangesProperties#isEnabled}
      * @param venues        per-market transport config
      * @param snapshotQueue core snapshot request queue shape, shared by the exchange's venues;
      *                      {@code null} when none of them recovers from REST snapshots
@@ -123,6 +127,13 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     }
 
     /**
+     * A disabled venue keeps its block: its adapter's discovery may still read the {@code rest}
+     * config (a source fetches all its venues, enabled or not), so a venue is turned off with
+     * {@code enabled: false}, never by deleting the block.
+     *
+     * @param enabled                  venue switch, defaulting to on; only consulted when the
+     *                                 exchange's master switch is on. Read through
+     *                                 {@link ExchangesProperties#isEnabled}
      * @param streamUrl                WebSocket endpoint for this venue
      * @param rest                     REST client config for this venue (base URL, codec buffer, timeouts)
      * @param maxStreamsPerConnection  venue's own per-connection subscription ceiling
@@ -140,6 +151,7 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
      *                                 missing until the venue re-sends it, so it must stay wide
      */
     public record VenueProperties(
+            @DefaultValue("true") boolean enabled,
             String streamUrl,
             RestProperties rest,
             int maxStreamsPerConnection,

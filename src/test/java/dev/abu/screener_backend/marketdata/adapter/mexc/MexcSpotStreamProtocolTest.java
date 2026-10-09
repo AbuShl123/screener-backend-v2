@@ -42,7 +42,7 @@ class MexcSpotStreamProtocolTest {
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
     private static VenueProperties props(int maxStreams, int chunkSize) {
-        return new VenueProperties("wss://x", REST, maxStreams, 1, 30, chunkSize, 20, null);
+        return new VenueProperties(true, "wss://x", REST, maxStreams, 1, 30, chunkSize, 20, null);
     }
 
     private static final MexcSpotStreamProtocol PROTOCOL = new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(30, 30));

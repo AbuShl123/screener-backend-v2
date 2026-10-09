@@ -18,7 +18,7 @@ class VenuePropertiesTest {
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
     private static VenueProperties props(int chunkSize, int heartbeatSeconds) {
-        return new VenueProperties("wss://x", REST, 1024, 1, 1, chunkSize, heartbeatSeconds, null);
+        return new VenueProperties(true, "wss://x", REST, 1024, 1, 1, chunkSize, heartbeatSeconds, null);
     }
 
     @Test
@@ -34,7 +34,7 @@ class VenuePropertiesTest {
     }
 
     private static VenueProperties withVisibleDistance(Double maxVisibleDistance) {
-        return new VenueProperties("wss://x", REST, 1024, 1, 1, 400, 120, maxVisibleDistance);
+        return new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, maxVisibleDistance);
     }
 
     @Test

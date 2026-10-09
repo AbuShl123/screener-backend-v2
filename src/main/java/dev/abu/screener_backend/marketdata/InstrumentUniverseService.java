@@ -44,8 +44,11 @@ import java.util.stream.Collectors;
  * <h3>Sources</h3>
  * Validated once at construction: every source claims a non-empty set of venues of one exchange,
  * and no venue is claimed twice. A source whose venues are all disabled
- * ({@link ExchangesProperties#isEnabled}) is skipped; a partially-enabled one is a configuration
- * error, because a source cannot be asked to fetch a subset of its venues.
+ * ({@link ExchangesProperties#isEnabled}) is skipped. A partly enabled source is still fetched in
+ * full, and its result validated against its whole claim, but only its enabled venues are kept:
+ * a disabled venue is never registered, so it never enters the diff or the event. Inclusion rules
+ * that span venues (spot requires futures) therefore select the same universe for a venue whatever
+ * its siblings' switches say.
  *
  * <h3>Ordering invariant</h3>
  * {@code register all → allocate slots → publish → fire event → transport subscribes.} The event
@@ -95,10 +98,10 @@ public class InstrumentUniverseService {
     }
 
     /**
-     * Validates every source's claim, then keeps the fully-enabled ones.
+     * Validates every source's claim, then keeps those with at least one enabled venue.
      *
-     * @throws IllegalStateException on an empty or multi-exchange claim, a venue claimed twice, or a
-     *         source whose venues are only partly enabled — all startup bugs
+     * @throws IllegalStateException on an empty or multi-exchange claim, or a venue claimed twice —
+     *         all startup bugs
      */
     private static List<SourceHandle> enabledSources(List<InstrumentSource> sources, ExchangesProperties exchanges) {
         Map<Venue, InstrumentSource> claimedBy = new EnumMap<>(Venue.class);
@@ -123,15 +126,20 @@ public class InstrumentUniverseService {
                 }
             }
 
-            long enabledCount = venues.stream().filter(exchanges::isEnabled).count();
-            if (enabledCount == venues.size()) {
-                enabled.add(new SourceHandle(source, venues));
-            } else if (enabledCount == 0) {
+            Set<Venue> enabledVenues = venues.stream()
+                    .filter(exchanges::isEnabled)
+                    .collect(Collectors.toUnmodifiableSet());
+            if (enabledVenues.isEmpty()) {
                 log.info("Instrument source {} skipped — venues {} are disabled", name(source), venues);
-            } else {
-                throw new IllegalStateException("InstrumentSource " + name(source) + " covers venues " + venues
-                        + " but only some are enabled; a source cannot fetch a subset of its venues");
+                continue;
             }
+            if (enabledVenues.size() < venues.size()) {
+                Set<Venue> disabled = EnumSet.copyOf(venues);
+                disabled.removeAll(enabledVenues);
+                log.info("Instrument source {} partly enabled — still fetches all of {}, but {} are disabled "
+                        + "and never registered", name(source), venues, disabled);
+            }
+            enabled.add(new SourceHandle(source, venues, enabledVenues));
         }
         return List.copyOf(enabled);
     }
@@ -230,14 +238,14 @@ public class InstrumentUniverseService {
     }
 
     /**
-     * Applies the exclusion list to a validated result and logs what each venue will actually
-     * track — the source can't, since it reports before exclusion.
+     * Keeps the handle's enabled venues, applies the exclusion list to them and logs what each will
+     * actually track — the source can't, since it reports before exclusion.
      */
     private void accept(SourceHandle handle, Map<Venue, List<InstrumentCandidate>> result,
                         Map<Venue, List<InstrumentCandidate>> fresh) {
         StringJoiner counts = new StringJoiner(", ");
         int excluded = 0;
-        for (Venue venue : EnumSet.copyOf(handle.venues())) {
+        for (Venue venue : EnumSet.copyOf(handle.enabledVenues())) {
             List<InstrumentCandidate> reported = result.get(venue);
             List<InstrumentCandidate> kept = withoutExcluded(reported);
             fresh.put(venue, kept);
@@ -256,8 +264,8 @@ public class InstrumentUniverseService {
     }
 
     private void retain(SourceHandle handle, Set<Venue> retained, String reason, Throwable cause) {
-        retained.addAll(handle.venues());
-        String previous = handle.venues().stream()
+        retained.addAll(handle.enabledVenues());
+        String previous = handle.enabledVenues().stream()
                 .map(v -> v + "=" + activeByVenue.getOrDefault(v, Set.of()).size())
                 .collect(Collectors.joining(", "));
         log.warn("Instrument source {} {} — retaining previous universe ({})",
@@ -327,8 +335,13 @@ public class InstrumentUniverseService {
         return source.getClass().getSimpleName();
     }
 
-    /** A source with its validated, immutable venue claim. */
-    private record SourceHandle(InstrumentSource source, Set<Venue> venues) {}
+    /**
+     * A source with its validated, immutable venue claim.
+     *
+     * @param venues        the source's full claim, which every result must cover
+     * @param enabledVenues the non-empty subset that is registered and streamed
+     */
+    private record SourceHandle(InstrumentSource source, Set<Venue> venues, Set<Venue> enabledVenues) {}
 
     private record PlacedCandidate(Venue venue, InstrumentCandidate candidate) {}
 }

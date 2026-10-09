@@ -32,7 +32,7 @@ class BinanceStreamProtocolTest {
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
     private static final VenueProperties PROPS =
-            new VenueProperties("wss://x", REST, 1024, 1, 1, 400, 120, null);
+            new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, null);
 
     private static final BinanceStreamProtocol SPOT =
             new BinanceStreamProtocol(Venue.BINANCE_SPOT, PROPS);
