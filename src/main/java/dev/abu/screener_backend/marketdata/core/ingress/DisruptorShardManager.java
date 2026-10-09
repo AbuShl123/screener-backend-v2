@@ -8,6 +8,8 @@ import dev.abu.screener_backend.analysis.DefaultClassificationRule;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.config.DisruptorProperties;
+import dev.abu.screener_backend.config.ExchangesProperties;
+import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
 import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
@@ -15,6 +17,8 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+
+import java.util.Map;
 
 @Slf4j
 @Component
@@ -25,6 +29,7 @@ public class DisruptorShardManager {
     private final BookSlotTable             slots;
     private final OrderBookFeedStore        feedStore;
     private final DefaultClassificationRule defaultRule;
+    private final ExchangesProperties       exchangesProps;
 
     private Disruptor<DepthEvent>[]  disruptors;
     private RingBuffer<DepthEvent>[] ringBuffers;
@@ -47,6 +52,7 @@ public class DisruptorShardManager {
         ringBuffers = new RingBuffer[shardCount];
         classifiers = new OrderBookClassifier[shardCount];
         handlers    = new DepthEventHandler[shardCount];
+        Map<Venue, Double> maxVisibleDistances = exchangesProps.maxVisibleDistances();
 
         for (int i = 0; i < shardCount; i++) {
             int shardIndex = i;
@@ -57,14 +63,15 @@ public class DisruptorShardManager {
                     ProducerType.MULTI,
                     new BlockingWaitStrategy()
             );
-            classifiers[i] = new OrderBookClassifier(feedStore, defaultRule);
+            classifiers[i] = new OrderBookClassifier(feedStore, defaultRule, maxVisibleDistances);
             handlers[i]    = new DepthEventHandler(i, slots, classifiers[i]);
             disruptor.handleEventsWith(handlers[i]);
 
             ringBuffers[i] = disruptor.start();
             disruptors[i]  = disruptor;
         }
-        log.info("Disruptor pipeline started — {} shards, {} slots each", shardCount, props.ringBufferSize());
+        log.info("Disruptor pipeline started — {} shards, {} slots each, visibility caps {}",
+                shardCount, props.ringBufferSize(), maxVisibleDistances);
     }
 
     /**

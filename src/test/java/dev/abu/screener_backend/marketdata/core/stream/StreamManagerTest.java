@@ -46,7 +46,7 @@ class StreamManagerTest {
     private static final RestProperties REST =
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
     private static final VenueProperties PROPS =
-            new VenueProperties("wss://x", REST, "{symbol}@depth", 1024, 1, 1, 400, 120);
+            new VenueProperties("wss://x", REST, "{symbol}@depth", 1024, 1, 1, 400, 120, null);
     private static final WebSocketProperties WS = new WebSocketProperties(100, 1000);
     private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
         @Override public void publishFrame(int instrumentId, String payload) { }

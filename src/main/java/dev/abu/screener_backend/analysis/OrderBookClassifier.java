@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.analysis;
 
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
@@ -11,6 +12,7 @@ import dev.abu.screener_backend.feed.depth.OrderBookUpdate;
 import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
 import lombok.Setter;
 
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -78,7 +80,8 @@ import java.util.TreeMap;
  *       outward and fills a pre-allocated top-K {@link SymbolState.Scratch} buffer with tier-&ge;1
  *       levels only, returning whether that side is visible (anything was selected). Because both
  *       maps iterate in monotonically increasing distance order, it early-breaks at the first
- *       level beyond {@link ClassificationRule#maxDistance}, past which every level is tier 0.</li>
+ *       level beyond {@link ClassificationRule#maxDistance}, past which every level is tier 0.
+ *       The venue's visibility cap (see below) can stop it earlier.</li>
  *   <li>{@link #applyNewOrders applyNewOrders} writes the selected entries into the persistent
  *       {@code workBids}/{@code workAsks} arrays, allocating a {@link ClassifiedLevel} only when
  *       a slot's value actually changed.</li>
@@ -88,6 +91,13 @@ import java.util.TreeMap;
  * stale slots so the client receives an empty array for it. When neither side is visible the
  * book is LOW and the apply stage is skipped entirely — <b>no {@link ClassifiedLevel} is
  * allocated for the LOW majority of books</b>, which is the dominant GC win.
+ *
+ * <h2>Per-venue visibility cap</h2>
+ * A venue may set {@code max-visible-distance}: levels further from mid are never classified, in
+ * the default pass or any user pass, whatever the rule's own distances. MEXC uses it (1%) because
+ * its walls beyond that are market-maker ladders. It is a classifier cap and not a tighter
+ * {@code price-filter-threshold}, because that filter deletes levels from the book, and a deleted
+ * level is lost until the venue re-sends it.
  */
 public class OrderBookClassifier {
 
@@ -100,14 +110,25 @@ public class OrderBookClassifier {
     private final DefaultClassificationRule defaultRule;
     private final Map<String, SymbolState> defaultStates = new HashMap<>();
 
+    /// Every venue has an entry (no cap = +∞), so the hot-path get never misses or boxes.
+    private final EnumMap<Venue, Double> maxVisibleDistances = new EnumMap<>(Venue.class);
+
     /// Swapped atomically (never mutated in place) by the WebSocket connect/disconnect path via
     /// DisruptorShardManager.setActiveUserContexts(...).
     @Setter
     private volatile UserClassificationContext[] activeUserContexts = EMPTY;
 
-    public OrderBookClassifier(OrderBookFeedStore feedStore, DefaultClassificationRule defaultRule) {
+    /**
+     * @param maxVisibleDistances per-venue visibility cap as a fraction of mid; a venue absent from
+     *                            the map is uncapped
+     */
+    public OrderBookClassifier(OrderBookFeedStore feedStore, DefaultClassificationRule defaultRule,
+                               Map<Venue, Double> maxVisibleDistances) {
         this.feedStore   = feedStore;
         this.defaultRule = defaultRule;
+        for (Venue v : Venue.values()) {
+            this.maxVisibleDistances.put(v, maxVisibleDistances.getOrDefault(v, Double.POSITIVE_INFINITY));
+        }
     }
 
     /// Entry point called by DepthEventHandler after every ring buffer event.
@@ -115,12 +136,13 @@ public class OrderBookClassifier {
         String stateKey = inst.feedKey();                                  // venue-specific, precomputed
         String ruleKey  = inst.ruleKey();                                  // venue-agnostic, precomputed
         boolean highLiquidity = defaultRule.isHighLiquidity(inst.symbol()); // computed ONCE per book
+        double visibleCap = maxVisibleDistances.get(inst.venue());          // applies to every pass
 
         // TODO: parallel classification for default and per-user rules
 
         // Pass 1 — default, always.
         SymbolState defaultState = defaultStates.computeIfAbsent(stateKey, k -> new SymbolState());
-        classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity);
+        classifyOne(inst, ob, defaultState, defaultRule, feedStore, highLiquidity, visibleCap);
 
         // Pass 2 — per user, only if any context is active. A rule applies on every exchange,
         // but each exchange's book keeps its own state and feed entry.
@@ -129,7 +151,7 @@ public class OrderBookClassifier {
             ThresholdClassificationRule rule = ctx.rule().ruleFor(ruleKey);
             if (rule != null) {
                 SymbolState state = ctx.states().computeIfAbsent(stateKey, k -> new SymbolState());
-                classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity);
+                classifyOne(inst, ob, state, rule, ctx.feedStore(), highLiquidity, visibleCap);
             }
         }
     }
@@ -145,7 +167,8 @@ public class OrderBookClassifier {
             SymbolState state,
             ClassificationRule rule,
             OrderBookFeedStore feedStore,
-            boolean highLiquidity
+            boolean highLiquidity,
+            double visibleCap
     ) {
         if (ob.getState() != OrderBookState.SYNCED) {
             if (state.level == SymbolState.ActivityLevel.HIGH) {
@@ -166,8 +189,8 @@ public class OrderBookClassifier {
         }
 
         // Computing best K bids and asks
-        boolean bidVisible = selectTopK(bids, state.bidScratch, rule, highLiquidity);
-        boolean askVisible = selectTopK(asks, state.askScratch, rule, highLiquidity);
+        boolean bidVisible = selectTopK(bids, state.bidScratch, rule, highLiquidity, visibleCap);
+        boolean askVisible = selectTopK(asks, state.askScratch, rule, highLiquidity, visibleCap);
 
         // No visible tiers? Then no need to update working bids/asks in the state
         if (!bidVisible && !askVisible) {
@@ -193,15 +216,15 @@ public class OrderBookClassifier {
      * Iterates all entries in {@code levels} (best→worst by distance) and selects the top
      * {@value #TOP_LEVELS} tier-&ge;1 levels by (tier DESC, notional DESC, distance ASC) into
      * {@code s}. Tier-0 levels are never selected. Returns {@code true} if the side is visible,
-     * i.e. at least one level was selected.
+     * i.e. at least one level was selected. Levels beyond {@code visibleCap} are never selected.
      */
     private boolean selectTopK(
             TreeMap<Double, PriceLevelEntry> levels,
             SymbolState.Scratch s,
-            ClassificationRule rule, boolean highLiquidity
+            ClassificationRule rule, boolean highLiquidity, double visibleCap
     ) {
         s.topCount = 0;
-        double maxDist = rule.maxDistance(highLiquidity);
+        double maxDist = Math.min(rule.maxDistance(highLiquidity), visibleCap);
 
         for (Map.Entry<Double, PriceLevelEntry> e : levels.entrySet()) {
             double distance = e.getValue().distance;

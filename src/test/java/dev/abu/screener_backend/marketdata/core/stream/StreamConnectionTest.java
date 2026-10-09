@@ -91,7 +91,7 @@ class StreamConnectionTest {
                                                PipelineMetrics metrics) {
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
         VenueProperties props = new VenueProperties("ws://localhost:1", rest, "{symbol}@depth",
-                1024, 1, 1, 400, 120);
+                1024, 1, 1, 400, 120, null);
         // The reconnect scheduler is only touched from onOpen/onClose, which these tests never reach.
         return new StreamConnection(URI.create(props.streamUrl()), Venue.BINANCE_SPOT, instruments(3),
                 protocol, publisher, metrics, null, props, new WebSocketProperties(100, 1000));

@@ -490,7 +490,10 @@ the ideal because batches do not overlap.
 
 - **`MexcInstrumentSource`** reads `GET /api/v1/contract/detail` (~2.3 MB, hence
   `codec-buffer-size-mb: 8`). Its filter is `quoteCoin USDT ∧ futureType 1 ∧ state 0 ∧ apiAllowed ∧
-  symbol not *STOCK_USDT`; tokenized stocks are ~370 contracts with no Binance counterpart.
+  not TradFi`, where TradFi is `conceptPlate ∋ mc-trade-zone-tradfi ∨ symbol *STOCK_USDT`. MEXC's
+  TradFi sector tag covers stocks, ETFs, indices, commodities and forex (~465 contracts, including
+  names without the `STOCK` suffix like `XAU_USDT`, `USOIL_USDT`, `NVIDIA_USDT`); the suffix catches the odd
+  untagged tokenized stock.
   `BTC_USDT` maps to `base BTC`, `quote USDT`, so `symbol = BTCUSDT` and user rules apply unchanged.
   `contractSize` becomes `quantityMultiplier`. A row with a missing or bad `contractSize` is skipped
   with a WARN rather than failing the refresh.
@@ -633,8 +636,9 @@ Settled; the reasoning is kept so they are not relitigated.
 21. **MEXC snapshots are paced at a fixed 4 req/s**, with one persistent send clock and the cooldown
     checked at send time. Probing upward would gain ~10% of cold start, while one trip costs a
     failed slot plus a 3s pause.
-22. **MEXC tokenized-stock perpetuals are excluded.** They are thin equity trackers that go quiet out
-    of US hours and have no Binance counterpart.
+22. **MEXC TradFi perpetuals are excluded.** Stocks, ETFs, indices, commodities and forex are thin
+    trackers of traditional markets that go quiet out of trading hours. Binance's equivalents are
+    `TRADIFI_PERPETUAL`, already outside its `PERPETUAL` filter.
 
 ---
 

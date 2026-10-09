@@ -48,11 +48,13 @@ class MexcFuturesRestClientTest {
     void contractDetailUnwraps() {
         List<MexcContractDto> contracts = client(json(HttpStatus.OK, """
                 {"success":true,"code":0,"data":[{"symbol":"BTC_USDT","baseCoin":"BTC","quoteCoin":"USDT",
-                 "futureType":1,"state":0,"apiAllowed":true,"contractSize":0.0001,"maxLeverage":500}]}
+                 "futureType":1,"state":0,"apiAllowed":true,"contractSize":0.0001,"maxLeverage":500,
+                 "conceptPlate":["mc-trade-zone-mainly"]}]}
                 """)).contractDetail().block();
 
         assertEquals("https://api.mexc.com/api/v1/contract/detail", sent.get().toASCIIString());
-        assertEquals(List.of(new MexcContractDto("BTC_USDT", "BTC", "USDT", 1, 0, true, 0.0001)), contracts);
+        assertEquals(List.of(new MexcContractDto("BTC_USDT", "BTC", "USDT", 1, 0, true, 0.0001,
+                List.of("mc-trade-zone-mainly"))), contracts);
     }
 
     @Test
