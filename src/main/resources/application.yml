@@ -42,9 +42,6 @@ screener:
   exchanges:
     binance:
       enabled: ${BINANCE_ENABLED:true}
-      # Core snapshot request queue, one per Binance venue, all shaped alike. max-batch-size also
-      # caps how many books buffer diffs at once. batch-timeout is a safety net for a batch that
-      # never completes and must exceed every venue's rest.response-timeout.
       snapshot-queue:
         max-batch-size: 10
         flush-interval: PT0.25S
@@ -56,10 +53,8 @@ screener:
             codec-buffer-size-mb: 18
             connect-timeout: PT5S
             response-timeout: PT10S
-          # How Binance prices and paces this venue's snapshot requests. depth-limit must be 100,
-          # 500 or 1000. weight-reserve is left unspent for discovery calls, which the snapshot
-          # fetcher does not see. ban-fallback applies to a 418 without Retry-After.
           snapshot:
+            # acceptable values: 100, 500, 1000
             depth-limit: 1000
             weight-limit-per-minute: 6000
             weight-reserve: 200
@@ -91,13 +86,7 @@ screener:
           heartbeat-interval-seconds: 120
 
     mexc:
-      # Futures only — MEXC spot streams Protobuf and has no adapter. Dark until end-to-end
-      # verification (.claude/plans/mexc-futures-impl-plan.md, Phase 5).
       enabled: ${MEXC_ENABLED:true}
-      # Core snapshot request queue for MEXC futures. max-batch-size caps how many books buffer
-      # pushes at once; it does not set the request rate — the fetcher paces sends inside a batch
-      # (venues.FUTURES.snapshot.request-interval). batch-timeout must exceed
-      # max-batch-size × request-interval + rest.response-timeout (12 × 0.25s + 10s = 13s).
       snapshot-queue:
         max-batch-size: 12
         flush-interval: PT0.25S
@@ -106,45 +95,27 @@ screener:
         FUTURES:
           rest:
             base-url: https://api.mexc.com
-            # /api/v1/contract/detail is ~2.3 MB for ~1100 contracts (measured 2026-10-04).
             codec-buffer-size-mb: 8
             connect-timeout: PT5S
             response-timeout: PT10S
-          # How snapshot requests are sized and paced (external-docs/mexc/mexc-api-rate-limits-empirical.md).
-          # MEXC's window is ~10 requests per 2s per IP, across all symbols; 4 req/s evenly spaced
-          # never trips it. depth-limit 1500 is the server cap and costs the same as any smaller limit.
-          # A throttled request (HTTP 200, code 510) pauses sends for throttle-cooldown; an Akamai
-          # 403 or a 429 for waf-cooldown.
           snapshot:
             depth-limit: 1500
             request-interval: PT0.25S
             throttle-cooldown: PT3S
             waf-cooldown: PT90S
           stream-url: wss://contract.mexc.com/edge
-          # The symbol travels inside the sub.depth frame's param, so the topic is the bare symbol.
           stream-topic: "{symbol}"
-          # No per-connection cap observed (1106 on one socket). ~300 keeps one dropped socket from
-          # resyncing every MEXC book at once.
           max-streams-per-connection: 300
           min-connections: 1
           max-connections: 8
           # sub.depth takes one symbol per frame.
           subscribe-chunk-size: 1
-          # MEXC disconnects after 60s without a ping; docs recommend 10–20s.
           heartbeat-interval-seconds: 15
           # Levels further than this fraction from mid are never classified (default and user rules).
-          # MEXC is thin next to Binance: walls beyond 1% are market-maker ladders, not signal. The
-          # book itself still keeps levels out to screener.orderbook.price-filter-threshold.
-          # Absent = no cap (Binance). See .claude/plans/mexc-feed-noise.md.
           max-visible-distance: 0.01
 
   discovery:
-    # Per-source wait on each universe refresh. A source that overruns is cancelled and its venues
-    # keep their previous universe (no removals).
     source-timeout: PT30S
-    # Never tracked on any exchange or market: stablecoin / metal pairs whose books carry no signal.
-    # Written as base + quote (USDCUSDT), never an exchange's native form (MEXC's USDC_USDT).
-    # Eligibility itself (quote asset, contract type, status) is hardcoded in each adapter.
     excluded-symbols:
       - USDCUSDT
       - FDUSDUSDT
