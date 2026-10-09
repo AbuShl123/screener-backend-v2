@@ -12,6 +12,10 @@ streams depth as **Protobuf binary frames**. Read `.claude/docs/multi-exchange-p
 1. **Universe = Binance's rule.** A spot pair is eligible only if its base asset has an eligible
    MEXC futures contract. Since futures eligibility already excludes TradFi, spot inherits that
    filter. Spot-side eligibility: `quoteAsset = USDT ∧ status = "1" ∧ isSpotTradingAllowed`.
+   The match is spot `baseAsset == ` futures **`baseCoinName`**, not `baseCoin`: on 17 contracts
+   `baseCoin` is an internal id (`TRUMPOFFICIAL`, `FILECOIN`), and matching on it would lose 16 spot
+   pairs (549 vs 533). The match only decides inclusion: futures instruments keep `base = baseCoin`
+   as today (see `mexc-spot-depth-empirical.md` §6 for why).
 2. **Hand-written Protobuf wire reader, no `protobuf-java` codegen.** Generated classes build a full
    object graph with a `String` per price and quantity on every frame. That is exactly the full-POJO
    decode the hot-path rules forbid, and it adds `protoc` + a Maven plugin to the build. The wire
@@ -79,9 +83,10 @@ No venue uses it yet; mergeable on its own.
 | `core/ingress/DisruptorDepthEventPublisher` | implement it (`WS_MSG`, sets `rawBytes`, `rawJson = null`) |
 | `spi/StreamProtocol` | add `default int route(ByteBuffer frame, SubscriptionIndex index) { return IGNORED; }`. Documented as hot path, absolute reads only |
 | `core/stream/StreamConnection` | `onMessage(ByteBuffer)` routes through the protocol and publishes; an `IGNORED` binary frame keeps the existing rate-limited warning, `UNKNOWN` goes through `noteUnknownFrame` |
-| `core/stream/SubscriptionIndex` | add `resolve(ByteBuffer buf, int start, int end)`: decode the ASCII range to a `String` and look it up (same allocation as today's `substring`) |
+| `core/stream/SubscriptionIndex` | add `resolve(ByteBuffer buf, int start, int end)`: decode the range as **UTF-8** to a `String` and look it up (same allocation as today's `substring`). Not ASCII: five MEXC spot symbols are CJK (`龙虾USDT`, `币安人生USDT`, …) |
 
-Tests: binary routing and publishing in `StreamConnection` tests; `SubscriptionIndex` byte resolve;
+Tests: binary routing and publishing in `StreamConnection` tests; `SubscriptionIndex` byte resolve
+(including a multi-byte UTF-8 symbol);
 a test that pins decision 5 (two consecutive binary frames delivered by java-websocket are distinct
 buffers). Update the javadoc on `EventType.REST_FAILED` and `StreamConnection.onMessage(ByteBuffer)`.
 
@@ -119,10 +124,15 @@ Off by default, behind the existing `MEXC_ENABLED` gating.
 - **`MexcSpotRestClient`**: `GET /api/v3/exchangeInfo` and `GET /api/v3/depth`. A separate client,
   since spot is a different API (no envelope, different host, `ETHUSDT` not `ETH_USDT`; decision 20
   in the progress doc). 403 (Akamai HTML) and 429 handling as found in
-  `mexc-api-rate-limits-empirical.md`.
+  `mexc-api-rate-limits-empirical.md`. Pass `symbol` as a URI template variable, as
+  `BinanceRestClient.depth` does, so `WebClient` percent-encodes CJK symbols.
 - **Discovery**: `MexcInstrumentSource` serves both venues, like `BinanceInstrumentSource`. Spot
-  eligibility per decision 1, matched on base asset against the eligible futures set (after
-  TradFi filtering). `screener.discovery.excluded-symbols` applies as usual.
+  eligibility per decision 1: spot `baseAsset` matched against the `baseCoinName` set of eligible
+  futures contracts (after TradFi filtering). Add `baseCoinName` to `MexcContractDto`; a contract
+  with a null `baseCoinName` matches no spot pair. Futures candidates are unchanged (`base =
+  baseCoin`). Spot instruments take `nativeSymbol`, `base` and `quote` from the spot row, so
+  `TRUMPUSDT` on spot sits next to `TRUMPOFFICIALUSDT` on futures; that is accepted.
+  `screener.discovery.excluded-symbols` applies as usual.
 - **`MexcSpotStreamProtocol`** on `wss://wbs-api.mexc.com/ws`:
   - subscribe `{"method":"SUBSCRIPTION","params":["spot@public.aggre.depth.v3.api.pb@100ms@<SYMBOL>",…]}`;
   - `route(ByteBuffer)` via `MexcSpotFrameReader`; `route(String)` handles text control frames only
@@ -138,14 +148,16 @@ Off by default, behind the existing `MEXC_ENABLED` gating.
   30`, `subscribe-chunk-size: 30`, heartbeat interval, REST block, snapshot `limit` and pacing,
   `max-visible-distance`.
 
-Tests: `MexcSpotStreamProtocolTest`, `MexcInstrumentSourceTest` (spot ∩ futures, TradFi
-inheritance), `MexcSpotRestClientTest`, `MexcAdapterConfigTest` (both venues bound).
+Tests: `MexcSpotStreamProtocolTest`, `MexcInstrumentSourceTest` (spot ∩ futures on `baseCoinName`
+with futures `base` still `baseCoin`, TradFi inheritance), `MexcSpotRestClientTest`, `MexcAdapterConfigTest` (both venues bound).
 
 ## Phase 4: Live verification and enablement
 
 - Run locally with spot enabled: time to `SYNCED`, number of books held, steady-state resync rate,
   snapshot rejections. The bar is the same as futures: books hold `SYNCED` with near-zero resyncs
   over a 25–40 min run.
+- Check that the five CJK pairs subscribe and sync. Phase 0 did not test a CJK channel; a rejection
+  shows up as the ack WARN.
 - Watch connection drops (the documented 24h spot connection lifetime) and how books behave across
   a reconnect, given the known "no reset lane" and "no staleness watchdog" gaps.
 - Feed check: is the MEXC spot panel as noisy as futures was? Decide whether the MEXC noise filter

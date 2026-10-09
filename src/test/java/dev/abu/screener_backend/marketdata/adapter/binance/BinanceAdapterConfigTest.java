@@ -25,6 +25,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -144,6 +145,7 @@ class BinanceAdapterConfigTest {
 
     private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
         @Override public void publishFrame(int instrumentId, String payload) { }
+        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };

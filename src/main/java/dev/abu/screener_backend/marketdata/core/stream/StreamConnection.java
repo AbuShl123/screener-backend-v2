@@ -14,6 +14,7 @@ import org.java_websocket.handshake.ServerHandshake;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
@@ -54,13 +55,13 @@ public class StreamConnection extends WebSocketClient {
     private final AtomicInteger reconnectAttempt = new AtomicInteger(0);
     private volatile ScheduledFuture<?> heartbeatTask;
 
-    /** Should be permanently zero — see {@link #onMessage(String)}. */
+    /** Should be permanently zero, text and binary alike — see {@link #onMessage(String)}. */
     private final AtomicLong unknownFrames = new AtomicLong();
     private final AtomicLong unknownFramesLoggedAt = new AtomicLong();
 
     /** Should be permanently zero — see {@link #onMessage(ByteBuffer)}. */
-    private final AtomicLong binaryFrames = new AtomicLong();
-    private final AtomicLong binaryFramesLoggedAt = new AtomicLong();
+    private final AtomicLong ignoredBinaryFrames = new AtomicLong();
+    private final AtomicLong ignoredBinaryFramesLoggedAt = new AtomicLong();
 
     public StreamConnection(
             URI serverUri,
@@ -127,17 +128,30 @@ public class StreamConnection extends WebSocketClient {
     }
 
     /**
-     * Every supported venue streams text JSON, so a binary frame means the venue switched encoding
-     * (a gzip-compressed push, or Protobuf) — without this override java-websocket would drop it
-     * silently, and the only symptom would be books that never sync. Rate-limited, since a venue
-     * that switches does so for every frame.
+     * Same dispatch as {@link #onMessage(String)}. The buffer is published without a copy:
+     * Java-WebSocket allocates a fresh payload buffer per frame ({@code
+     * JavaWebSocketBufferOwnershipTest} pins that), so once routed it belongs to the ring alone.
+     *
+     * <p>Venues send control frames (acks, pongs) as text, never binary. So an {@code IGNORED}
+     * binary frame means a text venue switched encoding (a gzip-compressed push, or Protobuf), or a
+     * binary venue's protocol could not read a push. Without the warning either would be silent,
+     * and the only symptom would be books that never sync. Rate-limited, since a venue that
+     * switches does so for every frame.
      */
     @Override
     public void onMessage(ByteBuffer bytes) {
-        long total = binaryFrames.incrementAndGet();
-        if (dueForLog(binaryFramesLoggedAt)) {
-            log.warn("[{}] Binary frame of {} bytes — dropped, no venue streams binary ({} total)",
-                    venue, bytes.remaining(), total);
+        int instrumentId = protocol.route(bytes, index);
+        if (instrumentId >= 0) {
+            publisher.publishFrame(instrumentId, bytes);
+            metrics.recordFrame(venue);
+        } else if (instrumentId == StreamProtocol.UNKNOWN) {
+            noteUnknownFrame(bytes);
+        } else {
+            long total = ignoredBinaryFrames.incrementAndGet();
+            if (dueForLog(ignoredBinaryFramesLoggedAt)) {
+                log.warn("[{}] Binary frame of {} bytes — dropped, the venue's protocol does not route it ({} total)",
+                        venue, bytes.remaining(), total);
+            }
         }
     }
 
@@ -203,6 +217,21 @@ public class StreamConnection extends WebSocketClient {
         if (dueForLog(unknownFramesLoggedAt)) {
             log.warn("[{}] Data frame for an unsubscribed routing key — dropped ({} total): {}",
                     venue, total, message.substring(0, Math.min(message.length(), UNKNOWN_FRAME_LOG_CHARS)));
+        }
+    }
+
+    /**
+     * The preview is the frame's leading bytes read as UTF-8, control characters shown as {@code .}:
+     * lossy, but on a Protobuf push it shows the channel name, which carries the routing key.
+     */
+    private void noteUnknownFrame(ByteBuffer frame) {
+        long total = unknownFrames.incrementAndGet();
+        if (dueForLog(unknownFramesLoggedAt)) {
+            ByteBuffer head = frame.duplicate();
+            head.limit(head.position() + Math.min(head.remaining(), UNKNOWN_FRAME_LOG_CHARS));
+            String preview = StandardCharsets.UTF_8.decode(head).toString().replaceAll("\\p{Cntrl}", ".");
+            log.warn("[{}] Binary data frame of {} bytes for an unsubscribed routing key — dropped ({} total): {}",
+                    venue, frame.remaining(), total, preview);
         }
     }
 

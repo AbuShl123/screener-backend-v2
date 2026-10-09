@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,8 +32,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class StreamConnectionTest {
 
-    /** Frames name their chunk as {@code "<requestId>:<chunkSize>"}; routing answers a fixed value. */
-    private static final class StubProtocol implements StreamProtocol {
+    /**
+     * Frames name their chunk as {@code "<requestId>:<chunkSize>"}; text routing answers a fixed
+     * value. Binary routing is the interface default, as for every text venue.
+     */
+    private static class StubProtocol implements StreamProtocol {
         int routeResult;
 
         @Override
@@ -56,14 +60,31 @@ class StreamConnectionTest {
         }
     }
 
+    /** A binary venue: binary routing answers a fixed value too. */
+    private static final class BinaryStubProtocol extends StubProtocol {
+        int binaryRouteResult;
+
+        @Override
+        public int route(ByteBuffer frame, SubscriptionIndex index) {
+            return binaryRouteResult;
+        }
+    }
+
     private static final class RecordingPublisher implements DepthEventPublisher {
         final List<Integer> ids = new ArrayList<>();
         final List<String> payloads = new ArrayList<>();
+        final List<ByteBuffer> binaryPayloads = new ArrayList<>();
 
         @Override
         public void publishFrame(int instrumentId, String payload) {
             ids.add(instrumentId);
             payloads.add(payload);
+        }
+
+        @Override
+        public void publishFrame(int instrumentId, ByteBuffer payload) {
+            ids.add(instrumentId);
+            binaryPayloads.add(payload);
         }
 
         @Override
@@ -159,14 +180,50 @@ class StreamConnectionTest {
     }
 
     @Test
-    @DisplayName("a binary frame is dropped: never published, never counted, never thrown")
-    void binaryFrameDropped() {
+    @DisplayName("a text-only protocol ignores binary frames: never published, never counted, never thrown")
+    void binaryFrameDroppedByTextProtocol() {
         PipelineMetrics metrics = new PipelineMetrics();
         RecordingPublisher publisher = new RecordingPublisher();
         StreamConnection connection = connection(new StubProtocol(), publisher, metrics);
 
         connection.onMessage(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08}));
         connection.onMessage(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08}));
+
+        assertTrue(publisher.ids.isEmpty());
+        assertEquals(0, metrics.frames(Venue.BINANCE_SPOT));
+    }
+
+    @Test
+    @DisplayName("a routed binary frame is published once and counted, as the same buffer with position and limit untouched")
+    void routedBinaryFramePublished() {
+        BinaryStubProtocol protocol = new BinaryStubProtocol();
+        protocol.binaryRouteResult = 2;
+        PipelineMetrics metrics = new PipelineMetrics();
+        RecordingPublisher publisher = new RecordingPublisher();
+        ByteBuffer frame = ByteBuffer.wrap(new byte[]{0x0a, 0x03, 'a', 'b', 'c', 0x1a}, 1, 4);
+
+        connection(protocol, publisher, metrics).onMessage(frame);
+
+        assertEquals(List.of(2), publisher.ids);
+        assertSame(frame, publisher.binaryPayloads.getFirst());
+        assertEquals(1, frame.position());
+        assertEquals(5, frame.limit());
+        assertEquals(1, metrics.frames(Venue.BINANCE_SPOT));
+        assertTrue(publisher.payloads.isEmpty());
+    }
+
+    @Test
+    @DisplayName("IGNORED and UNKNOWN binary frames are not published or counted")
+    void nonDataBinaryFramesDropped() {
+        BinaryStubProtocol protocol = new BinaryStubProtocol();
+        PipelineMetrics metrics = new PipelineMetrics();
+        RecordingPublisher publisher = new RecordingPublisher();
+        StreamConnection connection = connection(protocol, publisher, metrics);
+
+        protocol.binaryRouteResult = StreamProtocol.IGNORED;
+        connection.onMessage(ByteBuffer.wrap(new byte[]{0x08, 0x01}));
+        protocol.binaryRouteResult = StreamProtocol.UNKNOWN;
+        connection.onMessage(ByteBuffer.wrap("\n\bNOPEUSDT".getBytes(StandardCharsets.UTF_8)));
 
         assertTrue(publisher.ids.isEmpty());
         assertEquals(0, metrics.frames(Venue.BINANCE_SPOT));

@@ -3,6 +3,7 @@ package dev.abu.screener_backend.marketdata.spi;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
 
+import java.nio.ByteBuffer;
 import java.util.List;
 
 /**
@@ -36,6 +37,22 @@ public interface StreamProtocol {
      * @return the instrument id ({@code >= 0}), {@link #IGNORED}, or {@link #UNKNOWN}
      */
     int route(String frame, SubscriptionIndex index);
+
+    /**
+     * <b>Hot path</b>, the binary twin of {@link #route(String, SubscriptionIndex)}, with the same
+     * allocation and logging rules. The default suits a venue that streams text only: every binary
+     * frame is {@link #IGNORED}, and core logs it as an anomaly.
+     *
+     * <p><b>Absolute reads only</b> ({@code frame.get(int)}, never {@code get()}), between
+     * {@code frame.position()} and {@code frame.limit()}. A routed buffer goes into the ring as-is
+     * and is parsed again on the shard thread, so moving {@code position} or {@code limit} here
+     * would corrupt that parse.
+     *
+     * @return the instrument id ({@code >= 0}), {@link #IGNORED}, or {@link #UNKNOWN}
+     */
+    default int route(ByteBuffer frame, SubscriptionIndex index) {
+        return IGNORED;
+    }
 
     /** Cold; read once per connection open. */
     Heartbeat heartbeat();

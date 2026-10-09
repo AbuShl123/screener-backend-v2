@@ -23,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -50,6 +51,7 @@ class StreamManagerTest {
     private static final WebSocketProperties WS = new WebSocketProperties(100, 1000);
     private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
         @Override public void publishFrame(int instrumentId, String payload) { }
+        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };

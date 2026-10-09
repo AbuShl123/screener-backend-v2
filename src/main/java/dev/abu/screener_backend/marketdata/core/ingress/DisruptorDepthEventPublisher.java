@@ -4,6 +4,8 @@ import com.lmax.disruptor.RingBuffer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.nio.ByteBuffer;
+
 /**
  * The single fill-and-publish site for both producers.
  *
@@ -19,27 +21,34 @@ public class DisruptorDepthEventPublisher implements DepthEventPublisher {
 
     @Override
     public void publishFrame(int instrumentId, String payload) {
-        publish(EventType.WS_MSG, instrumentId, payload);
+        publish(EventType.WS_MSG, instrumentId, payload, null);
+    }
+
+    @Override
+    public void publishFrame(int instrumentId, ByteBuffer payload) {
+        publish(EventType.WS_MSG, instrumentId, null, payload);
     }
 
     @Override
     public void publishSnapshot(int instrumentId, String payload) {
-        publish(EventType.REST_MSG, instrumentId, payload);
+        publish(EventType.REST_MSG, instrumentId, payload, null);
     }
 
     @Override
     public void publishSnapshotFailure(int instrumentId) {
-        publish(EventType.REST_FAILED, instrumentId, null);
+        publish(EventType.REST_FAILED, instrumentId, null, null);
     }
 
-    private void publish(EventType type, int instrumentId, String payload) {
+    /** Writes both payload fields every time: the slot is reused, so a stale one would leak through. */
+    private void publish(EventType type, int instrumentId, String text, ByteBuffer bytes) {
         RingBuffer<DepthEvent> rb = shardManager.getRingBuffer(instrumentId);
         long seq = rb.next();
         try {
             DepthEvent event = rb.get(seq);
             event.type         = type;
             event.instrumentId = instrumentId;
-            event.rawJson      = payload;
+            event.rawJson      = text;
+            event.rawBytes     = bytes;
         } finally {
             rb.publish(seq);
         }

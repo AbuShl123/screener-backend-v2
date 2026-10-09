@@ -86,7 +86,7 @@ screener:
           heartbeat-interval-seconds: 120
 
     mexc:
-      enabled: ${MEXC_ENABLED:true}
+      enabled: ${MEXC_ENABLED:false}
       snapshot-queue:
         max-batch-size: 12
         flush-interval: PT0.25S
