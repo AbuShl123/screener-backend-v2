@@ -92,6 +92,29 @@ screener:
         flush-interval: PT0.25S
         batch-timeout: PT20S
       venues:
+        SPOT:
+          rest:
+            base-url: https://api.mexc.com
+            codec-buffer-size-mb: 8
+            connect-timeout: PT5S
+            response-timeout: PT10S
+          snapshot:
+            # Server cap is 2000 per side.
+            depth-limit: 2000
+            request-interval: PT0.1S
+            # Unused on spot (no throttle-in-a-200), but required.
+            throttle-cooldown: PT3S
+            waf-cooldown: PT90S
+          stream-url: wss://wbs-api.mexc.com/ws
+          stream-topic: "spot@public.aggre.depth.v3.api.pb@100ms@{symbol}"
+          # The server allows 30 subscriptions per connection, so max-connections must cover
+          # universe / 30 (~549 pairs → 19).
+          max-streams-per-connection: 30
+          min-connections: 1
+          max-connections: 30
+          subscribe-chunk-size: 30
+          heartbeat-interval-seconds: 20
+          max-visible-distance: 0.01
         FUTURES:
           rest:
             base-url: https://api.mexc.com

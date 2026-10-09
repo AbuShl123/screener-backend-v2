@@ -2,6 +2,7 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcApiException;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesRestClient;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcDepthClient.BodyKind;
 import dev.abu.screener_backend.marketdata.adapter.mexc.dto.MexcContractDto;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeApiException;
 import org.junit.jupiter.api.DisplayName;
@@ -47,13 +48,13 @@ class MexcFuturesRestClientTest {
     @DisplayName("contractDetail: unwraps data from a successful envelope")
     void contractDetailUnwraps() {
         List<MexcContractDto> contracts = client(json(HttpStatus.OK, """
-                {"success":true,"code":0,"data":[{"symbol":"BTC_USDT","baseCoin":"BTC","quoteCoin":"USDT",
+                {"success":true,"code":0,"data":[{"symbol":"BTC_USDT","baseCoin":"BTC","baseCoinName":"BTC","quoteCoin":"USDT",
                  "futureType":1,"state":0,"apiAllowed":true,"contractSize":0.0001,"maxLeverage":500,
                  "conceptPlate":["mc-trade-zone-mainly"]}]}
                 """)).contractDetail().block();
 
         assertEquals("https://api.mexc.com/api/v1/contract/detail", sent.get().toASCIIString());
-        assertEquals(List.of(new MexcContractDto("BTC_USDT", "BTC", "USDT", 1, 0, true, 0.0001,
+        assertEquals(List.of(new MexcContractDto("BTC_USDT", "BTC", "BTC", "USDT", 1, 0, true, 0.0001,
                 List.of("mc-trade-zone-mainly"))), contracts);
     }
 
@@ -93,6 +94,34 @@ class MexcFuturesRestClientTest {
         String body = "{\"success\":false,\"code\":510,\"message\":\"Requests are too frequent, please try again later\"}";
 
         assertEquals(body, client(json(HttpStatus.OK, body)).depth("BTC_USDT", 1500).block());
+    }
+
+    // --- Depth body classification ------------------------------------------------------------
+
+    @Test
+    @DisplayName("classify stops at success:true — the levels after it are never parsed")
+    void classifyStopsAtSuccess() {
+        // Truncated mid-data: a full parse would fail.
+        assertEquals(BodyKind.OK, MexcFuturesRestClient.classify("{\"success\":true,\"code\":0,\"data\":{\"asks\":[[1,"));
+    }
+
+    @Test
+    @DisplayName("classify does not depend on field order")
+    void classifyAnyOrder() {
+        assertEquals(BodyKind.THROTTLED, MexcFuturesRestClient.classify("{\"code\":510,\"message\":\"x\",\"success\":false}"));
+        assertEquals(BodyKind.OK, MexcFuturesRestClient.classify("{\"data\":{\"asks\":[],\"bids\":[]},\"code\":0,\"success\":true}"));
+    }
+
+    @Test
+    @DisplayName("classify: other failure codes are REJECTED; anything without a boolean success is MALFORMED")
+    void classifyOther() {
+        assertEquals(BodyKind.REJECTED, MexcFuturesRestClient.classify("{\"success\":false,\"code\":1001}"));
+        assertEquals(BodyKind.REJECTED, MexcFuturesRestClient.classify("{\"success\":false}"));
+        assertEquals(BodyKind.MALFORMED, MexcFuturesRestClient.classify("{\"code\":0,\"data\":{}}"));
+        assertEquals(BodyKind.MALFORMED, MexcFuturesRestClient.classify("{\"success\":\"true\"}"));
+        assertEquals(BodyKind.MALFORMED, MexcFuturesRestClient.classify("[1,2]"));
+        assertEquals(BodyKind.MALFORMED, MexcFuturesRestClient.classify("<HTML></HTML>"));
+        assertEquals(BodyKind.MALFORMED, MexcFuturesRestClient.classify(""));
     }
 
     @Test

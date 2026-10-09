@@ -91,7 +91,7 @@ class ExchangesPropertiesTest {
     }
 
     @Test
-    @DisplayName("the shipped application.yml binds: Binance on, MEXC futures configured but off by default")
+    @DisplayName("the shipped application.yml binds: Binance on, both MEXC venues configured but off by default")
     void shippedYamlBinds() throws IOException {
         MutablePropertySources sources = new MutablePropertySources();
         new YamlPropertySourceLoader()
@@ -108,9 +108,15 @@ class ExchangesPropertiesTest {
         assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
         assertTrue(props.isEnabled(Venue.BINANCE_FUTURES));
         assertFalse(props.isEnabled(Venue.MEXC_FUTURES));
+        assertFalse(props.isEnabled(Venue.MEXC_SPOT));
 
         VenueProperties mexc = props.venue(Venue.MEXC_FUTURES);
         assertEquals("BTC_USDT", mexc.streamTopic("BTC_USDT"));
         assertEquals(1, mexc.subscribeChunkSize());
+
+        VenueProperties mexcSpot = props.venue(Venue.MEXC_SPOT);
+        assertEquals("spot@public.aggre.depth.v3.api.pb@100ms@BTCUSDT", mexcSpot.streamTopic("BTCUSDT"));
+        assertEquals(30, mexcSpot.maxStreamsPerConnection());
+        assertEquals(0.01, mexcSpot.maxVisibleDistance());
     }
 }

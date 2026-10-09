@@ -46,11 +46,7 @@ final class MexcSpotTestSupport {
     /** Matches {@code screener.orderbook.price-filter-threshold} — a fraction, not a percentage. */
     static final double FILTER = 0.1;
 
-    /**
-     * {@code Venue.MEXC_SPOT} arrives with the wiring (plan Phase 3). Only the resync counter reads
-     * the venue, so the futures one stands in.
-     */
-    static final Venue VENUE = Venue.MEXC_FUTURES;
+    static final Venue VENUE = Venue.MEXC_SPOT;
 
     static final String SYMBOL = "BTCUSDT";
     static final String EVENT_TYPE = "spot@public.aggre.depth.v3.api.pb@100ms";

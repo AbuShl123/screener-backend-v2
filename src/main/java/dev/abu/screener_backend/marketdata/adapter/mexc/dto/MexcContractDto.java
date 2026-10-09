@@ -12,7 +12,11 @@ import java.util.List;
  * silently reading as {@code 0} / {@code false}, which for {@code state} would mean "enabled".
  *
  * @param symbol       native symbol, {@code BASE_QUOTE}, e.g. {@code "BTC_USDT"}
- * @param baseCoin     e.g. {@code "BTC"}
+ * @param baseCoin     e.g. {@code "BTC"}; on some contracts an internal id rather than the ticker
+ *                     ({@code FILECOIN_USDT} has {@code baseCoin} {@code "FILECOIN"})
+ * @param baseCoinName the display ticker, e.g. {@code "FIL"} for {@code FILECOIN_USDT}. Equals MEXC
+ *                     spot's {@code baseAsset} for the same coin, so it is what spot discovery
+ *                     matches on; the futures instrument itself keeps {@code baseCoin}
  * @param quoteCoin    e.g. {@code "USDT"}
  * @param futureType   {@code 1} perpetual, {@code 2} delivery
  * @param state        {@code 0} enabled, {@code 1} delivery, {@code 2} delivered, {@code 3} offline,
@@ -27,6 +31,7 @@ import java.util.List;
 public record MexcContractDto(
         String symbol,
         String baseCoin,
+        String baseCoinName,
         String quoteCoin,
         Integer futureType,
         Integer state,

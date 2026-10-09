@@ -1,6 +1,7 @@
 package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import dev.abu.screener_backend.marketdata.Venue;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcDepthClient.BodyKind;
 import dev.abu.screener_backend.marketdata.core.book.BookSlot;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeApiException;
@@ -11,11 +12,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
-import tools.jackson.core.JacksonException;
-import tools.jackson.core.JsonParser;
-import tools.jackson.core.JsonToken;
-import tools.jackson.core.ObjectReadContext;
-import tools.jackson.core.json.JsonFactory;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -25,18 +21,19 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Fetches depth snapshots for MEXC futures: classifies each response before reporting it, and paces
- * every send against MEXC's per-IP window (~10 requests per 2s, shared by every symbol).
+ * Fetches depth snapshots for one MEXC venue: classifies each response before reporting it, and
+ * paces every send at the venue's {@code request-interval}. One instance per venue, each with its
+ * own clock and cooldown: spot depth does not draw from the futures window
+ * ({@code external-docs/mexc/mexc-spot-depth-empirical.md} §4).
  *
- * <p><b>Classify before reporting.</b> MEXC throttles with an HTTP 200 whose envelope says
- * {@code success:false, code:510}, so a 200 is not a snapshot until its envelope says so. Only the
- * envelope's {@code success} / {@code code} are read, and reading stops as soon as {@code success}
- * is known to be {@code true} — the ~1500-level body is never parsed here.
+ * <p><b>Classify before reporting.</b> A 2xx is not a snapshot until the venue's
+ * {@link MexcDepthClient#classifyDepth} says so — futures throttles with an HTTP 200 whose envelope
+ * says {@code success:false, code:510}. Classification never parses the levels.
  *
  * <table>
  *   <tr><th>Response</th><th>Report</th><th>Cooldown</th></tr>
- *   <tr><td>200, {@code success:true}</td><td>delivered</td><td>—</td></tr>
- *   <tr><td>200, {@code success:false, code:510}</td><td>failed</td><td>{@code throttle-cooldown}</td></tr>
+ *   <tr><td>2xx, {@code OK}</td><td>delivered</td><td>—</td></tr>
+ *   <tr><td>2xx, {@code THROTTLED} (futures {@code code:510})</td><td>failed</td><td>{@code throttle-cooldown}</td></tr>
  *   <tr><td>403 (Akamai WAF, HTML) or 429</td><td>failed</td><td>{@code waf-cooldown}</td></tr>
  *   <tr><td>anything else — other codes, unreadable body, other status, timeout</td><td>failed</td><td>—</td></tr>
  * </table>
@@ -55,22 +52,15 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class MexcSnapshotFetcher implements SnapshotFetcher {
 
-    private static final Venue VENUE = Venue.MEXC_FUTURES;
-    private static final JsonFactory JSON_FACTORY = JsonFactory.builder().build();
-    private static final int THROTTLED_CODE = 510;
     private static final int FORBIDDEN = 403;
     private static final int TOO_MANY_REQUESTS = 429;
-
-    /** What a 200 body's envelope says. */
-    public enum BodyKind {
-        OK, THROTTLED, REJECTED, MALFORMED
-    }
 
     private enum Cooldown {
         THROTTLE, WAF
     }
 
-    private final MexcFuturesRestClient client;
+    private final MexcDepthClient client;
+    private final Venue venue;
     private final int depthLimit;
     private final long requestIntervalMs;
     private final long throttleCooldownMs;
@@ -89,12 +79,13 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
     /** The cooldown in force, for logging only. Guarded by {@code this}. */
     private Cooldown cooldownKind;
 
-    public MexcSnapshotFetcher(MexcFuturesRestClient client, MarketSnapshot props) {
+    MexcSnapshotFetcher(MexcDepthClient client, MarketSnapshot props) {
         this(client, props, Schedulers.parallel());
     }
 
-    MexcSnapshotFetcher(MexcFuturesRestClient client, MarketSnapshot props, Scheduler scheduler) {
+    MexcSnapshotFetcher(MexcDepthClient client, MarketSnapshot props, Scheduler scheduler) {
         this.client = client;
+        this.venue = client.venue();
         this.depthLimit = props.depthLimit();
         this.requestIntervalMs = props.requestInterval().toMillis();
         this.throttleCooldownMs = props.throttleCooldown().toMillis();
@@ -118,7 +109,7 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
             nextSendAtMs = now + delayMs + requestIntervalMs;
             sends.add(fetchOne(slot, delayMs, outcome));
         }
-        log.debug("[{}] snapshot batch of {}: sends from +{} ms to +{} ms", VENUE, batch.size(),
+        log.debug("[{}] snapshot batch of {}: sends from +{} ms to +{} ms", venue, batch.size(),
                 firstDelayMs, nextSendAtMs - requestIntervalMs - now);
         return Flux.merge(sends).then().toFuture();
     }
@@ -145,11 +136,11 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
     }
 
     private void onBody(BookSlot slot, String body, SnapshotOutcome outcome) {
-        switch (classify(body)) {
+        switch (client.classifyDepth(body)) {
             case OK -> outcome.delivered(slot, body);
             case THROTTLED -> {
                 outcome.failed(slot);
-                coolDown(Cooldown.THROTTLE, "MEXC throttled a snapshot request (code " + THROTTLED_CODE + ")");
+                coolDown(Cooldown.THROTTLE, "MEXC throttled a snapshot request");
             }
             case REJECTED -> {
                 outcome.failed(slot);
@@ -163,7 +154,7 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
         }
     }
 
-    /** The error itself is already logged at WARN by {@link MexcFuturesRestClient}. */
+    /** The error itself is already logged at WARN by the REST client. */
     private void onError(BookSlot slot, Throwable e) {
         if (!(e instanceof ExchangeApiException api)) {
             // Timeout, connection reset, codec overflow…
@@ -197,42 +188,9 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
         }
         if (escalated) {
             log.warn("[{}] {} - snapshot requests paused for {} ms, until {}",
-                    VENUE, cause, durationMs, Instant.ofEpochMilli(effectiveUntilMs));
+                    venue, cause, durationMs, Instant.ofEpochMilli(effectiveUntilMs));
         } else {
-            log.debug("[{}] {} - already paused until {}", VENUE, cause, Instant.ofEpochMilli(effectiveUntilMs));
-        }
-    }
-
-    /**
-     * Reads the envelope only: returns as soon as {@code success} is {@code true}, so {@code data}
-     * is never tokenized when MEXC sends {@code success} first (it does). Indifferent to field
-     * order otherwise.
-     */
-    static BodyKind classify(String body) {
-        if (body == null || body.isEmpty()) return BodyKind.MALFORMED;
-        try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), body)) {
-            if (p.nextToken() != JsonToken.START_OBJECT) return BodyKind.MALFORMED;
-            boolean failed = false;
-            int code = -1;
-            while (p.nextToken() == JsonToken.PROPERTY_NAME) {
-                String field = p.currentName();
-                JsonToken value = p.nextToken();
-                if (field.equals("success")) {
-                    if (value == JsonToken.VALUE_TRUE) return BodyKind.OK;
-                    if (value != JsonToken.VALUE_FALSE) return BodyKind.MALFORMED;
-                    failed = true;
-                    if (code != -1) break;
-                } else if (field.equals("code") && value == JsonToken.VALUE_NUMBER_INT) {
-                    code = p.getIntValue();
-                    if (failed) break;
-                } else {
-                    p.skipChildren();
-                }
-            }
-            if (!failed) return BodyKind.MALFORMED;
-            return code == THROTTLED_CODE ? BodyKind.THROTTLED : BodyKind.REJECTED;
-        } catch (JacksonException e) {
-            return BodyKind.MALFORMED;   // e.g. an HTML page with a 200
+            log.debug("[{}] {} - already paused until {}", venue, cause, Instant.ofEpochMilli(effectiveUntilMs));
         }
     }
 

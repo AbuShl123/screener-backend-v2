@@ -20,7 +20,7 @@ import tools.jackson.core.json.JsonFactory;
 import java.nio.ByteBuffer;
 
 /**
- * MEXC spot depth sync. Not a {@code @Component}: the adapter config will instantiate it.
+ * MEXC spot depth sync. Not a {@code @Component}: {@link MexcAdapterConfig} instantiates it.
  *
  * <p>Same shape as {@link MexcFuturesSyncStrategy} (progress doc §7): one flat dispatch in
  * {@link #onEvent}, {@link #recover} called only from there, buffering only while
