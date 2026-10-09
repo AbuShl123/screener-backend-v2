@@ -111,7 +111,7 @@ class JavaWebSocketBufferOwnershipTest {
 
         String url = "ws://127.0.0.1:" + server.getPort();
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties props = new VenueProperties(url, rest, "{symbol}@depth", 1024, 1, 1, 400, 120, null);
+        VenueProperties props = new VenueProperties(url, rest, 1024, 1, 1, 400, 120, null);
         scheduler = Executors.newSingleThreadScheduledExecutor();
         CapturingPublisher publisher = new CapturingPublisher();
         connection = new StreamConnection(URI.create(url), Venue.BINANCE_SPOT,

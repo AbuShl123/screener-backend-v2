@@ -82,8 +82,20 @@ class MexcSnapshotPropertiesTest {
     @DisplayName("non-positive or missing durations are rejected")
     void badDurations() {
         assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, Duration.ZERO, THROTTLE, WAF));
-        assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, null, WAF));
+        assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, Duration.ZERO, WAF));
         assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, THROTTLE, Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class, () -> new MarketSnapshot(1500, INTERVAL, THROTTLE, null));
+    }
+
+    @Test
+    @DisplayName("throttle-cooldown is optional on spot, required on futures")
+    void throttleCooldownOnlyOnFutures() {
+        MexcSnapshotProperties props = new MexcSnapshotProperties(Map.of(
+                Market.SPOT, new VenueBlock(new MarketSnapshot(2000, INTERVAL, null, WAF)),
+                Market.FUTURES, new VenueBlock(new MarketSnapshot(1500, INTERVAL, null, WAF))));
+
+        assertDoesNotThrow(() -> props.forMarket(Market.SPOT));
+        assertThrows(IllegalArgumentException.class, () -> props.forMarket(Market.FUTURES));
     }
 
     @ParameterizedTest
@@ -103,7 +115,7 @@ class MexcSnapshotPropertiesTest {
         ExchangesProperties exchanges = binder.bind("screener", ExchangesProperties.class).get();
 
         assertEquals(new MarketSnapshot(1500, INTERVAL, THROTTLE, WAF), futures);
-        assertEquals(new MarketSnapshot(2000, Duration.ofMillis(100), THROTTLE, WAF), spot);
+        assertEquals(new MarketSnapshot(2000, Duration.ofMillis(100), null, WAF), spot);
         assertDoesNotThrow(() -> MexcAdapterConfig.requireBatchTimeoutCoversPacing(exchanges, Venue.MEXC_FUTURES, futures));
         assertDoesNotThrow(() -> MexcAdapterConfig.requireBatchTimeoutCoversPacing(exchanges, Venue.MEXC_SPOT, spot));
     }

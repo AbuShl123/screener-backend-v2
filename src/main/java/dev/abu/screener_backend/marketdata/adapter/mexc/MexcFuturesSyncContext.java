@@ -7,7 +7,7 @@ import java.util.ArrayDeque;
 
 /** Per-book sync state for {@link MexcFuturesSyncStrategy}. One instance per book. */
 @Slf4j
-public class MexcSyncContext implements BookSyncContext {
+public class MexcFuturesSyncContext implements BookSyncContext {
 
     /** Package-private so the sync tests can drive an overflow without duplicating the constant. */
     static final int MAX_BUFFER_SIZE = 500;

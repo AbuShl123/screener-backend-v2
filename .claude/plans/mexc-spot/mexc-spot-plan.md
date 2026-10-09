@@ -2,6 +2,10 @@
 
 **Created**: 2026-10-09, branch `feature/mexc-spot`.
 
+**Status** (2026-10-10): Phases 0–3 done. Phase 4: the local run holds books `SYNCED` with no
+resyncs, and the docs are updated. Still open: the `MEXC_ENABLED` default, the CJK-pair check, the
+reconnect/24h observation and the noise-filter scope decision.
+
 Adds `MEXC_SPOT` as the fourth venue. MEXC futures (`adapter/mexc/`) is the template. Everything
 venue-agnostic already exists except one thing: the pipeline is text end to end, and MEXC spot
 streams depth as **Protobuf binary frames**. Read `.claude/docs/multi-exchange-progress.md` (§11

@@ -125,9 +125,6 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     /**
      * @param streamUrl                WebSocket endpoint for this venue
      * @param rest                     REST client config for this venue (base URL, codec buffer, timeouts)
-     * @param streamTopic              per-venue topic template containing {@value #SYMBOL_PLACEHOLDER},
-     *                                 e.g. Binance {@code "{symbol}@depth"} or Bybit
-     *                                 {@code "orderbook.50.{symbol}"}
      * @param maxStreamsPerConnection  venue's own per-connection subscription ceiling
      * @param minConnections           floor on the derived connection count. With Binance's 1024-stream
      *                                 ceiling the derived term is 1, so this floor is what actually
@@ -145,7 +142,6 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
     public record VenueProperties(
             String streamUrl,
             RestProperties rest,
-            String streamTopic,
             int maxStreamsPerConnection,
             int minConnections,
             int maxConnections,
@@ -153,28 +149,13 @@ public record ExchangesProperties(Map<Exchange, ExchangeProperties> exchanges) {
             int heartbeatIntervalSeconds,
             Double maxVisibleDistance
     ) {
-        public static final String SYMBOL_PLACEHOLDER = "{symbol}";
-
         public VenueProperties {
-            // Fail at startup rather than subscribing every stream to a garbage topic.
-            if (streamTopic == null || !streamTopic.contains(SYMBOL_PLACEHOLDER)) {
-                throw new IllegalArgumentException("stream-topic must contain " + SYMBOL_PLACEHOLDER
-                        + ", got: " + streamTopic);
-            }
             if (subscribeChunkSize <= 0) throw new IllegalArgumentException("subscribe-chunk-size must be > 0");
             if (heartbeatIntervalSeconds <= 0) throw new IllegalArgumentException("heartbeat-interval-seconds must be > 0");
             if (maxVisibleDistance != null && !(maxVisibleDistance > 0 && Double.isFinite(maxVisibleDistance))) {
                 throw new IllegalArgumentException("max-visible-distance must be positive and finite, got: "
                         + maxVisibleDistance);
             }
-        }
-
-        /**
-         * Renders this venue's topic for one symbol. Casing is the adapter's call; this method
-         * substitutes {@code symbol} exactly as given.
-         */
-        public String streamTopic(String symbol) {
-            return streamTopic.replace(SYMBOL_PLACEHOLDER, symbol);
         }
 
         /**

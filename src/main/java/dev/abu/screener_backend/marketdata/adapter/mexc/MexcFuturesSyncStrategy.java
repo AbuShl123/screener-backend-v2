@@ -66,12 +66,12 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
 
     @Override
     public BookSyncContext newContext() {
-        return new MexcSyncContext();
+        return new MexcFuturesSyncContext();
     }
 
     @Override
     public void onEvent(BookSlot slot, DepthEvent event) {
-        MexcSyncContext ctx = (MexcSyncContext) slot.ctx();
+        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
         OrderBookState state = slot.book().getState();
 
         if (event.type == EventType.REST_MSG) {
@@ -120,7 +120,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
      * @throws IllegalStateException if the frame carries no {@code begin} / {@code end} — they are
      *         undocumented, so their disappearance must be loud rather than a silent drift
      */
-    CheckResult check(String rawJson, MexcSyncContext ctx, String logName) {
+    CheckResult check(String rawJson, MexcFuturesSyncContext ctx, String logName) {
         long begin = readVersionField(rawJson, BEGIN_FIELD);
         long end = readVersionField(rawJson, END_FIELD);
 
@@ -158,7 +158,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
     }
 
     boolean handleDiff(BookSlot slot, String rawJson) {
-        MexcSyncContext ctx = (MexcSyncContext) slot.ctx();
+        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
 
         try {
             CheckResult result = check(rawJson, ctx, slot.instrument().logName());
@@ -186,7 +186,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
             if (version == -1) return false;
             slot.book().computeDistance();
 
-            MexcSyncContext ctx = (MexcSyncContext) slot.ctx();
+            MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
             ctx.lastVersion = version;
 
             while (!ctx.diffBuffer.isEmpty()) {
@@ -289,7 +289,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
      * The single recovery path — called from {@link #onEvent} and nowhere else, which is what
      * bounds the sink to at most one request per event.
      */
-    private void recover(BookSlot slot, MexcSyncContext ctx) {
+    private void recover(BookSlot slot, MexcFuturesSyncContext ctx) {
         metrics.recordResync(slot.instrument().venue());
         ctx.reset();
         slot.book().clearLevels();

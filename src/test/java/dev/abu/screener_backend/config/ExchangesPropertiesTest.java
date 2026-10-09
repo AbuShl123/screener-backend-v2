@@ -35,7 +35,7 @@ class ExchangesPropertiesTest {
 
     static VenueProperties venueProps() {
         RestProperties rest = new RestProperties("https://example", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        return new VenueProperties("wss://example", rest, "{symbol}@depth", 1024, 1, 1, 100, 120, null);
+        return new VenueProperties("wss://example", rest, 1024, 1, 1, 100, 120, null);
     }
 
     private static ExchangesProperties binance(boolean enabled, Market... markets) {
@@ -111,11 +111,9 @@ class ExchangesPropertiesTest {
         assertFalse(props.isEnabled(Venue.MEXC_SPOT));
 
         VenueProperties mexc = props.venue(Venue.MEXC_FUTURES);
-        assertEquals("BTC_USDT", mexc.streamTopic("BTC_USDT"));
         assertEquals(1, mexc.subscribeChunkSize());
 
         VenueProperties mexcSpot = props.venue(Venue.MEXC_SPOT);
-        assertEquals("spot@public.aggre.depth.v3.api.pb@100ms@BTCUSDT", mexcSpot.streamTopic("BTCUSDT"));
         assertEquals(30, mexcSpot.maxStreamsPerConnection());
         assertEquals(0.01, mexcSpot.maxVisibleDistance());
     }

@@ -37,7 +37,8 @@ public record MexcSnapshotProperties(Map<Market, VenueBlock> venues) {
 
     /**
      * @throws IllegalStateException    if the market has no {@code snapshot} block
-     * @throws IllegalArgumentException if its {@code depth-limit} exceeds the market's server cap
+     * @throws IllegalArgumentException if its {@code depth-limit} exceeds the market's server cap, or
+     *                                  futures has no {@code throttle-cooldown}
      */
     public MarketSnapshot forMarket(Market market) {
         VenueBlock block = venues.get(market);
@@ -49,6 +50,9 @@ public record MexcSnapshotProperties(Map<Market, VenueBlock> venues) {
         if (snapshot.depthLimit() > maxDepthLimit(market)) {
             throw new IllegalArgumentException("screener.exchanges.mexc.venues." + market + ".snapshot.depth-limit must be in [1, "
                     + maxDepthLimit(market) + "], got " + snapshot.depthLimit());
+        }
+        if (market == Market.FUTURES && snapshot.throttleCooldown() == null) {
+            throw new IllegalArgumentException("screener.exchanges.mexc.venues.FUTURES.snapshot.throttle-cooldown is required");
         }
         return snapshot;
     }
@@ -64,8 +68,9 @@ public record MexcSnapshotProperties(Map<Market, VenueBlock> venues) {
      * @param requestInterval  spacing between consecutive snapshot sends. Futures' limit is ~10 per 2s
      *                         per IP, and evenly spaced sends at 250ms never put more than 8 in one
      *                         window; spot's own budget is wider
-     * @param throttleCooldown how long to stop after a throttled request (futures: HTTP 200,
-     *                         {@code code 510}). Spot has no such response, so it never applies there
+     * @param throttleCooldown how long to stop after a throttled request (HTTP 200, {@code code 510}).
+     *                         Required on futures ({@link #forMarket}); optional on spot, which has no
+     *                         such response
      * @param wafCooldown      how long to stop after an HTTP 403 (Akamai WAF block) or 429
      */
     public record MarketSnapshot(int depthLimit, Duration requestInterval, Duration throttleCooldown,
@@ -76,7 +81,9 @@ public record MexcSnapshotProperties(Map<Market, VenueBlock> venues) {
                 throw new IllegalArgumentException("depth-limit must be positive, got " + depthLimit);
             }
             requirePositive(requestInterval, "request-interval");
-            requirePositive(throttleCooldown, "throttle-cooldown");
+            if (throttleCooldown != null) {
+                requirePositive(throttleCooldown, "throttle-cooldown");
+            }
             requirePositive(wafCooldown, "waf-cooldown");
         }
 

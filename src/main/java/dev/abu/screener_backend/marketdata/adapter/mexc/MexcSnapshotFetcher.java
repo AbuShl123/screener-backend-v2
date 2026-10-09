@@ -88,7 +88,8 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
         this.venue = client.venue();
         this.depthLimit = props.depthLimit();
         this.requestIntervalMs = props.requestInterval().toMillis();
-        this.throttleCooldownMs = props.throttleCooldown().toMillis();
+        // Absent only on spot, whose client never reports THROTTLED.
+        this.throttleCooldownMs = props.throttleCooldown() == null ? 0 : props.throttleCooldown().toMillis();
         this.wafCooldownMs = props.wafCooldown().toMillis();
         this.scheduler = scheduler;
     }

@@ -34,8 +34,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  */
 class MexcSpotStreamProtocolTest {
 
-    private static final String TOPIC = "spot@public.aggre.depth.v3.api.pb@100ms@{symbol}";
-
     private static final Instrument BTC = Instrument.of(21, Venue.MEXC_SPOT, "BTCUSDT", "BTC", "USDT");
     private static final Instrument ETH = Instrument.of(22, Venue.MEXC_SPOT, "ETHUSDT", "ETH", "USDT");
     private static final Instrument LONGXIA = Instrument.of(23, Venue.MEXC_SPOT, "龙虾USDT", "龙虾", "USDT");
@@ -43,11 +41,11 @@ class MexcSpotStreamProtocolTest {
     private static final RestProperties REST =
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
-    private static VenueProperties props(String topic, int maxStreams, int chunkSize) {
-        return new VenueProperties("wss://x", REST, topic, maxStreams, 1, 30, chunkSize, 20, null);
+    private static VenueProperties props(int maxStreams, int chunkSize) {
+        return new VenueProperties("wss://x", REST, maxStreams, 1, 30, chunkSize, 20, null);
     }
 
-    private static final MexcSpotStreamProtocol PROTOCOL = new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(TOPIC, 30, 30));
+    private static final MexcSpotStreamProtocol PROTOCOL = new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(30, 30));
 
     private static final SubscriptionIndex INDEX =
             new SubscriptionIndex(List.of(BTC, ETH, LONGXIA), PROTOCOL::routingKey);
@@ -59,29 +57,14 @@ class MexcSpotStreamProtocolTest {
     @DisplayName("more than 30 streams per connection fails at construction: the server rejects the excess")
     void maxStreamsCapped(int maxStreams) {
         assertThrows(IllegalArgumentException.class,
-                () -> new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(TOPIC, maxStreams, 30)));
+                () -> new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(maxStreams, 30)));
     }
 
     @Test
     @DisplayName("a subscribe chunk over 30 fails at construction")
     void chunkSizeCapped() {
         assertThrows(IllegalArgumentException.class,
-                () -> new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(TOPIC, 30, 31)));
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"{symbol}", "spot@public.limit.depth.v3.api.pb@{symbol}@20",
-            "spot@public.aggre.depth.v3.api.pb@100ms@{symbol}@x", "spot@public.aggre.deals.v3.api.pb@100ms@{symbol}"})
-    @DisplayName("a topic other than an aggre.depth channel ending in @{symbol} fails at construction")
-    void topicMustBeAggreDepth(String topic) {
-        assertThrows(IllegalArgumentException.class,
-                () -> new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(topic, 30, 30)));
-    }
-
-    @Test
-    @DisplayName("the 10ms aggre.depth variant is accepted")
-    void tenMsVariantAccepted() {
-        new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props("spot@public.aggre.depth.v3.api.pb@10ms@{symbol}", 30, 30));
+                () -> new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(30, 31)));
     }
 
     // --- Subscribe and heartbeat ---------------------------------------------------------------

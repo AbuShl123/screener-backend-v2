@@ -3,7 +3,7 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncStrategy;
-import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncContext;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncContext;
 import dev.abu.screener_backend.marketdata.core.book.BookSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
@@ -21,14 +21,14 @@ import java.util.StringJoiner;
  * {@code end} / {@code begin} / {@code version} after the levels inside {@code data}
  * ({@code external-docs/mexc/mexc-depth-versioning-empirical.md}).
  */
-final class MexcSyncTestSupport {
+final class MexcFuturesSyncTestSupport {
 
     /** Matches {@code screener.orderbook.price-filter-threshold} — a fraction, not a percentage. */
     static final double FILTER = 0.1;
 
     static final Venue VENUE = Venue.MEXC_FUTURES;
 
-    private MexcSyncTestSupport() {
+    private MexcFuturesSyncTestSupport() {
     }
 
     // --- Harness -------------------------------------------------------------------------------
@@ -59,8 +59,8 @@ final class MexcSyncTestSupport {
             return slot.book();
         }
 
-        MexcSyncContext ctx() {
-            return (MexcSyncContext) slot.ctx();
+        MexcFuturesSyncContext ctx() {
+            return (MexcFuturesSyncContext) slot.ctx();
         }
 
         int bufferSize() {

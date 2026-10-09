@@ -53,18 +53,12 @@ public final class MexcFuturesStreamProtocol implements StreamProtocol {
 
     /**
      * @throws IllegalArgumentException unless {@code subscribe-chunk-size} is 1 ({@code sub.depth}
-     *         takes one symbol, so a larger chunk would silently subscribe only its first) and
-     *         {@code stream-topic} is the bare {@code {symbol}} (pushes echo the native symbol and
-     *         are routed by it, so any other topic would subscribe streams that never route)
+     *         takes one symbol, so a larger chunk would silently subscribe only its first)
      */
     public MexcFuturesStreamProtocol(Venue venue, VenueProperties props) {
         if (props.subscribeChunkSize() != 1) {
             throw new IllegalArgumentException(venue + ": subscribe-chunk-size must be 1 (sub.depth takes one symbol), got "
                     + props.subscribeChunkSize());
-        }
-        if (!VenueProperties.SYMBOL_PLACEHOLDER.equals(props.streamTopic())) {
-            throw new IllegalArgumentException(venue + ": stream-topic must be " + VenueProperties.SYMBOL_PLACEHOLDER
-                    + ", got " + props.streamTopic());
         }
         this.venue = venue;
         this.props = props;
@@ -73,8 +67,7 @@ public final class MexcFuturesStreamProtocol implements StreamProtocol {
     @Override
     public String subscribeFrame(List<Instrument> chunk, int requestId) {
         // sub.depth carries no request id; acks are matched by count, not by id.
-        String symbol = props.streamTopic(chunk.getFirst().nativeSymbol());
-        return "{\"method\":\"sub.depth\",\"param\":{\"symbol\":\"" + symbol + "\"}}";
+        return "{\"method\":\"sub.depth\",\"param\":{\"symbol\":\"" + chunk.getFirst().nativeSymbol() + "\"}}";
     }
 
     @Override

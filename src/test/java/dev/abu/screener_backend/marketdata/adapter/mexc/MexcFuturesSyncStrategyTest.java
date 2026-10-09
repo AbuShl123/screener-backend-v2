@@ -2,20 +2,20 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncStrategy;
-import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncContext;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncContext;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.Harness;
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.VENUE;
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.levels;
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.lvl;
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.push;
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.pushDocumentedOrder;
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.snapshot;
-import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSyncTestSupport.synced;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.Harness;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.VENUE;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.levels;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.lvl;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.push;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.pushDocumentedOrder;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.snapshot;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncTestSupport.synced;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -443,10 +443,10 @@ class MexcFuturesSyncStrategyTest {
             Harness h = new Harness();
 
             h.wsMsg(push(100, 110, "", ""));
-            for (int i = 0; i < MexcSyncContext.MAX_BUFFER_SIZE - 1; i++) {
+            for (int i = 0; i < MexcFuturesSyncContext.MAX_BUFFER_SIZE - 1; i++) {
                 h.wsMsg(push(111 + i, 111 + i, "", ""));
             }
-            assertEquals(MexcSyncContext.MAX_BUFFER_SIZE, h.bufferSize());
+            assertEquals(MexcFuturesSyncContext.MAX_BUFFER_SIZE, h.bufferSize());
             assertEquals(1, h.requests());
 
             h.wsMsg(push(900, 901, "", ""));
@@ -477,7 +477,7 @@ class MexcFuturesSyncStrategyTest {
 
             Harness overflow = new Harness();
             overflow.wsMsg(push(100, 110, "", ""));
-            for (int i = 0; i < MexcSyncContext.MAX_BUFFER_SIZE; i++) {
+            for (int i = 0; i < MexcFuturesSyncContext.MAX_BUFFER_SIZE; i++) {
                 overflow.wsMsg(push(111 + i, 111 + i, "", ""));
             }
             assertEquals(2, overflow.requests());

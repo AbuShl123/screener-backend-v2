@@ -32,12 +32,12 @@ class MexcFuturesStreamProtocolTest {
     private static final RestProperties REST =
             new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
 
-    private static VenueProperties props(String topic, int chunkSize) {
-        return new VenueProperties("wss://x", REST, topic, 300, 1, 8, chunkSize, 15, null);
+    private static VenueProperties props(int chunkSize) {
+        return new VenueProperties("wss://x", REST, 300, 1, 8, chunkSize, 15, null);
     }
 
     private static final MexcFuturesStreamProtocol PROTOCOL =
-            new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, props("{symbol}", 1));
+            new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, props(1));
 
     private static final SubscriptionIndex INDEX = new SubscriptionIndex(List.of(BTC, ETH), PROTOCOL::routingKey);
 
@@ -52,14 +52,7 @@ class MexcFuturesStreamProtocolTest {
     @DisplayName("a chunk size other than 1 fails at construction: sub.depth takes one symbol")
     void chunkSizeMustBeOne() {
         assertThrows(IllegalArgumentException.class,
-                () -> new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, props("{symbol}", 2)));
-    }
-
-    @Test
-    @DisplayName("a decorated stream topic fails at construction: pushes are routed by the bare symbol")
-    void topicMustBeBareSymbol() {
-        assertThrows(IllegalArgumentException.class,
-                () -> new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, props("{symbol}@depth", 1)));
+                () -> new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, props(2)));
     }
 
     @Test

@@ -35,7 +35,7 @@ public final class MexcSpotStreamProtocol implements StreamProtocol {
     /** Hard server limit, counted cumulatively per connection ({@code mexc-ws-limits-empirical.md}). */
     static final int MAX_SUBSCRIPTIONS_PER_CONNECTION = 30;
     /** The only channel {@link MexcSpotFrameReader} reads: its pushes carry body field 313. */
-    static final String AGGRE_DEPTH_TOPIC_PREFIX = "spot@public.aggre.depth.v3.api.pb@";
+    static final String DEPTH_CHANNEL_PREFIX = "spot@public.aggre.depth.v3.api.pb@100ms@";
     static final String PING = "{\"method\":\"PING\"}";
 
     private static final String PONG = "\"msg\":\"PONG\"";
@@ -47,9 +47,7 @@ public final class MexcSpotStreamProtocol implements StreamProtocol {
     /**
      * @throws IllegalArgumentException unless {@code max-streams-per-connection} and
      *         {@code subscribe-chunk-size} are within the server's 30 subscriptions per connection
-     *         (beyond it, subscriptions are rejected with {@code code 0}), and {@code stream-topic} is
-     *         an {@code aggre.depth} channel ending in {@code @{symbol}} (pushes are routed by the
-     *         wrapper's symbol, and only that channel's body is understood)
+     *         (beyond it, subscriptions are rejected with {@code code 0})
      */
     public MexcSpotStreamProtocol(Venue venue, VenueProperties props) {
         if (props.maxStreamsPerConnection() > MAX_SUBSCRIPTIONS_PER_CONNECTION) {
@@ -59,11 +57,6 @@ public final class MexcSpotStreamProtocol implements StreamProtocol {
         if (props.subscribeChunkSize() > MAX_SUBSCRIPTIONS_PER_CONNECTION) {
             throw new IllegalArgumentException(venue + ": subscribe-chunk-size must be <= "
                     + MAX_SUBSCRIPTIONS_PER_CONNECTION + ", got " + props.subscribeChunkSize());
-        }
-        String topic = props.streamTopic();
-        if (!topic.startsWith(AGGRE_DEPTH_TOPIC_PREFIX) || !topic.endsWith("@" + VenueProperties.SYMBOL_PLACEHOLDER)) {
-            throw new IllegalArgumentException(venue + ": stream-topic must be " + AGGRE_DEPTH_TOPIC_PREFIX
-                    + "<interval>@" + VenueProperties.SYMBOL_PLACEHOLDER + ", got " + topic);
         }
         this.venue = venue;
         this.props = props;
@@ -76,7 +69,7 @@ public final class MexcSpotStreamProtocol implements StreamProtocol {
         sb.append("{\"method\":\"SUBSCRIPTION\",\"params\":[");
         for (int i = 0; i < chunk.size(); i++) {
             if (i > 0) sb.append(',');
-            sb.append('"').append(props.streamTopic(chunk.get(i).nativeSymbol())).append('"');
+            sb.append('"').append(DEPTH_CHANNEL_PREFIX).append(chunk.get(i).nativeSymbol()).append('"');
         }
         return sb.append("]}").toString();
     }

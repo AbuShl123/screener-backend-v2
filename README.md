@@ -12,7 +12,7 @@ The frontend lives in [`screener-frontend-v2`](https://github.com/AbuShl123/scre
 
 ## Features
 
-- **Multi-exchange market data:** Binance spot, Binance futures and MEXC futures. This is
+- **Multi-exchange market data:** Binance spot, Binance futures, MEXC spot and MEXC futures. This is
   1000+ concurrent depth streams and hundreds of thousands of diff messages per second.
 - **Accurate local order books:** each book is synced from a REST snapshot plus a streamed diff
   sequence and checked by a per-venue sync strategy. Any gap triggers automatic recovery.
@@ -218,6 +218,6 @@ Contributor and agent guidance is in [`CLAUDE.md`](CLAUDE.md).
 
 - Price/volume spike alerts and order-cluster signals
 - Klines and trade streams
-- More exchanges (MEXC spot next)
+- More exchanges
 - Historical order-book recording
 - Additional payment providers

@@ -9,7 +9,7 @@ package dev.abu.screener_backend.marketdata;
  *
  * <p>{@code streamSuffix()} used to live here and is deliberately gone: {@code "@depth"} /
  * {@code "@depth@500ms"} are Binance transport details, not properties of a persisted enum.
- * They are configured per venue under {@code screener.exchanges.binance.venues.*.stream-topic}.
+ * They live in {@code BinanceStreamProtocol}.
  *
  * @see Venue
  */

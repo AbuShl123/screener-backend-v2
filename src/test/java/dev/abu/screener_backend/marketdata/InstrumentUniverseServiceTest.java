@@ -330,7 +330,7 @@ class InstrumentUniverseServiceTest {
     private static ExchangesProperties exchanges(boolean enabled, boolean spot, boolean futures) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties props = new VenueProperties("wss://x", rest, "{symbol}@depth", 1024, 1, 1, 100, 120, null);
+        VenueProperties props = new VenueProperties("wss://x", rest, 1024, 1, 1, 100, 120, null);
         if (spot) venues.put(Market.SPOT, props);
         if (futures) venues.put(Market.FUTURES, props);
         return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(enabled, venues, null)));
