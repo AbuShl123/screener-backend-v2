@@ -19,9 +19,9 @@ from datetime import datetime
 from pathlib import Path
 
 # ---- configuration ---------------------------------------------------------
-TICKER = "DOGEUSDT"
+TICKER = "ETHUSDT"
 MAX_DISTANCE_PCT = 1.0      # show levels within this % of mid
-MAX_ROWS_PER_SIDE = 100      # keep the N largest-notional levels per side
+MAX_ROWS_PER_SIDE = 50      # keep the N largest-notional levels per side
 FRAME_DELAY_S = 0         # seconds between frames; 0 = press Enter to advance
 START_FRAME = 41             # skip ahead in the recording
 DUMP_DIR = None             # None = latest run under <repo>/depth-dumps
@@ -34,7 +34,7 @@ RED, GREEN, DIM, BOLD, RESET = "\033[31m", "\033[32m", "\033[2m", "\033[1m", "\0
 def find_dump_dir():
     if DUMP_DIR:
         return Path(DUMP_DIR)
-    root = Path(__file__).resolve().parents[3] / "depth-dumps"
+    root = Path(__file__).resolve().parents[3] / "data/depth-dumps"
     runs = sorted(p for p in root.iterdir() if p.is_dir())
     if not runs:
         sys.exit(f"no dump runs under {root}")

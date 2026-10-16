@@ -1,7 +1,6 @@
 test.json
 deploy-backend.ps1
 /scripts/
-/external-docs/
 src/main/resources/application-local.yml
 deployment-guide.md
 *.log.*
