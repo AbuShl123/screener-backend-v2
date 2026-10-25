@@ -32,24 +32,36 @@ The frontend lives in [`screener-frontend-v2`](https://github.com/AbuShl123/scre
 
 Everything runs in one JVM: a Spring Boot MVC application on Tomcat, backed by PostgreSQL.
 
-![High-level architecture](.claude/docs/images/architecture_highlevel.drawio.png)
+### Market-data pipeline
 
-**The market-data pipeline:**
+![Market-data pipeline](.claude/docs/images/marketdata_pipeline.drawio.png)
 
-1. Each venue (an exchange plus a market) has a pool of WebSocket connections.
-2. Incoming depth diffs are parsed in place and published to sharded LMAX Disruptor ring buffers.
-   An instrument always maps to the same shard, so each order book is owned by exactly one thread.
-3. Each book moves through `PENDING → RECOVERING → SYNCED`. A REST snapshot is fetched within the
-   venue's rate limits, and buffered diffs are replayed on top of it.
-4. Synced books are classified, and the 100 ms broadcaster pushes the changes to connected clients.
+1. Each venue (an exchange plus a market) has a pool of WebSocket connections. Frames go into
+   sharded LMAX Disruptor ring buffers by instrument id (`id & (N-1)`).
+2. Each shard has one consumer thread that owns its order books, so they are never synchronized.
+   The venue's sync strategy validates the diff sequence. On a gap it requests a REST snapshot,
+   which comes back through the same ring.
+3. Synced books are classified with global and per-user rules. The 100 ms broadcaster pushes the
+   global and user feeds to clients over `/ws` on virtual threads.
 
-The pipeline is the hot path. It allocates nothing per message, uses primitive `double` prices and
-Jackson streaming parsing, and never synchronizes the books. The rest of the codebase is ordinary
-Spring MVC + JPA code.
+Green boxes are SPIs: adding an exchange means writing an adapter in `marketdata/adapter/` and
+leaving the core unchanged. Klines, spike and order-cluster detection, and Bybit are planned and
+not built yet.
 
-Adding an exchange means writing an adapter against the SPI in `marketdata/spi/`. The adapter
-supplies instrument discovery, the stream protocol, snapshot fetching and the sync strategy. The
-core pipeline does not change.
+### Platform operations
+
+![Platform operations](.claude/docs/images/platform_operations.drawio.png)
+
+- **Identity:** auth, users and verification email. A JWT filter guards every protected endpoint.
+- **Commerce:** the plan catalog and orders. A payment is confirmed by the provider callback or
+  by the scheduled reconciliation sweep. Both use the same idempotent grant.
+- **Access:** entitlement is the single source of truth for access, and every grant is recorded
+  in a ledger.
+- **Usage:** rules and `/ws` check `hasAccess` and then feed the pipeline. Admins manage users,
+  plans, gifted access and monitoring.
+
+The pipeline is the hot path: it allocates nothing per message, uses primitive `double` prices and
+streaming parsers. The rest is ordinary Spring MVC + JPA code.
 
 ## Tech stack
 
