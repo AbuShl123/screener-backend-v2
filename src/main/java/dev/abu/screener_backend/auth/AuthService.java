@@ -84,6 +84,12 @@ public class AuthService {
         // 1:1 user_entitlement invariant always holds. A few minutes of trial clock before the user
         // clicks the link is immaterial — an unverified user cannot log in to consume it.
         entitlementService.startTrial(user);
+        if (!emailProperties.verificationRequired()) {
+            // Local dev without SMTP: usable immediately. Set after save because @PrePersist forces
+            // false; the managed entity is flushed with TRUE on commit.
+            user.setEmailVerified(true);
+            return new RegisterResponse("VERIFIED", user.getEmail());
+        }
         // Mint the verification token and publish the send event (raw token in-memory only).
         issueVerificationToken(user);
         return new RegisterResponse("VERIFICATION_REQUIRED", user.getEmail());

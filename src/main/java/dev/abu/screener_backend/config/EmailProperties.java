@@ -15,6 +15,8 @@ import java.time.Duration;
  *       {@code ?token=<raw>}; the page shows a Confirm button that POSTs the token to
  *       {@code /api/auth/verify-email}. Loading the page consumes nothing, so passive link scanners
  *       (Outlook Safe Links, AV prefetch) can't burn the single-use token before the human clicks.</li>
+ *   <li>{@code verificationRequired} — default true. False (local dev without SMTP credentials)
+ *       registers accounts as already verified: no token is minted and no email is sent.</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "screener.email")
@@ -23,12 +25,14 @@ public record EmailProperties(
         String fromName,
         Duration verificationTokenExpiry,
         Duration resendCooldown,
-        String verifyPageUrl
+        String verifyPageUrl,
+        Boolean verificationRequired
 ) {
     public EmailProperties {
         if (fromAddress == null || fromAddress.isBlank()) fromAddress = "noreply@tc-screener.com";
         if (fromName == null || fromName.isBlank()) fromName = "TC Screener";
         if (verificationTokenExpiry == null) verificationTokenExpiry = Duration.ofHours(24);
         if (resendCooldown == null) resendCooldown = Duration.ofMinutes(1);
+        if (verificationRequired == null) verificationRequired = true;
     }
 }

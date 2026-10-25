@@ -63,7 +63,7 @@ class AuthServiceTest {
     private final PasswordEncoder encoder = new BCryptPasswordEncoder();
     private final EmailProperties emailProps = new EmailProperties(
             "noreply@test.com", "TC Screener", Duration.ofHours(24), Duration.ofMinutes(1),
-            "https://app.test.com/verify-email");
+            "https://app.test.com/verify-email", true);
 
     private final EntitlementService entitlement =
             new EntitlementService(null, null, null, new BillingProperties(null, null, null, null)) {
@@ -101,6 +101,25 @@ class AuthServiceTest {
         // Exactly one token row, and only its SHA-256 hash is stored (never the raw value).
         assertEquals(1, evTokens.size());
         assertEquals(jwtService.hashToken(ev.rawToken()), evTokens.get(0).getTokenHash());
+    }
+
+    @Test
+    void registerWithVerificationDisabledCreatesVerifiedUserWithoutTokenOrEmail() {
+        AuthService noVerify = new AuthService(
+                userRepo(), refreshRepo(), evTokenRepo(), jwtService, encoder, entitlement,
+                (ApplicationEventPublisher) events::add,
+                new EmailProperties(null, null, null, null, null, false),
+                new JwtProperties("dummy", Duration.ofHours(3), Duration.ofDays(7)));
+
+        RegisterResponse resp = noVerify.register(new RegisterRequest("Alice", "Ng", "a@e.com", "pw123456"));
+
+        assertEquals("VERIFIED", resp.status());
+        assertTrue(usersByEmail.get("a@e.com").isEmailVerified(), "user is verified on register");
+        assertTrue(trialSeeded, "trial still seeded");
+        assertTrue(events.isEmpty(), "no email event");
+        assertTrue(evTokens.isEmpty(), "no verification token");
+        // The login gate lets the user straight in.
+        noVerify.login(new LoginRequest("a@e.com", "pw123456"));
     }
 
     // --- login gate + enumeration guard ---------------------------------------------------------

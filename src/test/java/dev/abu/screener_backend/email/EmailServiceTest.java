@@ -60,7 +60,8 @@ class EmailServiceTest {
                 "TC Screener",
                 Duration.ofHours(24),
                 Duration.ofMinutes(1),
-                "https://app.tc-screener.com/verify-email"
+                "https://app.tc-screener.com/verify-email",
+                true
         );
         service = new EmailService(mailSender, props, templateEngine());
     }

@@ -96,6 +96,9 @@ lowercased server-side before storage/uniqueness check — case is not significa
 boolean) so future states can be added without a breaking shape change. Treat 202 as "account
 created, not yet usable."
 
+*Local dev only:* with `screener.email.verification-required: false` the account is created already
+verified, no email is sent, and `status` is `"VERIFIED"` — the user can log in immediately.
+
 **UI on success**: navigate to a "check your inbox" screen. Show the email address (`response.email`
 — already normalized/lowercased) and a **"Didn't get it? Resend"** button that calls
 `resend-verification` (§3.4) with that same address. Do not attempt to log the user in — there is no

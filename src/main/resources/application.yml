@@ -210,3 +210,6 @@ screener:
     # Confirm button that POSTs the token to /api/auth/verify-email. Loading the page consumes nothing,
     # so passive link scanners can't burn the single-use token before the human clicks Confirm.
     verify-page-url: "${EMAIL_VERIFY_PAGE_URL:}"
+    # False registers accounts as already verified (no token, no email) — for local dev without
+    # SMTP credentials only. Never disable in production.
+    verification-required: ${EMAIL_VERIFICATION_REQUIRED:true}
