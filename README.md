@@ -12,7 +12,7 @@ The frontend lives in [`screener-frontend-v2`](https://github.com/AbuShl123/scre
 
 ## Features
 
-- **Multi-exchange market data:** Binance spot, Binance futures, MEXC spot and MEXC futures. This is
+- **Multi-exchange market data:** Binance, MEXC and Bybit, each spot and futures. This is
   1000+ concurrent depth streams and hundreds of thousands of diff messages per second.
 - **Accurate local order books:** each book is synced from a REST snapshot plus a streamed diff
   sequence and checked by a per-venue sync strategy. Any gap triggers automatic recovery.
@@ -111,7 +111,7 @@ defaults for everything else.
 | `MULTICARD_APP_ID`, `MULTICARD_SECRET`, `MULTICARD_STORE_ID` | Payment gateway credentials |
 | `MULTICARD_CALLBACK_URL`, `MULTICARD_RETURN_URL` | Public callback endpoint and the post-payment landing page |
 | `MULTICARD_OFD_ENABLED` | Fiscalization toggle (defaults to `true`) |
-| `BINANCE_ENABLED`, `MEXC_ENABLED` | Turn an exchange's market data on or off (both default to `true`) |
+| `BINANCE_ENABLED`, `MEXC_ENABLED`, `BYBIT_ENABLED` | Turn an exchange's market data on or off (Binance defaults to `true`, MEXC and Bybit to `false`); `<EXCHANGE>_SPOT_ENABLED` / `<EXCHANGE>_FUTURES_ENABLED` turn off one venue |
 
 For local development you can put overrides in `src/main/resources/application-local.yml`. This
 file is gitignored. Activate it with the `local` profile.

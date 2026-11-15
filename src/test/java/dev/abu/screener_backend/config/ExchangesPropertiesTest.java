@@ -146,7 +146,7 @@ class ExchangesPropertiesTest {
     }
 
     @Test
-    @DisplayName("the shipped application.yml binds: Binance on, both MEXC venues configured but off by default")
+    @DisplayName("the shipped application.yml binds: Binance on, MEXC and Bybit venues configured but off by default")
     void shippedYamlBinds() throws IOException {
         MutablePropertySources sources = new MutablePropertySources();
         new YamlPropertySourceLoader()
@@ -173,5 +173,13 @@ class ExchangesPropertiesTest {
         VenueProperties mexcSpot = props.venue(Venue.MEXC_SPOT);
         assertEquals(30, mexcSpot.maxStreamsPerConnection());
         assertEquals(0.01, mexcSpot.maxVisibleDistance());
+
+        // Bybit ships dark: its adapter registers no bindings yet, so enabling it would fail startup.
+        assertFalse(props.isEnabled(Venue.BYBIT_SPOT));
+        assertFalse(props.isEnabled(Venue.BYBIT_FUTURES));
+        assertTrue(props.venue(Venue.BYBIT_SPOT).enabled(), "only the Bybit master switch is off");
+        assertTrue(props.venue(Venue.BYBIT_FUTURES).enabled(), "only the Bybit master switch is off");
+        assertTrue(props.venue(Venue.BYBIT_SPOT).subscribeChunkSize() <= 10,
+                "a Bybit spot subscribe frame takes at most 10 args");
     }
 }

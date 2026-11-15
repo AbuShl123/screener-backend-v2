@@ -1,0 +1,7 @@
+{
+ "linear-subscribe-ack": "{\"success\":true,\"ret_msg\":\"\",\"conn_id\":\"dbqr6b53198ufm1b8k9g-1gkna\",\"req_id\":\"\",\"op\":\"subscribe\"}",
+ "linear-ping-pong": "{\"success\":true,\"ret_msg\":\"pong\",\"conn_id\":\"dbqr6b53198ufm1b8k9g-1gkna\",\"req_id\":\"\",\"op\":\"ping\"}",
+ "spot-subscribe-subscribe": "{\"success\":true,\"ret_msg\":\"subscribe\",\"conn_id\":\"dbqr5lbs539ool7m7d00-wiew\",\"op\":\"subscribe\"}",
+ "spot-ping-pong": "{\"success\":true,\"ret_msg\":\"pong\",\"conn_id\":\"dbqr5lbs539ool7m7d00-wiew\",\"op\":\"ping\"}",
+ "spot-subscribe-rejected": "{\"success\":false,\"ret_msg\":\"Invalid topic :[orderbook.500.BTCUSDT]\",\"conn_id\":\"dbqr6hfocar8g7l1dia0-we3w\",\"req_id\":\"bad\",\"op\":\"subscribe\"}"
+}

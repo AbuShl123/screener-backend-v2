@@ -8,5 +8,6 @@ package dev.abu.screener_backend.marketdata;
  */
 public enum Exchange {
     BINANCE,
-    MEXC
+    MEXC,
+    BYBIT
 }

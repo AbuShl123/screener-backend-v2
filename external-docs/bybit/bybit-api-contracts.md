@@ -249,6 +249,15 @@ is part of the symbol, and the corresponding spot pair (`BONKUSDT`) is a *differ
 `quoteCoin` distribution **[measured]**: spot — USDT 419, USDC 86, EUR 18, BTC 7, BRL 5, GBP 5;
 linear — USDT 712, USDC 68.
 
+#### `symbolType`: TradFi on linear **[measured, 2026-11-15]**
+
+Linear rows carry a `symbolType` product class. Of 929 linear instruments: `""` (crypto) 514,
+`stock` 238 (`AAPLUSDT`, `AMDSTOCKUSDT`), `innovation` 110, `ETF` 59 (`IBITUSDT`), `commodity` 4
+(`XAUUSDT`, `CLUSDT`), `forex` 4 (`EURUSDUSDT`). So over a third of the USDT perpetuals track
+traditional markets. Linear rows also carry `tags` (`["ST"]` on 52, the futures counterpart of spot
+`stTag`). Spot `symbolType` is `""`, `xstocks` (11) or `adventure` (3); xStocks pairs
+(`AAPLXUSDT`) never share a symbol with a linear perpetual.
+
 ### 3.3 Ticker statistics — `GET /v5/market/tickers`
 
 One call returns every instrument in the category. Useful for volume/liquidity filtering.
@@ -299,6 +308,11 @@ GET https://api.bybit.com/v5/market/orderbook?category=linear&symbol=BTCUSDT&lim
 
 `b` descending by price, `a` ascending, both `[price, size]` string pairs. `u` and `seq` carry the
 same meaning as in the stream (§5.4).
+
+**[measured]** REST `u` is on the **`orderbook.1000` topic's counter**, whatever `limit` is requested
+(50, 200 or 1000), on both spot and linear. Every REST snapshot's `u` appeared on the 1000 topic, and
+the replayed WS book at that `u` equalled the REST book exactly (54/54 per category). It never matched
+the 50 or 200 topics' `u`. A REST snapshot can therefore be stitched to `orderbook.1000` on `u` (§7.1).
 
 **[measured]** `limit=500` and `limit=1000` both return the requested depth on linear. There is no
 weight cost header and no bulk endpoint, so a full-universe REST snapshot sweep costs one request
@@ -737,6 +751,36 @@ Frame sizes (JSON text, bytes):
 
 Subscribe throughput: 700 linear topics in one 18.5 KB frame produced 700 snapshots and 10 184
 messages within 7 seconds. 566 spot topics via 57 paced 10-arg frames all acked without error.
+**[measured]** Unpaced: 300 spot topics as 30 frames of 10 args sent back to back on one connection
+all acked and all delivered their snapshot.
+
+### 7.1 Spike, 2026-11-15
+
+5-minute capture from a European egress, `stream.bybit.com` + `api.bybit.com`. Topics
+`orderbook.{50,200,1000}` for BTCUSDT, SOLUSDT, ARBUSDT on spot and linear, with REST
+`orderbook?limit={50,200,1000}` sampled every ~15 s alongside. Fixtures cut from it are under
+`src/test/resources/bybit/`.
+
+- **REST/WS stitching:** REST `u` = `orderbook.1000` `u` (§3.4). Stitching on `seq` is unreliable for
+  the 50/200 topics (book equal in only 50–95% of bracketed cases), so `seq` is not needed.
+- **Window exits are deleted.** A replay from one snapshot over ~5 min (1 100–11 000 deltas per
+  topic, no local trimming) never held more than `depth` levels per side, and equalled a fresh
+  snapshot from a second connection taken at the same `u`, level for level, on all 18 topics. When
+  a level leaves the top-N window the server sends size `0` for it; no local trim is needed.
+- **Zero `u` gaps** and exactly one snapshot per topic over the run.
+- **How far level 1000 reaches** (REST `limit=1000`, % from mid to the last bid / ask level, ranked by
+  24h turnover among eligible symbols):
+
+  | Rank | Linear | Spot |
+  |---|---|---|
+  | 1 (BTC) | 0.42% / 0.50% | 1.20% / 1.30% |
+  | 2 (ETH) | 1.00% / 1.07% | 2.37% / 1.63% |
+  | 3–5 | 2.5–14% | ~14% |
+  | 10+ | >10%, often the whole book (<1000 levels) | the whole book |
+
+  Only the top two or three majors are shallower than the 10% price filter.
+- **Multiplier symbols** report the prefix in `baseCoin` (`1000000BABYDOGEUSDT` →
+  `1000000BABYDOGE`), the same convention as Binance futures.
 
 ---
 
@@ -782,7 +826,5 @@ messages within 7 seconds. 566 spot topics via 57 paced 10-arg frames all acked 
   genuinely traffic-free connection.
 - **`inverse` and `option`** were not exercised. Inverse is expected to mirror linear
   (same depths, same sync model); option uses depths 25/100 only.
-- **Reachability from a Japanese IP** was not tested — verification was performed from a European
-  egress. Only US and Mainland China are documented as blocked, and the Japan-specific `manepa.jp`
-  guidance applies to account holders rather than public market data, but this should be confirmed
-  from the target host before relying on `api.bybit.com` / `stream.bybit.com` there.
+- **Reachability from a Japanese IP:** REST and WS both confirmed reachable from the production
+  host (Japan), 2026-11-15.

@@ -16,7 +16,9 @@ public enum Venue {
     BINANCE_SPOT(Exchange.BINANCE, Market.SPOT),
     BINANCE_FUTURES(Exchange.BINANCE, Market.FUTURES),
     MEXC_SPOT(Exchange.MEXC, Market.SPOT),
-    MEXC_FUTURES(Exchange.MEXC, Market.FUTURES);
+    MEXC_FUTURES(Exchange.MEXC, Market.FUTURES),
+    BYBIT_SPOT(Exchange.BYBIT, Market.SPOT),
+    BYBIT_FUTURES(Exchange.BYBIT, Market.FUTURES);
 
     private final Exchange exchange;
     private final Market market;
