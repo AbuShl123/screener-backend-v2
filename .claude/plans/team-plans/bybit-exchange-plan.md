@@ -1,6 +1,6 @@
 # Bybit Exchange — High-Level Plan
 
-**Created**: 2026-10-16. **Updated**: 2026-11-15. Status: **phase 0 done, implementation not started**.
+**Created**: 2026-10-16. **Updated**: 2026-11-15. Status: **phases 0–1 done; 2a–2c not started**.
 Adds `BYBIT_SPOT` and `BYBIT_FUTURES` (linear USDT perpetuals) as a new adapter, **with no change to
 core**. It covers phases, the recovery design, open questions and a short ticket split. It is not an
 implementation plan. Each ticket owner writes their own.
@@ -87,7 +87,7 @@ frame of every subscription is a snapshot.
 | Phase | What | Gate to next |
 |---|---|---|
 | **0. Spike** ✅ | Answer the §5 questions with a throwaway client and record them in `external-docs/bybit/`. Capture fixtures. | Done 2026-11-15: stitch on `u`, depth 1000 |
-| **1. Skeleton** | `Exchange.BYBIT`, `Venue.BYBIT_SPOT` / `BYBIT_FUTURES`, an empty `BybitAdapterConfig`, a YAML block **disabled by default** (`BYBIT_ENABLED=false`). | Merged first, so phases 2a–2c don't conflict |
+| **1. Skeleton** ✅ | `Exchange.BYBIT`, `Venue.BYBIT_SPOT` / `BYBIT_FUTURES`, an empty `BybitAdapterConfig`, a YAML block **disabled by default** (`BYBIT_ENABLED=false`). | Merged first, so phases 2a–2c don't conflict |
 | **2a. Discovery** | REST client + `BybitInstrumentSource` | Unit tests on captured payloads |
 | **2b. Transport** | `BybitStreamProtocol` | Unit tests on captured frames |
 | **2c. Sync + recovery** | `BybitSyncStrategy` + context + `BybitSnapshotFetcher` | Replay test: captured snapshot + N deltas == a later snapshot |

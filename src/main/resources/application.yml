@@ -132,6 +132,43 @@ screener:
           heartbeat-interval-seconds: 15
           max-visible-distance: 0.01
 
+    # Skeleton only: no adapter beans are registered yet, so the master switch must stay off
+    # (an enabled venue without a stream binding fails startup). The snapshot-queue and per-venue
+    # snapshot blocks arrive with the recovery fetcher.
+    bybit:
+      enabled: ${BYBIT_ENABLED:false}
+      venues:
+        SPOT:
+          enabled: ${BYBIT_SPOT_ENABLED:true}
+          rest:
+            base-url: https://api.bybit.com
+            codec-buffer-size-mb: 8
+            connect-timeout: PT5S
+            response-timeout: PT10S
+          stream-url: wss://stream.bybit.com/v5/public/spot
+          # No per-connection topic cap observed (566 spot topics on one connection were acked).
+          max-streams-per-connection: 300
+          min-connections: 2
+          max-connections: 8
+          # Hard server limit: a spot subscribe frame takes at most 10 args.
+          subscribe-chunk-size: 10
+          heartbeat-interval-seconds: 20
+        FUTURES:
+          enabled: ${BYBIT_FUTURES_ENABLED:true}
+          rest:
+            base-url: https://api.bybit.com
+            codec-buffer-size-mb: 8
+            connect-timeout: PT5S
+            response-timeout: PT10S
+          stream-url: wss://stream.bybit.com/v5/public/linear
+          max-streams-per-connection: 300
+          min-connections: 2
+          max-connections: 8
+          # No arg-count cap on linear, but the args array must stay under 21 000 chars or the
+          # server closes the connection (1009); 200 topics stay well under it.
+          subscribe-chunk-size: 200
+          heartbeat-interval-seconds: 20
+
   discovery:
     source-timeout: PT30S
     excluded-symbols:
