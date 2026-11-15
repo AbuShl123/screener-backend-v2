@@ -132,8 +132,6 @@ screener:
           heartbeat-interval-seconds: 15
           max-visible-distance: 0.01
 
-    # Off by default, like MEXC: enable per deployment with BYBIT_ENABLED (and BYBIT_<MARKET>_ENABLED
-    # to run one venue only).
     bybit:
       enabled: ${BYBIT_ENABLED:true}
       # REST snapshots are only a safety net for a mid-stream gap: cold start and reconnects sync
