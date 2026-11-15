@@ -249,6 +249,15 @@ is part of the symbol, and the corresponding spot pair (`BONKUSDT`) is a *differ
 `quoteCoin` distribution **[measured]**: spot — USDT 419, USDC 86, EUR 18, BTC 7, BRL 5, GBP 5;
 linear — USDT 712, USDC 68.
 
+#### `symbolType`: TradFi on linear **[measured, 2026-11-15]**
+
+Linear rows carry a `symbolType` product class. Of 929 linear instruments: `""` (crypto) 514,
+`stock` 238 (`AAPLUSDT`, `AMDSTOCKUSDT`), `innovation` 110, `ETF` 59 (`IBITUSDT`), `commodity` 4
+(`XAUUSDT`, `CLUSDT`), `forex` 4 (`EURUSDUSDT`). So over a third of the USDT perpetuals track
+traditional markets. Linear rows also carry `tags` (`["ST"]` on 52, the futures counterpart of spot
+`stTag`). Spot `symbolType` is `""`, `xstocks` (11) or `adventure` (3); xStocks pairs
+(`AAPLXUSDT`) never share a symbol with a linear perpetual.
+
 ### 3.3 Ticker statistics — `GET /v5/market/tickers`
 
 One call returns every instrument in the category. Useful for volume/liquidity filtering.

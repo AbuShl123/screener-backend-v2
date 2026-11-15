@@ -1,6 +1,6 @@
 # Bybit Exchange — High-Level Plan
 
-**Created**: 2026-10-16. **Updated**: 2026-11-15. Status: **phases 0–1 done; 2a–2c not started**.
+**Created**: 2026-10-16. **Updated**: 2026-11-15. Status: **phases 0–1 and 2a done; 2b–2c not started**.
 Adds `BYBIT_SPOT` and `BYBIT_FUTURES` (linear USDT perpetuals) as a new adapter, **with no change to
 core**. It covers phases, the recovery design, open questions and a short ticket split. It is not an
 implementation plan. Each ticket owner writes their own.
@@ -88,7 +88,7 @@ frame of every subscription is a snapshot.
 |---|---|---|
 | **0. Spike** ✅ | Answer the §5 questions with a throwaway client and record them in `external-docs/bybit/`. Capture fixtures. | Done 2026-11-15: stitch on `u`, depth 1000 |
 | **1. Skeleton** ✅ | `Exchange.BYBIT`, `Venue.BYBIT_SPOT` / `BYBIT_FUTURES`, an empty `BybitAdapterConfig`, a YAML block **disabled by default** (`BYBIT_ENABLED=false`). | Merged first, so phases 2a–2c don't conflict |
-| **2a. Discovery** | REST client + `BybitInstrumentSource` | Unit tests on captured payloads |
+| **2a. Discovery** ✅ | REST client + `BybitInstrumentSource` | Unit tests on captured payloads |
 | **2b. Transport** | `BybitStreamProtocol` | Unit tests on captured frames |
 | **2c. Sync + recovery** | `BybitSyncStrategy` + context + `BybitSnapshotFetcher` | Replay test: captured snapshot + N deltas == a later snapshot |
 | **3. Integration & rollout** | Wire the beans, run locally, soak, check feed noise, update docs, roll out to prod | Books reach and hold `SYNCED`, health log is clean |
@@ -142,9 +142,11 @@ fetcher, `dto/`), its tests, the `screener.exchanges.bybit` YAML block, and test
 - **Shallow visibility on majors: accepted for v1.** Bybit books are capped at 1000 levels, so a BTC
   wall 2% away is never visible on Bybit, though it is on Binance. Majors stay listed.
 - **Eligibility.** Futures = `LinearPerpetual` ∧ quote `USDT` ∧ `Trading` (no dated
-  `LinearFutures`, no USDC). Spot = quote `USDT` ∧ `Trading` ∧ symbol ∈ eligible futures symbols
-  (the Binance rule) ∧ **not Special Treatment** (`stTag = 1` excluded). Innovation Zone pairs are
-  kept.
+  `LinearFutures`, no USDC) ∧ **not TradFi** (`symbolType` ∉ {`stock`, `ETF`, `commodity`,
+  `forex`}, as on MEXC: 305 of 821 USDT perps on 2026-11-15). Spot = quote `USDT` ∧ `Trading` ∧
+  symbol ∈ eligible futures symbols (the Binance rule, so TradFi is inherited) ∧ **not Special
+  Treatment** (`stTag = 1` excluded). Innovation Zone pairs are kept, and so are ST-tagged perps
+  (linear `tags: ["ST"]`). Live result on 2026-11-15: 516 futures, 287 spot.
 
 **Product (deferred to phase 3)**
 - **Noise.** MEXC needed per-venue tuning (`max-visible-distance`, the MM filter work). Bybit may
