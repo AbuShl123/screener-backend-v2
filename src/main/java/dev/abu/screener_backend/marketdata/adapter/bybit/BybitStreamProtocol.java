@@ -56,8 +56,15 @@ public final class BybitStreamProtocol implements StreamProtocol {
 
     static final String PING = "{\"op\":\"ping\"}";
 
+    /**
+     * The subscribed {@code orderbook} depth, and so the {@code limit} of every REST snapshot: REST
+     * {@code u} is on this topic's counter, and a shallower snapshot would leave the levels between
+     * its depth and this one missing until they next change.
+     */
+    static final int DEPTH = 1000;
+
     /** {@code orderbook.{depth}.} — the topic up to its symbol. */
-    static final String TOPIC_PREFIX = "orderbook.1000.";
+    static final String TOPIC_PREFIX = "orderbook." + DEPTH + ".";
 
     static final int SPOT_MAX_ARGS = 10;
     static final int ARGS_MAX_CHARS = 21_000;

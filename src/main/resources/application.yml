@@ -132,11 +132,22 @@ screener:
           heartbeat-interval-seconds: 15
           max-visible-distance: 0.01
 
-    # Skeleton only: no adapter beans are registered yet, so the master switch must stay off
-    # (an enabled venue without a stream binding fails startup). The snapshot-queue and per-venue
-    # snapshot blocks arrive with the recovery fetcher.
+    # No adapter beans are registered yet (phase 3 wires them), so the master switch must stay off
+    # (an enabled venue without a stream binding fails startup).
     bybit:
       enabled: ${BYBIT_ENABLED:false}
+      # REST snapshots are only a safety net for a mid-stream gap: cold start and reconnects sync
+      # from the in-stream snapshot. batch-timeout must exceed max-batch-size × request-interval +
+      # rest.response-timeout (10 × 0.1s + 10s = 11s).
+      snapshot-queue:
+        max-batch-size: 10
+        flush-interval: PT0.25S
+        batch-timeout: PT20S
+      # Bybit's REST limit is per IP and shared by both venues (600 req / 5 s; breaking it is an
+      # HTTP 403 and a 10-minute ban), so one pause stops both venues' snapshot requests.
+      snapshot-cooldown:
+        rate-limited: PT10S   # retCode 10006 / 10018 in an HTTP 200, or an HTTP 429
+        banned: PT10M         # HTTP 403
       venues:
         SPOT:
           enabled: ${BYBIT_SPOT_ENABLED:true}
@@ -145,6 +156,9 @@ screener:
             codec-buffer-size-mb: 8
             connect-timeout: PT5S
             response-timeout: PT10S
+          snapshot:
+            # 10 req/s per venue, 20 together: a sixth of the 120 req/s budget.
+            request-interval: PT0.1S
           stream-url: wss://stream.bybit.com/v5/public/spot
           # No per-connection topic cap observed (566 spot topics on one connection were acked).
           max-streams-per-connection: 300
@@ -160,6 +174,8 @@ screener:
             codec-buffer-size-mb: 8
             connect-timeout: PT5S
             response-timeout: PT10S
+          snapshot:
+            request-interval: PT0.1S
           stream-url: wss://stream.bybit.com/v5/public/linear
           max-streams-per-connection: 300
           min-connections: 2
