@@ -3,6 +3,7 @@ deploy-backend.ps1
 /scripts/
 src/main/resources/application-local.yml
 deployment-guide.md
+server-memory-health.md
 *.log.*
 *.log
 scratch_paper.txt
