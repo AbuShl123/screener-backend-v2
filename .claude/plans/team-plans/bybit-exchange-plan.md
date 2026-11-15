@@ -1,12 +1,14 @@
 # Bybit Exchange — High-Level Plan
 
-**Created**: 2026-10-16. **Updated**: 2026-11-15. Status: **phases 0–2c done; phase 3 (integration) not started**.
+**Created**: 2026-10-16. **Updated**: 2026-11-15. Status: **phases 0–3 done except the prod rollout** (wiring, tests,
+frontend, docs and a 75-minute local soak with zero Bybit gaps or disconnects).
 Adds `BYBIT_SPOT` and `BYBIT_FUTURES` (linear USDT perpetuals) as a new adapter, **with no change to
 core**. It covers phases, the recovery design, open questions and a short ticket split. It is not an
 implementation plan. Each ticket owner writes their own.
 
 **Read first**
-- `.claude/docs/multi-exchange-progress.md`: §5 SPI, §7 sync contract, §11 "Adding an exchange".
+- `.claude/docs/multi-exchange-progress.md`: §5 SPI, §7 sync contract, §10 the Bybit adapter, §12
+  "Adding an exchange".
 - `external-docs/bybit/bybit-api-contracts.md`: the measured Bybit contracts, including the spike
   results (§7.1). Section numbers below (`§4.5`, `§6.3` …) refer to that file.
 - `marketdata/adapter/mexc/`: the closest template (one `@Configuration`, one shared source, two
@@ -91,7 +93,7 @@ frame of every subscription is a snapshot.
 | **2a. Discovery** ✅ | REST client + `BybitInstrumentSource` | Unit tests on captured payloads |
 | **2b. Transport** ✅ | `BybitStreamProtocol` | Unit tests on captured frames |
 | **2c. Sync + recovery** ✅ | `BybitSyncStrategy` + context + `BybitSnapshotFetcher` | Replay test: captured snapshot + N deltas == a later snapshot |
-| **3. Integration & rollout** | Wire the beans, run locally, soak, check feed noise, update docs, roll out to prod | Books reach and hold `SYNCED`, health log is clean |
+| **3. Integration & rollout** (prod pending) | Wire the beans ✅, update docs ✅, run locally and soak ✅, check the feed visually ✅, roll out to prod | Books reach and hold `SYNCED`, health log is clean |
 
 2a, 2b and 2c run **in parallel** after phase 1. Each codes against an SPI interface and touches
 only its own files under `adapter/bybit/`.
@@ -107,7 +109,7 @@ fetcher, `dto/`), its tests, the `screener.exchanges.bybit` YAML block, and test
 **Touched outside the adapter:**
 - `Exchange`, `Venue`: one constant each. This is expected per §11 of the progress doc.
 - `application.yml`: the new block.
-- `.claude/docs/multi-exchange-progress.md`: a Bybit section, and the §11 "not yet exercised" note
+- `.claude/docs/multi-exchange-progress.md`: a Bybit section, and the §12 "not yet exercised" note
   updated (in-stream snapshot is now exercised; resubscribe-to-recover still isn't).
 - Frontend: add `BYBIT` to `src/features/orderbook/exchanges.ts` (one logo + one line). An exchange
   missing there is dropped silently, so Bybit would be invisible rather than broken.
@@ -215,13 +217,21 @@ snapshot, trimmed `instruments-info` payloads, and acks / pongs / a rejected sub
   test is the model). Gap, restart (`u == 1`), re-snapshot and REST-stitch cases.
 
 ### BYBIT-4: Integration, soak & rollout *(after 1–3)*
-- Bind every bean in `BybitAdapterConfig`, plus a config test asserting both venues are bound.
-- Local run: books reach and hold `SYNCED`. Watch resyncs, frames/s and ring headroom in the health
-  log over a 30–60 min soak, on both venues.
-- Feed check: messages/s and books shown vs. Binance (the MEXC noise method), including the two
-  depth-cap effects in §5. Raise a follow-up only if it's noisy.
-- Frontend: add `BYBIT` to `exchanges.ts` and confirm it renders.
-- Docs: a Bybit section in `multi-exchange-progress.md`, and the §11 / decisions list updated.
+- ✅ Bind every bean in `BybitAdapterConfig`, plus a config test asserting both venues are bound
+  (`BybitAdapterConfigTest`, including a Spring context run and the shipped YAML).
+- ✅ Local run (2026-11-15, 20:23–21:37, all five venues on): 284/284 spot and 512/512 futures
+  `SYNCED` within 2 s of connecting and held for the whole run. 0 resyncs, 0 snapshot failures,
+  0 sequence gaps, 0 disconnects, no WARN. Each book synced once, from its in-stream snapshot, with no
+  REST calls. Frames/s: spot ~330–830, futures ~1 000–1 300. Ring headroom stayed above 65 530 of 65 536,
+  and the live heap after GC stayed flat at ~125–135 MB. This run never exercised the reconnect
+  or REST-recovery paths. Unit tests cover them, and the health log's resync column will show them
+  in prod.
+- ✅ Feed check: checked visually, looks fine. The per-venue messages/s comparison vs. Binance (the MEXC
+  noise method) was not run. Raise a follow-up only if prod shows noise, including the two
+  depth-cap effects in §5.
+- ✅ Frontend: `BYBIT` is in `exchanges.ts` with its logo (frontend `f105d99`). Confirm it renders.
+- ✅ Docs: a Bybit section (§10) in `multi-exchange-progress.md`, and §12 / known gaps / decisions
+  updated; `BYBIT_*` switches in the README and `deployment-guide.md`.
 - Prod: enable behind `BYBIT_ENABLED` / `BYBIT_<MARKET>_ENABLED`, one venue first.
 
 **Suggested split for three people:** A takes BYBIT-3, B takes BYBIT-1, C takes BYBIT-2. Whoever

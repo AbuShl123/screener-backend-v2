@@ -1,7 +1,7 @@
 # Market-Data Pipeline — Current State
 
-**As of**: 2026-10-10, branch `feature/mexc-spot` (MEXC spot added, with the binary-frame path in
-core).
+**As of**: 2026-11-15, branch `feature/abu_bybit_exchange` (Bybit spot + futures added, no core
+change).
 
 This file describes the market-data pipeline as the code stands: what exists, how it fits together,
 what each adapter does, and what is still missing. It ends at a `SYNCED` local order book.
@@ -20,16 +20,18 @@ All paths below are relative to `src/main/java/dev/abu/screener_backend/marketda
 | `BINANCE_FUTURES` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_FUTURES_ENABLED`) | yes: ~525 books `SYNCED` ~2.5 min after start, held |
 | `MEXC_SPOT` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_SPOT_ENABLED`) | yes (2026-10-10 local run): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures |
 | `MEXC_FUTURES` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_FUTURES_ENABLED`, until Phase 5 of `.claude/plans/mexc-impl-plan.md`) | yes: ~678 books `SYNCED` ~3.5 min after the sockets open; zero steady-state resyncs over 25–40 min runs |
+| `BYBIT_SPOT` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_SPOT_ENABLED`) | not yet: wired and unit-tested, local soak pending (BYBIT-4 of `.claude/plans/team-plans/bybit-exchange-plan.md`) |
+| `BYBIT_FUTURES` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_FUTURES_ENABLED`) | not yet, as spot |
 
 | Area | State |
 |---|---|
 | Identity (`Venue`, `Instrument`, dense ids, `BookSlotTable`) | Done |
-| Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC spot, MEXC futures) |
+| Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC spot, MEXC futures, Bybit spot + futures) |
 | Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames |
 | Snapshot recovery (core queue + per-venue `SnapshotFetcher`) | Done |
-| Discovery (`InstrumentSource` per exchange, merged by core) | Done; no startup retry (§12) |
+| Discovery (`InstrumentSource` per exchange, merged by core) | Done; no startup retry (§13) |
 | Config consolidation under `screener.exchanges.*` | Partial: `screener.orderbook.*` and `screener.websocket.*` still sit outside it |
-| Robustness: reset lane, non-blocking ingress, dynamic subscribe, staleness watchdog, queryable health | Not started (§12) |
+| Robustness: reset lane, non-blocking ingress, dynamic subscribe, staleness watchdog, queryable health | Not started (§13) |
 | Primitive-array book store | Not started |
 
 ---
@@ -52,6 +54,7 @@ marketdata/
   adapter/
     binance/  (+ dto/)
     mexc/     (+ dto/)
+    bybit/    (+ dto/)
 ```
 
 - **Root** holds what other modules import (`analysis`, `feed`, `ws`, `config`, `monitoring`), so
@@ -67,7 +70,7 @@ marketdata/
 ### 3.1 Types
 
 - **`Venue = (Exchange, Market)`** is the adapter unit: `BINANCE_SPOT`, `BINANCE_FUTURES`,
-  `MEXC_SPOT`, `MEXC_FUTURES`. `Market` stays the persistence- and API-facing type. `Venue.of(exchange, market)`
+  `MEXC_SPOT`, `MEXC_FUTURES`, `BYBIT_SPOT`, `BYBIT_FUTURES`. `Market` stays the persistence- and API-facing type. `Venue.of(exchange, market)`
   bridges the two.
 - **`Instrument`** (record) is one tradable pair on one venue: `id`, `venue`, `nativeSymbol`, `base`,
   `quote`, `quantityMultiplier`, plus four strings precomputed once:
@@ -79,8 +82,8 @@ marketdata/
   | `feedKey` | `MEXC:FUTURES:BTCUSDT` | venue-specific classification state and feed-store entries |
   | `logName` | `MEXC_FUTURES/BTC_USDT` | log lines only |
 
-  `quantityMultiplier` converts wire quantity to base asset. It is 1.0 on Binance and MEXC spot, and
-  the contract size on MEXC futures. Strategies apply it at parse time, so every `OrderBook` holds base asset.
+  `quantityMultiplier` converts wire quantity to base asset. It is 1.0 on Binance, MEXC spot and
+  Bybit, and the contract size on MEXC futures. Strategies apply it at parse time, so every `OrderBook` holds base asset.
 - **`InstrumentRegistry`** hands out dense `int` ids. They are **dense** (`[0, everRegistered)`), so
   the book store can be an array. They are **stable**: re-registering returns the same id. They are
   **never transferred**: a delisted id is left as a hole. They are **never persisted**:
@@ -152,7 +155,7 @@ process-local and must never be used as an identity.
 | `reconnect-<venue>` | `ConnectionPool` | reconnect backoff and heartbeats for that venue's connections |
 | `disruptor-shard-N` | `DisruptorShardManager` | **the only writer of its books and sync contexts**; runs strategy + classifier |
 | `snapshot-queue` (daemon) | `SnapshotQueueFactory` | ticks every venue's queue at its `flush-interval` |
-| Reactor / Netty | fetchers, REST clients | HTTP I/O; MEXC send pacing on `Schedulers.parallel()` |
+| Reactor / Netty | fetchers, REST clients | HTTP I/O; MEXC and Bybit send pacing on `Schedulers.parallel()` |
 | Spring `@Scheduled` | discovery refresh, `PipelineHealthLogger`, feed drain | cold work |
 | virtual threads | `InstrumentUniverseService` | one per source fetch |
 
@@ -181,7 +184,7 @@ fill-and-publish site, so an instrument's events can never split across shards.
 | `SyncStrategyRegistry`, `StreamProtocolRegistry` | core `@Component`s | `EnumMap<Venue, …>` assembled from the binding beans |
 
 **Registration.** Each adapter has one `@Configuration` (`BinanceAdapterConfig`,
-`MexcAdapterConfig`) that **constructs** its strategies, protocols, sources, REST clients and
+`MexcAdapterConfig`, `BybitAdapterConfig`) that **constructs** its strategies, protocols, sources, REST clients and
 snapshot queues as `@Bean`s. None of those classes is a `@Component`. A stray annotation would create
 a second instance and fail startup as a duplicate binding or a second venue claim.
 
@@ -297,7 +300,8 @@ then msgs/s and free ring slots per shard, and the feed drain's worst tick. Noth
 ## 7. The sync-strategy contract
 
 Every current strategy has the same shape (`BinanceDepthSyncStrategy`, `MexcFuturesSyncStrategy`,
-`MexcSpotSyncStrategy`).
+`MexcSpotSyncStrategy`, `BybitSyncStrategy`). `BybitSyncStrategy` adds one row ahead of the table
+below: an in-stream snapshot replaces the book in any state (§10.1).
 A new strategy that recovers through `SnapshotRequestQueue` must follow it. The `DepthSyncStrategy`
 javadoc states the `REST_FAILED` part.
 
@@ -452,7 +456,7 @@ Two venues on two different APIs (decision 20):
 
 What they share: the sequence rule (`MexcVersionRange`), the snapshot fetcher class
 (`MexcSnapshotFetcher`, one instance per venue), one discovery source, one `mexc.enabled` master
-switch and one `snapshot-queue` shape. Each venue also has its own `enabled` switch (§10).
+switch and one `snapshot-queue` shape. Each venue also has its own `enabled` switch (§11).
 
 Background measurements are in `external-docs/mexc/`: API contracts, versioning, rate limits, WS
 limits, and `mexc-spot-depth-empirical.md` for spot. Where the empirical files disagree with the
@@ -556,7 +560,7 @@ One fetcher per venue, each with its own send clock and cooldown, over `MexcDept
   not draw from it (4 + 4 req/s concurrently produced no 510, spot empirical §4). The Akamai WAF,
   however, blocks per IP and host-wide, and both venues use `api.mexc.com`, so a spot-triggered 403
   would stall futures snapshots too. The WAF fires at ~20–30 req/s sustained; the two fetchers
-  together send at most 14 req/s. Each fetcher cools down only on its own 403 (§12).
+  together send at most 14 req/s. Each fetcher cools down only on its own 403 (§13).
 - **Fail-fast in `MexcAdapterConfig`**, per venue: `batch-timeout` must exceed `max-batch-size ×
   request-interval + rest.response-timeout` (futures 12 × 0.25s + 10s = 13s, spot 12 × 0.1s + 10s =
   11.2s; configured 20s).
@@ -626,7 +630,128 @@ futures cold start: ~3m25s for 678 books, about 10% over the ideal because batch
 
 ---
 
-## 10. Configuration
+## 10. Bybit adapter — `adapter/bybit/`
+
+Two venues on one API (v5), told apart by the `category` parameter: `BYBIT_SPOT` (`spot`) and
+`BYBIT_FUTURES` (`linear`, USDT perpetuals only). So every role is **one class with one instance per
+venue**, as on Binance:
+
+| File | Role |
+|---|---|
+| `BybitAdapterConfig` | builds every bean below; registers `BybitSnapshotProperties` |
+| `BybitRestClient` | `instrumentsInfo()` (paginated) and `depth(symbol, limit)` (raw body) |
+| `BybitInstrumentSource` | one source for both venues (spot ⊆ futures) |
+| `BybitStreamProtocol` | `orderbook.1000.{symbol}` subscribe, routing, `TextPing` |
+| `BybitSyncStrategy` + `BybitSyncContext` | §7 plus the in-stream snapshot; `diffBuffer` (≤500), `lastU` (-1 = none) |
+| `BybitSnapshotFetcher` | REST safety net, fixed pacing, classifies by `retCode` |
+| `BybitRestCooldown` | **one** pause shared by both venues' fetchers |
+
+The measured contracts, including the spike results that fixed depth and stitching, are in
+`external-docs/bybit/bybit-api-contracts.md`. Section numbers in this section (`§5.3`, …) refer to
+that file. Fixtures captured by the spike are in `src/test/resources/bybit/`.
+
+### 10.1 Sync — `BybitSyncStrategy`
+
+**The book arrives in-stream.** The first frame of every subscription is a full snapshot
+(`type:"snapshot"`, contracts §5.3), and after a Bybit service restart a full book arrives again as a
+delta flagged `u == 1` (§5.4). Either one is a **full replacement in any state**: reset the context,
+replace the levels, `markSynced()`. A REST outcome that lands afterwards is dropped by the usual
+state guard, and deltas buffered for it are discarded, since they all precede the snapshot. This is
+the dispatch row added ahead of §7.1's table; everything else is §7 as written.
+
+| Situation | REST calls |
+|---|---|
+| Cold start | none: each book syncs from its subscription's first frame |
+| Reconnect | none: core resubscribes, and each topic's new snapshot replaces the book |
+| Service restart (`u == 1`) | none |
+| Gap while `SYNCED`, or a frame that fails to parse | one: `recover()` → REST snapshot (§10.2) |
+
+So Bybit is not exposed to §13's "books stay `SYNCED` across a reconnect": every book is replaced.
+
+**Sequence rule**: `u` is strictly `+1` per message, and `seq` is not used.
+```
+u <= lastU        → IGNORE    (only seen while draining the buffer)
+u == lastU + 1    → OK, lastU = u
+otherwise         → DE_SYNCED
+```
+REST `u` is on the `orderbook.1000` topic's counter (§7.1), on both categories and at every REST
+`limit`, so the same rule stitches a REST snapshot to the buffered deltas. It never matched the 50 or
+200 topics, which is why the subscribed depth is fixed at 1000.
+
+**Parsing.** `{"topic":…,"type":…,"ts":…,"data":{"s":…,"b":[…],"a":[…],"u":…,"seq":…},"cts":…}`
+(spot swaps `ts` and `type`). `type` is found near the start and `u` near the end by string scan, with
+no allocation; only a frame that passes `check()` has its levels streamed into the book. The WS
+frame's `data` and the REST body's `result` have the same inner shape, so one walk serves both.
+Prices and sizes are strings, padded on linear and trimmed on spot, parsed by `JavaDoubleParser`.
+Size `0` deletes a level. That is also how the server reports a level leaving the top-1000 window
+(§7.1), so no local trim is needed.
+
+### 10.2 Recovery — `BybitSnapshotFetcher` + `BybitRestCooldown`
+
+Bybit's native recovery is unsubscribe + resubscribe on the same connection (§6.3). That needs a core
+seam that does not exist (§13, dynamic subscribe), so a gap recovers through the standard
+`SnapshotRequestQueue` with `GET /v5/market/orderbook?limit=1000`. Gaps should be rare: the stream
+runs over TCP, ring publish blocks rather than drops, and the spike measured none (§5.4).
+
+- **Classify by `retCode`, not HTTP status.** Bybit rate-limits with an HTTP 200 (§3.1).
+  Classification reads only the envelope.
+
+  | Response | Report | Pause (both venues) |
+  |---|---|---|
+  | 2xx, `retCode 0` | delivered | — |
+  | 2xx, `retCode 10006` / `10018`, or HTTP 429 | failed | `snapshot-cooldown.rate-limited` (10s) |
+  | HTTP 403 (IP ban or geo-block) | failed | `snapshot-cooldown.banned` (10 min) |
+  | 2xx, other `retCode` or unreadable body (WARN); other status; timeout | failed | — |
+
+- **Pacing and cooldown mechanics are `MexcSnapshotFetcher`'s** (§9.4): one persistent send clock per
+  venue, `Mono.delay` on `Schedulers.parallel()`, the cooldown checked at send time, no retries.
+- **The pause is shared.** Bybit's REST limit (600 requests / 5 s) is per IP across every category
+  and host, and breaking it costs a 10-minute IP ban (§3.6). `BybitAdapterConfig` builds one
+  `BybitRestCooldown` and hands it to both fetchers, so a pushback seen by either venue stops both.
+  It only extends, and logs a WARN when it starts or escalates from rate-limited to banned.
+- **Fail-fast at startup**, per venue: `batch-timeout` must exceed `max-batch-size ×
+  request-interval + rest.response-timeout` (10 × 0.1s + 10s = 11s; configured 20s).
+
+Config: `bybit.snapshot-queue` (`max-batch-size: 10`, `flush-interval: PT0.25S`,
+`batch-timeout: PT20S`), `bybit.snapshot-cooldown` (`rate-limited: PT10S`, `banned: PT10M`), and per
+venue `venues.<MARKET>.snapshot.request-interval: PT0.1S` (10 req/s per venue, 20 together: a sixth
+of the budget). All bound by `BybitSnapshotProperties`. There is no `depth-limit` key: every snapshot
+is `limit=1000`, the subscribed depth.
+
+### 10.3 Discovery and transport
+
+- **`BybitInstrumentSource`** fetches both `instruments-info` categories concurrently. Without a
+  `status` parameter Bybit returns `Trading` instruments only.
+  - **Futures**: `contractType LinearPerpetual ∧ quoteCoin USDT ∧ status Trading ∧ not TradFi`, where
+    TradFi is `symbolType ∈ {stock, ETF, commodity, forex}` (a denylist, so a new crypto class is
+    kept). Innovation Zone and linear `ST`-tagged perpetuals are kept. `baseCoin` keeps a multiplier
+    prefix (`1000000BABYDOGE`), as on Binance futures, so rule keys match across exchanges.
+  - **Spot**: `quoteCoin USDT ∧ status Trading ∧ symbol ∈ symbol(futures) ∧ stTag ≠ "1"` (Special
+    Treatment excluded). Matching on the full symbol inherits the TradFi filter, and
+    multiplier-prefixed perpetuals have no spot counterpart, exactly as on Binance.
+  - 2026-11-15: 516 futures, 287 spot. Multiplier 1 on both: both categories quote base coin.
+- **`BybitRestClient`** branches on `retCode`, never on HTTP status: a non-zero `retCode` in a 2xx is
+  a `BybitApiException`, a non-2xx an `ExchangeApiException`. Linear paginates (`limit=1000` +
+  `nextPageCursor`, decoded once since Bybit sends it pre-encoded); spot sends no cursor and returns
+  everything in one page. A runaway cursor fails after 10 pages rather than returning a truncated
+  universe. `depth()` returns the raw body for the fetcher to classify.
+- **`BybitStreamProtocol`** (`wss://stream.bybit.com/v5/public/{spot,linear}`) subscribes with
+  `{"req_id":"N","op":"subscribe","args":["orderbook.1000.BTCUSDT",…]}` and routes data frames on the
+  symbol at the end of `topic`, which leads the frame in both categories' field orders. Acks and
+  pongs (`op:"ping"`, `ret_msg:"pong"`) are ignored; `success:false` is a WARN. Heartbeat is
+  `TextPing(20s, {"op":"ping"})`.
+  - **A subscribe frame is all-or-nothing** (§4.3): a rejected frame leaves every book in it
+    `PENDING` with no traffic. The WARN and the health log's synced/tracked count are the only signs.
+  - **Server limits checked at construction**, since both break a subscription with no sign in the
+    data: spot takes at most 10 args per frame (§4.5), and the `args` array must stay under 21 000
+    chars, or Bybit closes with `1009` and core's reconnect would resend the same frame forever
+    (§4.4). Configured: spot `subscribe-chunk-size: 10`, linear `200`.
+  - `max-streams-per-connection: 300` (no per-connection cap observed), `min-connections: 2`, so
+    each venue runs 2 connections at today's universe.
+
+---
+
+## 11. Configuration
 
 | Key | Bound by | Holds |
 |---|---|---|
@@ -635,7 +760,8 @@ futures cold start: ~3m25s for 678 books, about 10% over the ideal because batch
 | `screener.exchanges.<exchange>.snapshot-queue` | core | `max-batch-size`, `flush-interval`, `batch-timeout`; required only when an adapter creates a queue |
 | `screener.exchanges.<exchange>.venues.<MARKET>.rest` | core | `base-url`, `codec-buffer-size-mb`, `connect-timeout`, `response-timeout` |
 | `screener.exchanges.<exchange>.venues.<MARKET>.*` | core | `stream-url`, `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds` |
-| `screener.exchanges.<exchange>.venues.<MARKET>.snapshot` | the adapter (`BinanceSnapshotProperties`, `MexcSnapshotProperties`) | fetcher pricing / pacing; core ignores this key and the adapter ignores core's |
+| `screener.exchanges.<exchange>.venues.<MARKET>.snapshot` | the adapter (`BinanceSnapshotProperties`, `MexcSnapshotProperties`, `BybitSnapshotProperties`) | fetcher pricing / pacing; core ignores this key and the adapter ignores core's |
+| `screener.exchanges.bybit.snapshot-cooldown` | `BybitSnapshotProperties` | the pause shared by both Bybit fetchers (§10.2) |
 | `screener.discovery.source-timeout`, `.excluded-symbols` | `DiscoveryProperties` | per-source fetch deadline; the exchange-agnostic exclusion list |
 | `screener.ticker.refresh-interval` | `@Scheduled` | universe refresh delay (PT4H) |
 | `screener.disruptor.shard-count`, `.ring-buffer-size` | `DisruptorProperties` | 2 shards (power of two), 65536 slots |
@@ -646,7 +772,7 @@ futures cold start: ~3m25s for 678 books, about 10% over the ideal because batch
 
 ---
 
-## 11. Adding an exchange
+## 12. Adding an exchange
 
 **Needs no core edit:** a new `adapter/<name>/` package with one `@Configuration`, plus a YAML block,
 a `Venue` constant (and an `Exchange` constant). Through that config the adapter contributes:
@@ -662,19 +788,23 @@ a `Venue` constant (and an `Exchange` constant). Through that config the adapter
 Add the `Venue` constant together with its adapter. An enabled venue with no stream binding fails
 startup, and an allocated book with no strategy throws.
 
+**Exercised since Bybit:**
+- **In-stream snapshot**: a `WS_MSG` can be a full book. `EventType` is provenance, so the strategy
+  decides, and it replaces the book in any state (§10.1).
+- **A rate limit shared by two venues of one exchange**: solved inside the adapter. Its
+  `@Configuration` builds one shared object (`BybitRestCooldown`) and hands it to both fetchers
+  (§10.2). Core needed nothing.
+
 **Not yet exercised:**
-- **In-stream snapshot / resubscribe-to-recover** (Bybit's model): the SPI allows it (a custom
-  `RecoverySink`, `EventType` as provenance), but no adapter has done it.
-- **A rate limit shared by two venues of one exchange**: each fetcher paces itself. MEXC spot and
-  futures turned out to have independent request windows (§9.4); a venue pair that does share one
-  would need a shared per-exchange budget.
+- **Resubscribe-to-recover** (Bybit's native model, §10.2): it needs the `id → (connection, topic)`
+  direction and sending from the shard side (§13).
 
 **Binary frames** are exercised since MEXC spot: implement `StreamProtocol.route(ByteBuffer, …)`
 with absolute reads only, and read `DepthEvent.rawBytes` in the strategy (§6.1, §6.2).
 
 ---
 
-## 12. Known gaps
+## 13. Known gaps
 
 - **No startup retry for discovery.** If a source fails at startup, its venues wait for the next
   refresh (4h). Fix: retry on a short interval while any enabled venue has never had a successful
@@ -700,6 +830,14 @@ with absolute reads only, and read `DepthEvent.rawBytes` in the strategy (§6.1,
 - **MEXC WAF cooldown is per venue.** Both MEXC fetchers hit `api.mexc.com`, and Akamai blocks per
   IP and host-wide, but a 403 cools down only the fetcher that received it; the other keeps sending
   into the block until it gets its own 403. Cheap to share if it ever shows up (§9.4).
+- **A rejected Bybit subscribe frame** leaves every book in it `PENDING` forever, with one WARN line as
+  the only sign (§10.3).
+- **Bybit depth-cap effects, unmeasured.** Bybit books stop at 1000 levels, so on majors a wall
+  ~0.5–2% from mid is never visible (accepted for v1). Two noise sources to check in the soak: levels
+  at the window edge leave and re-enter as mid moves, and lose their age each time; and every
+  in-stream snapshot (each reconnect) replaces a `SYNCED` book, resetting every level's
+  `firstSeenMillis`. The second would need a core `OrderBook` replace that keeps the age of
+  re-sent levels.
 - **MEXC spot connection lifetime untested.** MEXC documents a 24h limit. A drop reconnects and
   resubscribes; books stay `SYNCED` across it (no reset lane) and resync on the first push whose
   range does not continue.
@@ -707,14 +845,14 @@ with absolute reads only, and read `DepthEvent.rawBytes` in the strategy (§6.1,
   on (§6.1). `JavaWebSocketBufferOwnershipTest` must keep passing across library upgrades.
 - **No read-side storage seam.** `OrderBookClassifier` reads `getBids()` / `getAsks()` directly, so
   replacing `TreeMap<Double, …>` with primitive arrays touches several classes.
-- **Config not fully per venue**: `price-filter-threshold` and reconnect backoff (§10).
+- **Config not fully per venue**: `price-filter-threshold` and reconnect backoff (§11).
 - **Contract size fixed at first registration** until restart (§3.1).
 - **`/api/monitoring/orderbook` is abandoned**: it returns a fixed string. Nothing reads a live book's
   full contents from another thread (decision 9).
 
 ---
 
-## 13. Decisions
+## 14. Decisions
 
 Settled; the reasoning is kept so they are not relitigated.
 
@@ -774,10 +912,19 @@ Settled; the reasoning is kept so they are not relitigated.
 25. **MEXC spot universe = spot ∩ eligible futures, matched on `baseCoinName`**, the Binance rule.
     Futures instruments keep `base = baseCoin`; switching them to `baseCoinName` was rejected
     (`mexc-spot-depth-empirical.md` §6).
+26. **Bybit's in-stream snapshot is a full replacement in any state**, so cold start and reconnects
+    cost no REST call. A gap recovers through the standard REST queue, not Bybit's native
+    resubscribe, which would need a core seam (§10.2).
+27. **Bybit subscribes at depth 1000, fixed in `BybitStreamProtocol`.** REST `u` only stitches onto
+    the `orderbook.1000` counter, and 1000 is the deepest anyway. Shallow visibility on majors is
+    accepted for v1.
+28. **A rate limit shared across venues stays in the adapter.** Bybit's per-IP limit and ban are
+    handled by one `BybitRestCooldown` built in `BybitAdapterConfig`, not by a core budget
+    (decision 16 holds).
 
 ---
 
-## 14. Tests
+## 15. Tests
 
 Test packages mirror the main ones (package-private access). All live under
 `src/test/java/dev/abu/screener_backend/marketdata/`:
@@ -790,9 +937,11 @@ Test packages mirror the main ones (package-private access). All live under
 | `core/recovery/` | `SnapshotRequestQueueTest` (accept/refuse, batching, one outcome per slot, timeout) |
 | `core/stream/` | `StreamConnectionTest` (text and binary routing), `StreamManagerTest`, `SubscriptionIndexTest` (incl. UTF-8 byte resolve), `JavaWebSocketBufferOwnershipTest` (pins a fresh buffer per frame, §6.1) |
 | `adapter/binance/` | `BinanceDepthSyncStrategyTest` (+ `SyncTestSupport`), `BinanceSnapshotFetcherTest`, `WeightGuardTest`, `BinanceStreamProtocolTest`, `BinanceInstrumentSourceTest`, `BinanceRestClientTest`, `BinanceSnapshotPropertiesTest`, `BinanceAdapterConfigTest` |
+| `adapter/bybit/` | `BybitSyncStrategyTest` (+ `BybitSyncTestSupport`, incl. captured spot and linear `orderbook.1000` streams replayed against a REST snapshot), `BybitSnapshotFetcherTest` (virtual time, shared cooldown), `BybitStreamProtocolTest` (both field orders, server limits), `BybitInstrumentSourceTest`, `BybitRestClientTest`, `BybitSnapshotPropertiesTest`, `BybitAdapterConfigTest` (both venues bound, incl. a Spring context run, and the shipped YAML) |
 | `adapter/mexc/` | `MexcFuturesSyncStrategyTest` (+ `MexcFuturesSyncTestSupport`), `MexcSnapshotFetcherTest` (virtual time via `ManualScheduler`), `MexcFuturesStreamProtocolTest`, `MexcInstrumentSourceTest`, `MexcFuturesRestClientTest`, `MexcSnapshotPropertiesTest`, `MexcAdapterConfigTest` (both venues bound); spot: `MexcSpotSyncStrategyTest` (+ `MexcSpotTestSupport`, incl. a captured MINTUSDT snapshot + 120 pushes replayed to equal the next snapshot), `MexcSpotFrameReaderTest`, `MexcSpotStreamProtocolTest`, `MexcSpotRestClientTest` |
 
-Spot fixtures (captured frames and snapshots) live in `src/test/resources/mexc/spot/`. The sync
+MEXC spot fixtures (captured frames and snapshots) live in `src/test/resources/mexc/spot/`, Bybit's
+in `src/test/resources/bybit/`. The sync
 suites drive real exchange-shaped payloads (JSON, or Protobuf built field by field), in the delivered
 field order, through the real parsers and the real `onEvent`. The harness builds a `DepthEvent` and has no dispatch logic of
 its own. Tests that load `application-local.yml` skip when it is absent.

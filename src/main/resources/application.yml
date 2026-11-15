@@ -132,10 +132,10 @@ screener:
           heartbeat-interval-seconds: 15
           max-visible-distance: 0.01
 
-    # No adapter beans are registered yet (phase 3 wires them), so the master switch must stay off
-    # (an enabled venue without a stream binding fails startup).
+    # Off by default, like MEXC: enable per deployment with BYBIT_ENABLED (and BYBIT_<MARKET>_ENABLED
+    # to run one venue only).
     bybit:
-      enabled: ${BYBIT_ENABLED:false}
+      enabled: ${BYBIT_ENABLED:true}
       # REST snapshots are only a safety net for a mid-stream gap: cold start and reconnects sync
       # from the in-stream snapshot. batch-timeout must exceed max-batch-size × request-interval +
       # rest.response-timeout (10 × 0.1s + 10s = 11s).
