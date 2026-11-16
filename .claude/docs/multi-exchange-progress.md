@@ -1,7 +1,10 @@
 # Market-Data Pipeline — Current State
 
-**As of**: 2026-11-15, branch `feature/abu_bybit_exchange` (Bybit spot + futures added, no core
-change).
+**As of**: 2026-11-16 (Bybit spot + futures added, no core change; local soak done 2026-11-15).
+
+For the design (layers, threading, sharding, sync loop, delivery) read
+[`market-data-pipeline-architecture.md`](market-data-pipeline-architecture.md) first. This file is
+the current-state companion to it.
 
 This file describes the market-data pipeline as the code stands: what exists, how it fits together,
 what each adapter does, and what is still missing. It ends at a `SYNCED` local order book.
@@ -18,10 +21,16 @@ All paths below are relative to `src/main/java/dev/abu/screener_backend/marketda
 |---|---|---|---|
 | `BINANCE_SPOT` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_SPOT_ENABLED`) | yes: ~354 books `SYNCED` ~2 min after start, held |
 | `BINANCE_FUTURES` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_FUTURES_ENABLED`) | yes: ~525 books `SYNCED` ~2.5 min after start, held |
-| `MEXC_SPOT` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_SPOT_ENABLED`) | yes (2026-10-10 local run): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures |
+| `MEXC_SPOT` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_SPOT_ENABLED`) | yes (2026-10-10 and 2026-11-15 local runs): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures (508/508 for 74 min on 2026-11-15) |
 | `MEXC_FUTURES` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_FUTURES_ENABLED`, until Phase 5 of `.claude/plans/mexc-impl-plan.md`) | yes: ~678 books `SYNCED` ~3.5 min after the sockets open; zero steady-state resyncs over 25–40 min runs |
-| `BYBIT_SPOT` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_SPOT_ENABLED`) | not yet: wired and unit-tested, local soak pending (BYBIT-4 of `.claude/plans/team-plans/bybit-exchange-plan.md`) |
-| `BYBIT_FUTURES` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_FUTURES_ENABLED`) | not yet, as spot |
+| `BYBIT_SPOT` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_SPOT_ENABLED`) | yes (2026-11-15 local run, 74 min): 284/284 `SYNCED` within ~30 s of the sockets opening, held, zero resyncs and zero snapshot failures (BYBIT-4 of `.claude/plans/team-plans/bybit-exchange-plan.md`) |
+| `BYBIT_FUTURES` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_FUTURES_ENABLED`) | yes, as spot: 512/512 `SYNCED`, held |
+
+**Load, 2026-11-15 local run** (5 venues enabled, `MEXC_FUTURES` off; 2,174 depth streams, 2 shards):
+~3,500 msg/s at steady state (peak ~5,250), ring never below 65,510 free slots, worst feed drain
+19 ms. Per-venue rates and the growth outlook are in
+`market-data-pipeline-architecture.md` §1. The only WARNs in the run were `BINANCE_FUTURES`
+disconnects (local network, see the benchmark doc), and `BINANCE_FUTURES` resynced after each one.
 
 | Area | State |
 |---|---|
