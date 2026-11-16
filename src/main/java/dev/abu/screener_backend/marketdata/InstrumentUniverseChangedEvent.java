@@ -9,7 +9,7 @@ import java.util.List;
  * Published by {@link InstrumentUniverseService} after a successful universe refresh.
  *
  * <p><b>Ordering is an invariant.</b> The discovery thread registers every instrument, allocates
- * and {@code publish()}es their book slots, and only then fires this event. Listeners (the
+ * and {@code publish()}es their instrument slots, and only then fires this event. Listeners (the
  * WebSocket transport) may therefore assume that a slot exists for every id they will see. If the
  * event were fired first, a subscribe frame could produce a depth message whose id is past the end
  * of the published slot array.

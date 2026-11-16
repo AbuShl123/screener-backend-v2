@@ -1,7 +1,10 @@
 # Market-Data Pipeline — Current State
 
-**As of**: 2026-11-15, branch `feature/abu_bybit_exchange` (Bybit spot + futures added, no core
-change).
+**As of**: 2026-11-16 (Bybit spot + futures added, no core change; local soak done 2026-11-15).
+
+For the design (layers, threading, sharding, sync loop, delivery) read
+[`market-data-pipeline-architecture.md`](market-data-pipeline-architecture.md) first. This file is
+the current-state companion to it.
 
 This file describes the market-data pipeline as the code stands: what exists, how it fits together,
 what each adapter does, and what is still missing. It ends at a `SYNCED` local order book.
@@ -18,16 +21,22 @@ All paths below are relative to `src/main/java/dev/abu/screener_backend/marketda
 |---|---|---|---|
 | `BINANCE_SPOT` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_SPOT_ENABLED`) | yes: ~354 books `SYNCED` ~2 min after start, held |
 | `BINANCE_FUTURES` | `adapter/binance/` | enabled (`BINANCE_ENABLED` ∧ `BINANCE_FUTURES_ENABLED`) | yes: ~525 books `SYNCED` ~2.5 min after start, held |
-| `MEXC_SPOT` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_SPOT_ENABLED`) | yes (2026-10-10 local run): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures |
+| `MEXC_SPOT` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_SPOT_ENABLED`) | yes (2026-10-10 and 2026-11-15 local runs): books reach and hold `SYNCED`, no steady-state resyncs or snapshot failures (508/508 for 74 min on 2026-11-15) |
 | `MEXC_FUTURES` | `adapter/mexc/` | **disabled** (`MEXC_ENABLED` ∧ `MEXC_FUTURES_ENABLED`, until Phase 5 of `.claude/plans/mexc-impl-plan.md`) | yes: ~678 books `SYNCED` ~3.5 min after the sockets open; zero steady-state resyncs over 25–40 min runs |
-| `BYBIT_SPOT` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_SPOT_ENABLED`) | not yet: wired and unit-tested, local soak pending (BYBIT-4 of `.claude/plans/team-plans/bybit-exchange-plan.md`) |
-| `BYBIT_FUTURES` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_FUTURES_ENABLED`) | not yet, as spot |
+| `BYBIT_SPOT` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_SPOT_ENABLED`) | yes (2026-11-15 local run, 74 min): 284/284 `SYNCED` within ~30 s of the sockets opening, held, zero resyncs and zero snapshot failures (BYBIT-4 of `.claude/plans/team-plans/bybit-exchange-plan.md`) |
+| `BYBIT_FUTURES` | `adapter/bybit/` | **disabled** (`BYBIT_ENABLED` ∧ `BYBIT_FUTURES_ENABLED`) | yes, as spot: 512/512 `SYNCED`, held |
+
+**Load, 2026-11-15 local run** (5 venues enabled, `MEXC_FUTURES` off; 2,174 depth streams, 2 shards):
+~3,500 msg/s at steady state (peak ~5,250), ring never below 65,510 free slots, worst feed drain
+19 ms. Per-venue rates and the growth outlook are in
+`market-data-pipeline-architecture.md` §1. The only WARNs in the run were `BINANCE_FUTURES`
+disconnects (local network, see the benchmark doc), and `BINANCE_FUTURES` resynced after each one.
 
 | Area | State |
 |---|---|
-| Identity (`Venue`, `Instrument`, dense ids, `BookSlotTable`) | Done |
+| Identity (`Venue`, `Instrument`, dense ids, `InstrumentSlotTable`) | Done |
 | Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC spot, MEXC futures, Bybit spot + futures) |
-| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames |
+| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames; keyed by stream (`StreamKey` = venue + kind), only `DEPTH` bound |
 | Snapshot recovery (core queue + per-venue `SnapshotFetcher`) | Done |
 | Discovery (`InstrumentSource` per exchange, merged by core) | Done; no startup retry (§13) |
 | Config consolidation under `screener.exchanges.*` | Partial: `screener.orderbook.*` and `screener.websocket.*` still sit outside it |
@@ -47,7 +56,8 @@ marketdata/
   core/
     stream/     WebSocket transport (java-websocket)          hot
     ingress/    Disruptor shards, publisher, consumer         hot
-    book/       OrderBook, BookSlot, BookSlotTable            hot
+    book/       OrderBook, OrderBookState, PriceLevelEntry    hot
+    slot/       InstrumentSlot, InstrumentSlotTable           hot
     recovery/   SnapshotRequestQueue, BatchOutcome, factory   hot (accept side)
     rest/       ExchangeWebClientFactory, ExchangeApiException
     health/     PipelineMetrics
@@ -120,7 +130,7 @@ brings the pipeline up.
 - **Ids** are assigned in `(venue.ordinal(), nativeSymbol)` order, so they are reproducible
   across restarts.
 
-**Ordering invariant** (discovery thread): **register all → `BookSlotTable.allocate` → `publish()` →
+**Ordering invariant** (discovery thread): **register all → `InstrumentSlotTable.allocate` → `publish()` →
 fire `InstrumentUniverseChangedEvent` → transport subscribes.** If a subscribe went out before
 `publish()`, a frame could resolve an id past the end of the slot array. If every source fails, no
 event fires.
@@ -136,23 +146,25 @@ process-local and must never be used as an identity.
  venue WS ──► StreamConnection.onMessage(String | ByteBuffer)  (reader thread, one per connection)
                 │  protocol.route(frame, SubscriptionIndex) → instrument id
                 ▼
-            DepthEventPublisher.publishFrame ──► ring[id & (shards-1)]  (WS_MSG, rawJson | rawBytes)
+            MarketEventPublisher.publishFrame ──► ring[id & (shards-1)]  (WS_MSG, connection's kind, rawJson | rawBytes)
                                                       │
  snapshot-queue thread ──► SnapshotFetcher.fetchAll   │
                 │  HTTP threads report each slot      │
                 ▼                                     ▼
-            BatchOutcome ──► publishSnapshot / publishSnapshotFailure (REST_MSG / REST_FAILED)
+            BatchOutcome ──► publishSnapshot / publishSnapshotFailure (REST_MSG / REST_FAILED, stream = DEPTH)
                                                       │
-                               disruptor-shard-N consumer (DepthEventHandler)
+                               disruptor-shard-N consumer (MarketEventHandler)
                                    slot = slots.get(id)
-                                   slot.strategy().onEvent(slot, event)   ← sync + book mutation
-                                   classifier.process(instrument, book)   ← gates on SYNCED
+                                   switch (event.stream):  DEPTH → onDepth
+                                       slot.syncStrategy().onEvent(slot, event)   ← sync + book mutation
+                                       classifier.process(instrument, book)   ← gates on SYNCED
+                                   default → counted + rate-limited WARN (a kind with no arm)
 ```
 
 | Thread | Owner | Work |
 |---|---|---|
 | java-websocket reader, one per connection | `StreamConnection` | route a frame, publish it into the ring |
-| `reconnect-<venue>` | `ConnectionPool` | reconnect backoff and heartbeats for that venue's connections |
+| `reconnect-<venue>-<kind>` (lower case) | `ConnectionPool`, one per stream | reconnect backoff and heartbeats for that stream's connections |
 | `disruptor-shard-N` | `DisruptorShardManager` | **the only writer of its books and sync contexts**; runs strategy + classifier |
 | `snapshot-queue` (daemon) | `SnapshotQueueFactory` | ticks every venue's queue at its `flush-interval` |
 | Reactor / Netty | fetchers, REST clients | HTTP I/O; MEXC and Bybit send pacing on `Schedulers.parallel()` |
@@ -160,7 +172,7 @@ process-local and must never be used as an identity.
 | virtual threads | `InstrumentUniverseService` | one per source fetch |
 
 **Shard routing is `id & (shardCount - 1)`**, with `screener.disruptor.shard-count` validated as a
-power of two at startup. Both producers go through `DisruptorDepthEventPublisher`, which is the only
+power of two at startup. Both producers go through `DisruptorMarketEventPublisher`, which is the only
 fill-and-publish site, so an instrument's events can never split across shards.
 
 ---
@@ -180,8 +192,9 @@ fill-and-publish site, so an instrument's events can never split across shards.
 | `Heartbeat` | sealed | `ProtocolPing(interval)` (WS control frame) or `TextPing(interval, payload)` |
 | `InstrumentSource` | interface | `venues()` + blocking `fetch()` → `Map<Venue, List<InstrumentCandidate>>` |
 | `InstrumentCandidate` | record | `nativeSymbol, base, quote, quantityMultiplier` (validated positive and finite) |
-| `VenueStrategyBinding`, `VenueStreamBinding` | records | bind a venue to its strategy / protocol |
-| `SyncStrategyRegistry`, `StreamProtocolRegistry` | core `@Component`s | `EnumMap<Venue, …>` assembled from the binding beans |
+| `VenueStrategyBinding` | record | binds a venue to its strategy |
+| `VenueStreamBinding` | record | binds a **stream** (`StreamKey` = venue + `StreamKind`) to its protocol; one protocol instance serves one stream |
+| `SyncStrategyRegistry`, `StreamProtocolRegistry` | core `@Component`s | assembled from the binding beans: `EnumMap<Venue, …>` / `Map<StreamKey, …>` (`forVenue` / `forStream`) |
 
 **Registration.** Each adapter has one `@Configuration` (`BinanceAdapterConfig`,
 `MexcAdapterConfig`, `BybitAdapterConfig`) that **constructs** its strategies, protocols, sources, REST clients and
@@ -189,14 +202,16 @@ snapshot queues as `@Bean`s. None of those classes is a `@Component`. A stray an
 a second instance and fail startup as a duplicate binding or a second venue claim.
 
 - `SyncStrategyRegistry` throws on a duplicate binding, and `forVenue` throws for an unbound venue.
-  `BookSlotTable.allocate` resolves the strategy once per book and pins it in the `BookSlot`, so the
+  `InstrumentSlotTable.allocate` resolves the strategy once per book and pins it in the `InstrumentSlot`, so the
   consumer never walks `id → venue → strategy`.
-- `StreamProtocolRegistry` also checks completeness at construction: an **enabled** venue with no
-  binding fails startup.
+- `StreamProtocolRegistry` throws on a duplicate `StreamKey` and also checks completeness at
+  construction: an **enabled stream** (`ExchangesProperties.isEnabled(StreamKey)`) with no binding
+  fails startup. A binding for a disabled or unconfigured stream is accepted, so an adapter can ship
+  a kind dark.
 
-**Bean cycle.** `BookSlotTable → SyncStrategyRegistry → VenueStrategyBinding (adapter config) →
-SnapshotRequestQueue → SnapshotQueueFactory → DepthEventPublisher → DisruptorShardManager →
-BookSlotTable`. It is broken by `@Lazy` on `SnapshotQueueFactory`'s publisher, the one place in core
+**Bean cycle.** `InstrumentSlotTable → SyncStrategyRegistry → VenueStrategyBinding (adapter config) →
+SnapshotRequestQueue → SnapshotQueueFactory → MarketEventPublisher → DisruptorShardManager →
+InstrumentSlotTable`. It is broken by `@Lazy` on `SnapshotQueueFactory`'s publisher, the one place in core
 that does this. Removing it fails the context.
 
 ---
@@ -206,14 +221,18 @@ that does this. Removing it fails the context.
 ### 6.1 `core/stream/` — transport
 
 - **`StreamManager`** listens for `InstrumentUniverseChangedEvent`. The first time a venue appears in
-  `added`, that list is its whole universe, so the manager starts one `ConnectionPool` for it. Later
-  changes to a venue that already has a pool are **only logged** ("dynamic re-subscription not yet
-  implemented"). A pool that fails to start is logged, and the other venues are unaffected.
-- **`ConnectionPool`** splits a venue's instruments evenly over
+  `added`, that list is its whole universe, so the manager starts one `ConnectionPool` per enabled
+  stream of the venue (`Map<StreamKey, ConnectionPool>`), each with the full instrument list.
+  "Started" is tracked per venue. Later changes to a started venue are **only logged** ("dynamic
+  re-subscription not yet implemented"). A pool that fails to start is logged, and the venue's other
+  streams and the other venues are unaffected.
+- **`ConnectionPool`** (one per `StreamKey`, settings from `StreamProperties`) splits the stream's
+  instruments evenly over
   `clamp(ceil(streams / max-streams-per-connection), min-connections, max-connections)` connections.
 - **`StreamConnection`** (a java-websocket `WebSocketClient`) sends subscribe frames on open, chunked
   by `subscribe-chunk-size` and built by the protocol. It routes each frame, text or binary, through
-  the matching `protocol.route` overload and publishes it (`PipelineMetrics.recordFrame`). It
+  the matching `protocol.route` overload and publishes it with the connection's `final` kind
+  (`PipelineMetrics.recordFrame(StreamKey)`, a per-stream counter). It
   schedules the protocol's heartbeat. It reconnects with exponential backoff
   (`screener.websocket.reconnect-*`) and resubscribes everything. A frame for an unsubscribed key
   (text or binary) and a binary frame the protocol returns `IGNORED` for are dropped with a
@@ -231,26 +250,32 @@ that does this. Removing it fails the context.
 
 ### 6.2 `core/ingress/` — Disruptor
 
-- `DisruptorShardManager`: N shards, each a `Disruptor<DepthEvent>` with `ProducerType.MULTI`,
+- `DisruptorShardManager`: N shards, each a `Disruptor<MarketEvent>` with `ProducerType.MULTI`,
   `BlockingWaitStrategy`, `ring-buffer-size` slots, one consumer thread and its own
   `OrderBookClassifier`.
-- `DepthEvent` is a reused mutable slot: `type`, `instrumentId`, and at most one payload: `rawJson`
-  (a text frame or a REST body) or `rawBytes` (a binary frame). The publisher writes both fields on
-  every claim, so a stale payload cannot leak from the slot's previous use.
-- `EventType` records **provenance, not semantics** or encoding: `WS_MSG`, `REST_MSG`, `REST_FAILED`
+- `MarketEvent` is a reused mutable slot: `source`, `stream`, `instrumentId`, and at most one
+  payload: `rawJson` (a text frame or a REST body) or `rawBytes` (a binary frame). The publisher
+  writes every field on every claim, so a stale value cannot leak from the slot's previous use.
+- `StreamKind` says what the payload *is* (today only `DEPTH`) and is what the consumer dispatches
+  on. `publishFrame` takes it from the transport; `publishSnapshot` / `publishSnapshotFailure` set
+  `DEPTH` themselves, since snapshot recovery is a depth-sync concept. `StreamConnection` passes its
+  stream's kind, a `final` field, on both the text and binary paths. A kind with no arm in the
+  handler's `switch` hits a `default` arm that counts it and WARNs at most once a minute.
+- `EventSource` records **provenance, not semantics** or encoding: `WS_MSG`, `REST_MSG`, `REST_FAILED`
   (no payload). A venue's `WS_MSG` is always text or always binary, fixed by its wire protocol, so
   its strategy reads the right field without checking. Whether a payload is a snapshot is the
-  strategy's call. Neither REST type may ever be
-  dropped, because each is the single outcome of a request.
-- `DisruptorDepthEventPublisher` claims with the **blocking** `rb.next()`. A full ring stalls the
+  strategy's call. Neither REST source may ever be dropped, whatever the stream kind, because each
+  is the single outcome of a request.
+- `DisruptorMarketEventPublisher` claims with the **blocking** `rb.next()`. A full ring stalls the
   producer, which for `WS_MSG` is a reader thread and therefore its whole connection.
-- `DepthEventHandler` resolves the slot (a missing slot is counted and dropped, and should never
-  happen), calls `slot.strategy().onEvent`, runs the classifier, then clears the event.
+- `MarketEventHandler` resolves the slot (a missing slot is counted and dropped, and should never
+  happen), then switches on `event.stream`. The `DEPTH` arm calls `slot.syncStrategy().onEvent` and
+  runs the classifier; the event is cleared after the switch.
 
-### 6.3 `core/book/` — storage
+### 6.3 `core/slot/` and `core/book/` — storage
 
-- **`BookSlotTable`** is a copy-on-write `BookSlot[]` indexed by id, published with one volatile
-  store. `BookSlot = (instrument, book, strategy, ctx)`.
+- **`InstrumentSlotTable`** (`core/slot/`) is a copy-on-write `InstrumentSlot[]` indexed by id,
+  published with one volatile store. `InstrumentSlot = (instrument, book, syncStrategy, syncCtx)`.
 - **`OrderBook`** is pure storage. It holds `volatile OrderBookState state`
   (`PENDING → RECOVERING → SYNCED`), and two `TreeMap<Double, PriceLevelEntry>` (bids reverse-ordered,
   asks natural) owned by the shard thread. It exposes `applyLevel(isBid, price, qty, millis)` (a qty
@@ -290,9 +315,11 @@ It cannot know a fetcher's pacing, so a pacing adapter adds its own check (§9.4
 
 ### 6.5 `core/health/` and the health log
 
-`PipelineMetrics` keeps per-venue `LongAdder` totals: `frames` (reader threads), `resyncs`
-(strategies' `recover()`) and `snapshotFailures` (`BatchOutcome`). `monitoring/PipelineHealthLogger`
-logs a block every 30s with one row per venue (synced/tracked, resyncs, snapshot failures, frames/s),
+`PipelineMetrics` keeps `LongAdder` totals: `frames` per stream (reader threads, indexed by
+`StreamKey.index()`), and per venue `resyncs` (strategies' `recover()`) and `snapshotFailures`
+(`BatchOutcome`), which are depth-sync concepts. `monitoring/PipelineHealthLogger` logs a block
+every 30s with one row per venue (synced/tracked, resyncs, snapshot failures, and one frames/s
+column per `StreamKind`, e.g. `depth/s`),
 then msgs/s and free ring slots per shard, and the feed drain's worst tick. Nothing is queryable.
 
 ---
@@ -759,7 +786,8 @@ is `limit=1000`, the subscribed depth.
 | `screener.exchanges.<exchange>.venues.<MARKET>.enabled` | `ExchangesProperties` (core) | venue switch (`<EXCHANGE>_<MARKET>_ENABLED`, default on), consulted only under an enabled exchange. A disabled venue keeps its block: discovery may still read its `rest` config |
 | `screener.exchanges.<exchange>.snapshot-queue` | core | `max-batch-size`, `flush-interval`, `batch-timeout`; required only when an adapter creates a queue |
 | `screener.exchanges.<exchange>.venues.<MARKET>.rest` | core | `base-url`, `codec-buffer-size-mb`, `connect-timeout`, `response-timeout` |
-| `screener.exchanges.<exchange>.venues.<MARKET>.*` | core | `stream-url`, `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds` |
+| `screener.exchanges.<exchange>.venues.<MARKET>.streams.<KIND>` | `StreamProperties` (core) | per-stream transport: `enabled` (default `true`), `stream-url`, `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds`. `<KIND>` is a `StreamKind` in upper case (`DEPTH`). A stream is on when its venue is on, its block exists and `enabled` is true (`ExchangesProperties.isEnabled(StreamKey)`). An enabled venue with no enabled stream fails startup, so a file still using the old flat keys cannot leave a venue silently dark |
+| `screener.exchanges.<exchange>.venues.<MARKET>.max-visible-distance` | core | stays per venue |
 | `screener.exchanges.<exchange>.venues.<MARKET>.snapshot` | the adapter (`BinanceSnapshotProperties`, `MexcSnapshotProperties`, `BybitSnapshotProperties`) | fetcher pricing / pacing; core ignores this key and the adapter ignores core's |
 | `screener.exchanges.bybit.snapshot-cooldown` | `BybitSnapshotProperties` | the pause shared by both Bybit fetchers (§10.2) |
 | `screener.discovery.source-timeout`, `.excluded-symbols` | `DiscoveryProperties` | per-source fetch deadline; the exchange-agnostic exclusion list |
@@ -780,16 +808,17 @@ a `Venue` constant (and an `Exchange` constant). Through that config the adapter
 | Seam | What the adapter supplies |
 |---|---|
 | Discovery | an `InstrumentSource` bean with hardcoded eligibility; `quantityMultiplier` if the wire is not base asset |
-| Transport | a `VenueStreamBinding` → `StreamProtocol` (frames, routing, heartbeat kind); core owns connections, chunking, reconnect |
+| Transport | a `VenueStreamBinding` per stream (`StreamKey(venue, DEPTH)` at least) → `StreamProtocol` (frames, routing, heartbeat kind); core owns connections, chunking, reconnect |
 | Sync | a `VenueStrategyBinding` → `DepthSyncStrategy` + its `BookSyncContext`, following §7 |
 | Recovery | REST: a `SnapshotFetcher` handed to `SnapshotQueueFactory`, plus a `snapshot-queue` block. Anything else: its own `RecoverySink` |
-| Config | `venues.<MARKET>` transport keys, plus any adapter-bound `snapshot` keys |
+| Config | `venues.<MARKET>.streams.DEPTH` transport keys, plus any adapter-bound `snapshot` keys |
 
-Add the `Venue` constant together with its adapter. An enabled venue with no stream binding fails
-startup, and an allocated book with no strategy throws.
+Add the `Venue` constant together with its adapter. An enabled stream with no protocol binding fails
+startup, and an allocated book with no strategy throws. Adding a stream kind (trades, klines) is a
+different recipe: `market-data-pipeline-architecture.md` §13.
 
 **Exercised since Bybit:**
-- **In-stream snapshot**: a `WS_MSG` can be a full book. `EventType` is provenance, so the strategy
+- **In-stream snapshot**: a `WS_MSG` can be a full book. `EventSource` is provenance, so the strategy
   decides, and it replaces the book in any state (§10.1).
 - **A rate limit shared by two venues of one exchange**: solved inside the adapter. Its
   `@Configuration` builds one shared object (`BybitRestCooldown`) and hands it to both fetchers
@@ -800,7 +829,7 @@ startup, and an allocated book with no strategy throws.
   direction and sending from the shard side (§13).
 
 **Binary frames** are exercised since MEXC spot: implement `StreamProtocol.route(ByteBuffer, …)`
-with absolute reads only, and read `DepthEvent.rawBytes` in the strategy (§6.1, §6.2).
+with absolute reads only, and read `MarketEvent.rawBytes` in the strategy (§6.1, §6.2).
 
 ---
 
@@ -812,7 +841,7 @@ with absolute reads only, and read `DepthEvent.rawBytes` in the strategy (§6.1,
 - **No dynamic subscribe/unsubscribe.** A refresh updates the registry and allocates slots, but
   live subscriptions keep the startup universe. Fixing it needs the reverse
   `id → (connection, topic)` direction.
-- **No reset lane.** `BookSlot` has no `resetRequested` flag, so nothing outside the shard thread
+- **No reset lane.** `InstrumentSlot` has no `resetRequested` flag, so nothing outside the shard thread
   can invalidate a book. That rules out handling a dropped frame, a reconnect (books stay `SYNCED`
   across one and rely on the next gap check), a staleness timeout or an unsubscribe.
 - **Blocking ingress.** `WS_MSG` should move to `tryNext()` and set the reset flag on failure, so a
@@ -860,7 +889,7 @@ Settled; the reasoning is kept so they are not relitigated.
    share a class.
 2. **Identity is a dense `int`**; `(venue, nativeSymbol)` is the durable form. `Market`, not `Venue`,
    stays in the DB and the public API.
-3. **One SPI entry point.** There is no snapshot/delta split in the interface, and `EventType` carries
+3. **One SPI entry point.** There is no snapshot/delta split in the interface, and `EventSource` carries
    provenance only.
 4. **No normalized cross-exchange DTO.** Strategies parse and apply in one streaming pass.
 5. **Sync state lives in the opaque `BookSyncContext`**, which has no methods. Reset is the
@@ -902,8 +931,8 @@ Settled; the reasoning is kept so they are not relitigated.
 22. **MEXC TradFi perpetuals are excluded.** Stocks, ETFs, indices, commodities and forex are thin
     trackers of traditional markets that go quiet out of trading hours. Binance's equivalents are
     `TRADIFI_PERPETUAL`, already outside its `PERPETUAL` filter.
-23. **Binary frames enter the ring without a copy**, in a second typed field (`DepthEvent.rawBytes`)
-    rather than one `Object payload`, so the hot path never casts. `EventType` stays provenance: a
+23. **Binary frames enter the ring without a copy**, in a second typed field (`MarketEvent.rawBytes`)
+    rather than one `Object payload`, so the hot path never casts. `EventSource` stays provenance: a
     venue's `WS_MSG` encoding is fixed by its protocol.
 24. **MEXC spot Protobuf is read by a hand-written wire reader, not `protobuf-java` codegen.**
     Generated classes build an object graph with a `String` per price and quantity on every frame,
@@ -943,5 +972,5 @@ Test packages mirror the main ones (package-private access). All live under
 MEXC spot fixtures (captured frames and snapshots) live in `src/test/resources/mexc/spot/`, Bybit's
 in `src/test/resources/bybit/`. The sync
 suites drive real exchange-shaped payloads (JSON, or Protobuf built field by field), in the delivered
-field order, through the real parsers and the real `onEvent`. The harness builds a `DepthEvent` and has no dispatch logic of
+field order, through the real parsers and the real `onEvent`. The harness builds a `MarketEvent` and has no dispatch logic of
 its own. Tests that load `application-local.yml` skip when it is absent.

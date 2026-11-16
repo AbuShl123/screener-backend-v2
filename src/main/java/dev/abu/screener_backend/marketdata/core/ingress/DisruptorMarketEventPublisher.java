@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.marketdata.core.ingress;
 
+import dev.abu.screener_backend.marketdata.StreamKind;
+
 import com.lmax.disruptor.RingBuffer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -15,37 +17,39 @@ import java.nio.ByteBuffer;
  */
 @Component
 @RequiredArgsConstructor
-public class DisruptorDepthEventPublisher implements DepthEventPublisher {
+public class DisruptorMarketEventPublisher implements MarketEventPublisher {
 
     private final DisruptorShardManager shardManager;
 
     @Override
-    public void publishFrame(int instrumentId, String payload) {
-        publish(EventType.WS_MSG, instrumentId, payload, null);
+    public void publishFrame(StreamKind stream, int instrumentId, String payload) {
+        publish(EventSource.WS_MSG, stream, instrumentId, payload, null);
     }
 
     @Override
-    public void publishFrame(int instrumentId, ByteBuffer payload) {
-        publish(EventType.WS_MSG, instrumentId, null, payload);
+    public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) {
+        publish(EventSource.WS_MSG, stream, instrumentId, null, payload);
     }
 
     @Override
     public void publishSnapshot(int instrumentId, String payload) {
-        publish(EventType.REST_MSG, instrumentId, payload, null);
+        publish(EventSource.REST_MSG, StreamKind.DEPTH, instrumentId, payload, null);
     }
 
     @Override
     public void publishSnapshotFailure(int instrumentId) {
-        publish(EventType.REST_FAILED, instrumentId, null, null);
+        publish(EventSource.REST_FAILED, StreamKind.DEPTH, instrumentId, null, null);
     }
 
-    /** Writes both payload fields every time: the slot is reused, so a stale one would leak through. */
-    private void publish(EventType type, int instrumentId, String text, ByteBuffer bytes) {
-        RingBuffer<DepthEvent> rb = shardManager.getRingBuffer(instrumentId);
+    /** Writes every field every time: the slot is reused, so a stale one would leak through. */
+    private void publish(EventSource source, StreamKind stream, int instrumentId,
+                         String text, ByteBuffer bytes) {
+        RingBuffer<MarketEvent> rb = shardManager.getRingBuffer(instrumentId);
         long seq = rb.next();
         try {
-            DepthEvent event = rb.get(seq);
-            event.type         = type;
+            MarketEvent event = rb.get(seq);
+            event.source       = source;
+            event.stream       = stream;
             event.instrumentId = instrumentId;
             event.rawJson      = text;
             event.rawBytes     = bytes;

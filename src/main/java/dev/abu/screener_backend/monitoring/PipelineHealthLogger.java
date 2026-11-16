@@ -1,8 +1,10 @@
 package dev.abu.screener_backend.monitoring;
 
+import dev.abu.screener_backend.marketdata.StreamKey;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
-import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
@@ -12,13 +14,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.Locale;
+
 /**
  * One periodic block covering the whole market-data pipeline — a table row per venue, then one line
  * for the shards and the feed: how many books are synced, how hard they are churning, how fast
  * events are being consumed, how much ring headroom is left, and whether the feed's drain loop is
  * keeping inside its budget.
  *
- * <p>Replaces the {@code sync count: spot=… fut=…} line that {@code BookSlotTable} used to emit.
+ * <p>Replaces the {@code sync count: spot=… fut=…} line that {@code InstrumentSlotTable} used to emit.
  * A synced count alone has a blind spot big enough to hide a broken sequence rule: a book that
  * de-syncs and recovers continuously still reports {@code SYNCED} most of the time, so the count
  * sits flat and looks healthy. Each of the other numbers exists to make one specific failure
@@ -29,9 +33,10 @@ import org.springframework.stereotype.Component;
  *       count means books are cycling, not settled.</li>
  *   <li><b>snap fails</b> (snapshot failures) — the venue's REST side. Non-zero during the startup ramp, when
  *       requests the weight budget cannot afford are failed; near zero after it.</li>
- *   <li><b>frames/s per venue</b> — what each venue's WebSocket delivers, before sync state is
- *       known. A venue at zero has a dead or never-subscribed stream; it is also the only rate that
- *       moves for a venue whose books cannot sync yet.</li>
+ *   <li><b>frames/s per stream</b> — one column per stream kind ({@code depth/s}, …): what each
+ *       of the venue's streams delivers, before sync state is known. A stream at zero is dead or
+ *       never subscribed; depth is also the only rate that moves for a venue whose books cannot
+ *       sync yet. A new {@link StreamKind} gets its column without an edit here.</li>
  *   <li><b>msgs/s per shard</b> — throughput, and shard balance. The two shards should track each
  *       other closely; a skew would undermine the {@code id & mask} routing assumption.</li>
  *   <li><b>ring free</b> — whether consumers keep up with producers. A persistent dip is the signal
@@ -51,17 +56,20 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class PipelineHealthLogger {
 
-    /** venue | synced | resyncs | snap fails | frames/s — wide enough for {@code binance/futures}. */
-    private static final String ROW = "  %-16s %9s %8s %11s %9s";
+    /** venue | synced | resyncs | snap fails — wide enough for {@code binance/futures}. */
+    private static final String ROW = "  %-16s %9s %8s %11s";
+    /** One frames/s column per {@link StreamKind}, appended to {@link #ROW}. */
+    private static final String RATE = " %9s";
+    private static final StreamKind[] KINDS = StreamKind.values();
 
-    private final BookSlotTable slots;
+    private final InstrumentSlotTable slots;
     private final DisruptorShardManager shardManager;
     private final PipelineMetrics metrics;
     private final FeedBroadcaster broadcaster;
 
     private final long[] lastResyncs = new long[Venue.values().length];
     private final long[] lastSnapshotFailures = new long[Venue.values().length];
-    private final long[] lastFrames = new long[Venue.values().length];
+    private final long[] lastFrames = new long[StreamKey.COUNT];
     private long[] lastProcessed;
     private long lastSampleNanos;
 
@@ -84,14 +92,14 @@ public class PipelineHealthLogger {
 
     /**
      * One row per venue: synced books against the number tracked (so a shortfall is visible
-     * without arithmetic), then resyncs, snapshot failures and frame rate over the interval. A
-     * venue with no tracked books is skipped, so a disabled venue never appears — but its counters
-     * are still sampled, so the first interval after it appears is not inflated.
+     * without arithmetic), then resyncs, snapshot failures and one frame rate per stream kind over
+     * the interval. A venue with no tracked books is skipped, so a disabled venue never appears —
+     * but its counters are still sampled, so the first interval after it appears is not inflated.
      */
     private void appendVenueTable(StringBuilder out, double elapsedSec) {
         int[] synced = new int[Venue.values().length];
         int[] total = new int[Venue.values().length];
-        for (BookSlot slot : slots.snapshot()) {
+        for (InstrumentSlot slot : slots.snapshot()) {
             if (slot == null) continue;
             int v = slot.instrument().venue().ordinal();
             total[v]++;
@@ -99,19 +107,28 @@ public class PipelineHealthLogger {
         }
 
         out.append(System.lineSeparator())
-                .append(String.format(ROW, "venue", "synced", "resyncs", "snap fails", "frames/s"));
+                .append(String.format(ROW, "venue", "synced", "resyncs", "snap fails"));
+        for (StreamKind kind : KINDS) {
+            out.append(String.format(RATE, kind.name().toLowerCase(Locale.ROOT) + "/s"));
+        }
         for (Venue venue : Venue.values()) {
             int v = venue.ordinal();
             long resyncs = delta(metrics.resyncs(venue), lastResyncs, v);
             long snapshotFailures = delta(metrics.snapshotFailures(venue), lastSnapshotFailures, v);
-            long frames = delta(metrics.frames(venue), lastFrames, v);
+            long[] frames = new long[KINDS.length];
+            for (StreamKind kind : KINDS) {
+                StreamKey stream = new StreamKey(venue, kind);
+                frames[kind.ordinal()] = delta(metrics.frames(stream), lastFrames, stream.index());
+            }
             if (total[v] == 0) continue;
             out.append(System.lineSeparator()).append(String.format(ROW,
                     shortName(venue),
                     synced[v] + "/" + total[v],
                     resyncs,
-                    snapshotFailures,
-                    elapsedSec <= 0 ? "-" : Math.round(frames / elapsedSec)));
+                    snapshotFailures));
+            for (long f : frames) {
+                out.append(String.format(RATE, elapsedSec <= 0 ? "-" : Math.round(f / elapsedSec)));
+            }
         }
     }
 

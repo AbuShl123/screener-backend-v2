@@ -5,7 +5,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperti
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
 import dev.abu.screener_backend.marketdata.spi.SnapshotFetcher;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -21,8 +21,8 @@ import java.util.concurrent.TimeUnit;
  * is shaped by its exchange's {@code screener.exchanges.<exchange>.snapshot-queue} block.
  *
  * <p><b>Why the publisher is {@link Lazy}.</b> This breaks the startup cycle
- * {@code BookSlotTable → SyncStrategyRegistry → VenueStrategyBinding beans (adapter config) →
- * SnapshotQueueFactory → DepthEventPublisher → DisruptorShardManager → BookSlotTable}, in exactly
+ * {@code InstrumentSlotTable → SyncStrategyRegistry → VenueStrategyBinding beans (adapter config) →
+ * SnapshotQueueFactory → MarketEventPublisher → DisruptorShardManager → InstrumentSlotTable}, in exactly
  * one place in core, and adapters never see the publisher. The proxy resolves on the first
  * publish, which needs an accepted request, which needs a diff — long after the context started.
  *
@@ -35,13 +35,13 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class SnapshotQueueFactory {
 
-    private final DepthEventPublisher publisher;
+    private final MarketEventPublisher publisher;
     private final PipelineMetrics metrics;
     private final ExchangesProperties exchanges;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().name("snapshot-queue").daemon().factory());
 
-    public SnapshotQueueFactory(@Lazy DepthEventPublisher publisher, PipelineMetrics metrics,
+    public SnapshotQueueFactory(@Lazy MarketEventPublisher publisher, PipelineMetrics metrics,
                                 ExchangesProperties exchanges) {
         this.publisher = publisher;
         this.metrics = metrics;

@@ -4,13 +4,15 @@ import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.*;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.VenueBlock;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
@@ -38,10 +40,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /** The MEXC adapter's bindings, and what core's registries make of them. */
 class MexcAdapterConfigTest {
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties FUTURES = new VenueProperties(true, "wss://x", REST, 300, 1, 8, 1, 15, null);
-    private static final VenueProperties SPOT = new VenueProperties(true, "wss://x", REST, 30, 1, 30, 30, 20, null);
+    /** {@link TestVenueProps#REST}'s 10 s response timeout is what {@link #batchTimeoutMustCoverPacing} counts on. */
+    private static final VenueProperties FUTURES = TestVenueProps.venue().depth(TestVenueProps.stream()
+            .maxStreamsPerConnection(300).connections(1, 8).chunk(1).heartbeatSeconds(15)).build();
+    private static final VenueProperties SPOT = TestVenueProps.venue().depth(TestVenueProps.stream()
+            .maxStreamsPerConnection(30).connections(1, 30).chunk(30).heartbeatSeconds(20)).build();
     private static final SnapshotQueueProperties QUEUE =
             new SnapshotQueueProperties(12, Duration.ofMillis(250), Duration.ofSeconds(20));
     private static final MexcSnapshotProperties SNAPSHOT = new MexcSnapshotProperties(Map.of(
@@ -54,7 +57,7 @@ class MexcAdapterConfigTest {
     }
 
     @Test
-    @DisplayName("MEXC futures is bound to its real sync strategy, so BookSlotTable can allocate its books")
+    @DisplayName("MEXC futures is bound to its real sync strategy, so InstrumentSlotTable can allocate its books")
     void futuresStrategyBound() {
         SyncStrategyRegistry registry = new SyncStrategyRegistry(List.of(
                 new MexcAdapterConfig().mexcFuturesStrategyBinding(new FakeRecoverySink(), new PipelineMetrics())));
@@ -87,8 +90,8 @@ class MexcAdapterConfigTest {
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
                 config.mexcSpotStreamBinding(exchanges), config.mexcFuturesStreamBinding(exchanges)), exchanges);
 
-        assertInstanceOf(MexcSpotStreamProtocol.class, registry.forVenue(Venue.MEXC_SPOT));
-        assertInstanceOf(MexcFuturesStreamProtocol.class, registry.forVenue(Venue.MEXC_FUTURES));
+        assertInstanceOf(MexcSpotStreamProtocol.class, registry.forStream(depth(Venue.MEXC_SPOT)));
+        assertInstanceOf(MexcFuturesStreamProtocol.class, registry.forStream(depth(Venue.MEXC_FUTURES)));
         // Spot is enabled by the same switch: a futures-only binding set fails at startup.
         assertThrows(IllegalStateException.class, () -> new StreamProtocolRegistry(
                 List.of(config.mexcFuturesStreamBinding(exchanges)), exchanges));
@@ -105,9 +108,9 @@ class MexcAdapterConfigTest {
 
     // --- Snapshot recovery wiring --------------------------------------------------------------
 
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
@@ -172,5 +175,9 @@ class MexcAdapterConfigTest {
 
         assertThrows(IllegalStateException.class, () -> queue(queues(tooShort), tooShort, SNAPSHOT));
         assertEquals(Venue.MEXC_FUTURES, queue(queues(enough), enough, SNAPSHOT).venue());
+    }
+
+    private static StreamKey depth(Venue venue) {
+        return new StreamKey(venue, StreamKind.DEPTH);
     }
 }

@@ -626,7 +626,7 @@ class MexcSpotSyncStrategyTest {
             assertEquals(0, h.metrics.resyncs(VENUE));
 
             Harness expected = new Harness(Double.POSITIVE_INFINITY);
-            MexcSpotSyncStrategy strategy = (MexcSpotSyncStrategy) expected.slot.strategy();
+            MexcSpotSyncStrategy strategy = (MexcSpotSyncStrategy) expected.slot.syncStrategy();
             assertEquals(44409143L, strategy.applySnapshot(expected.slot, next));
 
             assertEquals(quantities(expected.book().getBids()), quantities(h.book().getBids()));

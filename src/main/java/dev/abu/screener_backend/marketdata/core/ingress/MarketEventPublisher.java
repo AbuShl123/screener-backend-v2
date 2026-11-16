@@ -1,33 +1,39 @@
 package dev.abu.screener_backend.marketdata.core.ingress;
 
+import dev.abu.screener_backend.marketdata.StreamKind;
+
 import java.nio.ByteBuffer;
 
 /**
  * The only way events enter the sharded pipeline. Implementations pick the shard from the id
  * ({@code id & (shardCount - 1)}), so both producers route an instrument to the same shard.
  */
-public interface DepthEventPublisher {
+public interface MarketEventPublisher {
 
     /**
      * Hot path, WebSocket reader threads. Must not parse.
      *
+     * @param stream       the kind of stream the frame arrived on
      * @param instrumentId already resolved by the transport; always a valid, published id
      * @param payload      the frame exactly as received
      */
-    void publishFrame(int instrumentId, String payload);
+    void publishFrame(StreamKind stream, int instrumentId, String payload);
 
     /**
-     * Hot path, WebSocket reader threads. The binary twin of {@link #publishFrame(int, String)}:
-     * the buffer goes into the ring as-is, so the caller must not touch it afterwards.
+     * Hot path, WebSocket reader threads. The binary twin of
+     * {@link #publishFrame(StreamKind, int, String)}: the buffer goes into the ring as-is, so the
+     * caller must not touch it afterwards.
      *
+     * @param stream       the kind of stream the frame arrived on
      * @param instrumentId already resolved by the transport; always a valid, published id
      * @param payload      the frame exactly as received, {@code position} and {@code limit} untouched
      */
-    void publishFrame(int instrumentId, ByteBuffer payload);
+    void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload);
 
     /**
      * Snapshot-fetch completion threads (Reactor). Publishing — rather than writing to the book
      * from the HTTP thread — is what lets the consumer apply the snapshot in sequence with diffs.
+     * Snapshot recovery is a depth-sync concept, so the event is always {@link StreamKind#DEPTH}.
      *
      * @param instrumentId the instrument the snapshot was fetched for
      * @param payload      the REST response body as received
@@ -38,7 +44,7 @@ public interface DepthEventPublisher {
      * Snapshot-fetch completion threads. A failed request is published rather than handled on the
      * HTTP thread for the same reason a successful one is: only the shard's consumer may change
      * the book's state and its sync context, and it must see the failure <em>after</em> it marked
-     * the book {@code RECOVERING}.
+     * the book {@code RECOVERING}. Always {@link StreamKind#DEPTH}.
      *
      * @param instrumentId the instrument whose snapshot request ended without a usable body
      */

@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.adapter.mexc;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
@@ -49,13 +49,13 @@ public final class MexcFuturesStreamProtocol implements StreamProtocol {
     private static final String ACK_SUCCESS = "\"data\":\"success\"";
 
     private final Venue venue;
-    private final VenueProperties props;
+    private final StreamProperties props;
 
     /**
      * @throws IllegalArgumentException unless {@code subscribe-chunk-size} is 1 ({@code sub.depth}
      *         takes one symbol, so a larger chunk would silently subscribe only its first)
      */
-    public MexcFuturesStreamProtocol(Venue venue, VenueProperties props) {
+    public MexcFuturesStreamProtocol(Venue venue, StreamProperties props) {
         if (props.subscribeChunkSize() != 1) {
             throw new IllegalArgumentException(venue + ": subscribe-chunk-size must be 1 (sub.depth takes one symbol), got "
                     + props.subscribeChunkSize());

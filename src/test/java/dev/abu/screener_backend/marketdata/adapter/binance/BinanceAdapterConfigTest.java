@@ -5,14 +5,17 @@ import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.adapter.binance.*;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProperties.VenueBlock;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
@@ -41,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The Binance adapter's venue bindings, and what {@link SyncStrategyRegistry} makes of them.
  *
  * <p>Worth pinning because the failure mode is remote from the cause: an unbound venue would
- * otherwise surface as a {@code null} strategy on a {@code BookSlot}, and then as an NPE on a
+ * otherwise surface as a {@code null} strategy on an {@code InstrumentSlot}, and then as an NPE on a
  * Disruptor consumer thread on the first depth message for that instrument.
  */
 class BinanceAdapterConfigTest {
@@ -101,9 +104,8 @@ class BinanceAdapterConfigTest {
     @DisplayName("every Binance venue has a stream binding with its own BinanceStreamProtocol")
     void everyBinanceVenueHasStreamBinding() {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties spot = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
-        VenueProperties futures = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
+        VenueProperties spot = TestVenueProps.venue().build();
+        VenueProperties futures = TestVenueProps.venue().build();
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), null)));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
@@ -112,10 +114,10 @@ class BinanceAdapterConfigTest {
 
         for (Venue venue : Venue.values()) {
             if (venue.exchange() == Exchange.BINANCE) {
-                assertInstanceOf(BinanceStreamProtocol.class, registry.forVenue(venue), venue + " must stream with Binance's protocol");
+                assertInstanceOf(BinanceStreamProtocol.class, registry.forStream(depth(venue)), venue + " must stream with Binance's protocol");
             }
         }
-        assertNotSame(registry.forVenue(Venue.BINANCE_SPOT), registry.forVenue(Venue.BINANCE_FUTURES));
+        assertNotSame(registry.forStream(depth(Venue.BINANCE_SPOT)), registry.forStream(depth(Venue.BINANCE_FUTURES)));
     }
 
     @Test
@@ -143,9 +145,9 @@ class BinanceAdapterConfigTest {
 
     // --- Snapshot recovery wiring --------------------------------------------------------------
 
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
@@ -159,8 +161,8 @@ class BinanceAdapterConfigTest {
 
     private SnapshotQueueFactory queues(SnapshotQueueProperties snapshotQueue, Duration responseTimeout) {
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), responseTimeout);
-        VenueProperties spot = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
-        VenueProperties futures = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
+        VenueProperties spot = TestVenueProps.venue().rest(rest).build();
+        VenueProperties futures = TestVenueProps.venue().rest(rest).build();
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), snapshotQueue)));
         SnapshotQueueFactory factory = new SnapshotQueueFactory(NO_OP_PUBLISHER, new PipelineMetrics(), exchanges);
@@ -229,5 +231,9 @@ class BinanceAdapterConfigTest {
 
         assertThrows(IllegalStateException.class, () -> config.binanceFuturesSnapshotQueue(queues,
                 restClient(Venue.BINANCE_FUTURES), BINANCE_SNAPSHOT));
+    }
+
+    private static StreamKey depth(Venue venue) {
+        return new StreamKey(venue, StreamKind.DEPTH);
     }
 }

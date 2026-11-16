@@ -1,7 +1,8 @@
-package dev.abu.screener_backend.marketdata.core.book;
+package dev.abu.screener_backend.marketdata.core.slot;
 
 import dev.abu.screener_backend.config.OrderbookProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
 import lombok.RequiredArgsConstructor;
@@ -10,10 +11,10 @@ import org.springframework.stereotype.Component;
 import java.util.Arrays;
 
 /**
- * All live {@link BookSlot}s, in an array indexed by instrument id.
+ * All live {@link InstrumentSlot}s, in an array indexed by instrument id.
  *
  * <p>Replaces the {@code ConcurrentHashMap<String, OrderBook>} store keyed on
- * {@code "SYMBOL:MARKET"}. That key had to be rebuilt on every depth message; an array index does
+ * {@code "SYMBOL:MARKET"}. That key had to be rebuilt on every message; an array index does
  * not, so both the map lookup and the per-message concatenation are gone.
  *
  * <h3>Threading and publication order</h3>
@@ -27,18 +28,18 @@ import java.util.Arrays;
  */
 @Component
 @RequiredArgsConstructor
-public class BookSlotTable {
+public class InstrumentSlotTable {
 
-    private static final BookSlot[] EMPTY = new BookSlot[0];
+    private static final InstrumentSlot[] EMPTY = new InstrumentSlot[0];
 
     private final OrderbookProperties props;
     private final SyncStrategyRegistry strategyRegistry;
 
     /** Hot path reads this. Copy-on-write: never mutated after publication. */
-    private volatile BookSlot[] slots = EMPTY;
+    private volatile InstrumentSlot[] slots = EMPTY;
 
     /** Discovery thread only; {@code null} between publications. */
-    private BookSlot[] staging;
+    private InstrumentSlot[] staging;
 
     /**
      * Creates the slot and its {@link OrderBook} for a newly registered instrument. Not visible to
@@ -53,7 +54,7 @@ public class BookSlotTable {
             staging = Arrays.copyOf(staging, Math.max(id + 1, staging.length * 2));
         }
         DepthSyncStrategy strategy = strategyRegistry.forVenue(instrument.venue());
-        staging[id] = new BookSlot(instrument, new OrderBook(props.priceFilterThreshold()),
+        staging[id] = new InstrumentSlot(instrument, new OrderBook(props.priceFilterThreshold()),
                 strategy, strategy.newContext());
     }
 
@@ -65,13 +66,13 @@ public class BookSlotTable {
     }
 
     /** Hot path. Returns {@code null} for an id with no slot — never throws. */
-    public BookSlot get(int id) {
-        BookSlot[] snapshot = slots;
+    public InstrumentSlot get(int id) {
+        InstrumentSlot[] snapshot = slots;
         return (id >= 0 && id < snapshot.length) ? snapshot[id] : null;
     }
 
     /** Cold path — monitoring and the sync-count log. The array must not be modified. */
-    public BookSlot[] snapshot() {
+    public InstrumentSlot[] snapshot() {
         return slots;
     }
 }

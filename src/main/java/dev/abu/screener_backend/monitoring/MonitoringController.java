@@ -4,7 +4,7 @@ import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.analysis.UserFeedRegistry.UserPresence;
 import dev.abu.screener_backend.marketdata.InstrumentRegistry;
 import dev.abu.screener_backend.marketdata.Market;
-import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.monitoring.dto.UsageReportResponse;
 import lombok.RequiredArgsConstructor;
@@ -46,7 +46,7 @@ public class MonitoringController {
 
     private final UserFeedRegistry userFeedRegistry;
     private final InstrumentRegistry instrumentRegistry;
-    private final BookSlotTable slots;
+    private final InstrumentSlotTable slots;
     private final ConnectionUsageService connectionUsageService;
 
     /**

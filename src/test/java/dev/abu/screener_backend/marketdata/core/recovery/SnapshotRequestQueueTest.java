@@ -3,11 +3,12 @@ package dev.abu.screener_backend.marketdata.core.recovery;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.StreamKind;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.spi.SnapshotFetcher;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
@@ -53,12 +54,12 @@ class SnapshotRequestQueueTest {
                 new SnapshotQueueProperties(maxBatchSize, Duration.ofMillis(250), batchTimeout), publisher, metrics);
     }
 
-    private static BookSlot slot(int id) {
-        return new BookSlot(Instrument.of(id, VENUE, "S" + id + "USDT", "S" + id, "USDT"),
+    private static InstrumentSlot slot(int id) {
+        return new InstrumentSlot(Instrument.of(id, VENUE, "S" + id + "USDT", "S" + id, "USDT"),
                 new OrderBook(0.1), null, null);
     }
 
-    private static List<Integer> ids(List<BookSlot> slots) {
+    private static List<Integer> ids(List<InstrumentSlot> slots) {
         return slots.stream().map(s -> s.instrument().id()).toList();
     }
 
@@ -113,7 +114,7 @@ class SnapshotRequestQueueTest {
         q.tick().join();
 
         assertEquals(List.of(7), ids(fetcher.batches.getFirst()));
-        assertEquals(List.of(new Published(EventType.REST_FAILED, 7, null)), publisher.events);
+        assertEquals(List.of(new Published(EventSource.REST_FAILED, 7, null)), publisher.events);
     }
 
     @Test
@@ -130,7 +131,7 @@ class SnapshotRequestQueueTest {
             // Each producer is a shard consumer: it re-asks for the same book until accepted.
             Thread t = Thread.ofPlatform().start(() -> {
                 for (int k = 0; k < idsPerProducer; k++) {
-                    BookSlot s = slot(base + k);
+                    InstrumentSlot s = slot(base + k);
                     while (!q.requestRecovery(s)) Thread.onSpinWait();
                 }
                 finished.incrementAndGet();
@@ -153,7 +154,7 @@ class SnapshotRequestQueueTest {
                 assertTrue(seen.add(e.instrumentId()), "duplicate outcome for " + e.instrumentId());
             }
         }
-        for (List<BookSlot> batch : fetcher.batches) {
+        for (List<InstrumentSlot> batch : fetcher.batches) {
             assertTrue(batch.size() <= 10, "a batch never exceeds max-batch-size");
         }
     }
@@ -188,8 +189,8 @@ class SnapshotRequestQueueTest {
         q.tick().join();
 
         assertEquals(2, publisher.events.size());
-        assertEquals(new Published(EventType.REST_MSG, 1, "{\"lastUpdateId\":1}"), publisher.events.get(0));
-        assertEquals(new Published(EventType.REST_FAILED, 2, null), publisher.events.get(1));
+        assertEquals(new Published(EventSource.REST_MSG, 1, "{\"lastUpdateId\":1}"), publisher.events.get(0));
+        assertEquals(new Published(EventSource.REST_FAILED, 2, null), publisher.events.get(1));
         assertEquals(1, metrics.snapshotFailures(VENUE));
     }
 
@@ -208,9 +209,9 @@ class SnapshotRequestQueueTest {
         q.tick().join();
 
         assertEquals(List.of(
-                new Published(EventType.REST_MSG, 1, "{}"),
-                new Published(EventType.REST_FAILED, 2, null),
-                new Published(EventType.REST_FAILED, 3, null)), publisher.events);
+                new Published(EventSource.REST_MSG, 1, "{}"),
+                new Published(EventSource.REST_FAILED, 2, null),
+                new Published(EventSource.REST_FAILED, 3, null)), publisher.events);
         assertEquals(2, metrics.snapshotFailures(VENUE));
     }
 
@@ -225,8 +226,8 @@ class SnapshotRequestQueueTest {
         q.tick().get(5, TimeUnit.SECONDS);
 
         assertEquals(List.of(
-                new Published(EventType.REST_FAILED, 1, null),
-                new Published(EventType.REST_FAILED, 2, null)), publisher.events);
+                new Published(EventSource.REST_FAILED, 1, null),
+                new Published(EventSource.REST_FAILED, 2, null)), publisher.events);
         assertTrue(q.requestRecovery(slot(3)), "reopened after the timeout");
     }
 
@@ -250,8 +251,8 @@ class SnapshotRequestQueueTest {
         captured[0].delivered(slot(2), "{\"late\":true}");          // after sealing: slot 2 already failed
 
         assertEquals(List.of(
-                new Published(EventType.REST_MSG, 1, "{\"first\":true}"),
-                new Published(EventType.REST_FAILED, 2, null)), publisher.events);
+                new Published(EventSource.REST_MSG, 1, "{\"first\":true}"),
+                new Published(EventSource.REST_FAILED, 2, null)), publisher.events);
     }
 
     @Test
@@ -265,7 +266,7 @@ class SnapshotRequestQueueTest {
 
         q.tick().join();
 
-        assertEquals(List.of(new Published(EventType.REST_FAILED, 1, null)), publisher.events);
+        assertEquals(List.of(new Published(EventSource.REST_FAILED, 1, null)), publisher.events);
         assertTrue(q.requestRecovery(slot(2)));
     }
 
@@ -278,7 +279,7 @@ class SnapshotRequestQueueTest {
 
         q.tick().join();
 
-        assertEquals(List.of(new Published(EventType.REST_FAILED, 1, null)), publisher.events);
+        assertEquals(List.of(new Published(EventSource.REST_FAILED, 1, null)), publisher.events);
         assertTrue(q.requestRecovery(slot(2)));
     }
 
@@ -295,10 +296,10 @@ class SnapshotRequestQueueTest {
 
     private static final class FakeFetcher implements SnapshotFetcher {
         volatile boolean accepting = true;
-        final List<List<BookSlot>> batches = new ArrayList<>();
+        final List<List<InstrumentSlot>> batches = new ArrayList<>();
         SnapshotOutcome lastOutcome;
         /** Default: report nothing and complete at once — core fails every slot. */
-        BiFunction<List<BookSlot>, SnapshotOutcome, CompletionStage<Void>> behaviour =
+        BiFunction<List<InstrumentSlot>, SnapshotOutcome, CompletionStage<Void>> behaviour =
                 (batch, outcome) -> CompletableFuture.completedFuture(null);
 
         @Override
@@ -307,36 +308,36 @@ class SnapshotRequestQueueTest {
         }
 
         @Override
-        public CompletionStage<Void> fetchAll(List<BookSlot> batch, SnapshotOutcome outcome) {
+        public CompletionStage<Void> fetchAll(List<InstrumentSlot> batch, SnapshotOutcome outcome) {
             batches.add(batch);
             lastOutcome = outcome;
             return behaviour.apply(batch, outcome);
         }
     }
 
-    record Published(EventType type, int instrumentId, String payload) { }
+    record Published(EventSource type, int instrumentId, String payload) { }
 
-    private static final class RecordingPublisher implements DepthEventPublisher {
+    private static final class RecordingPublisher implements MarketEventPublisher {
         final List<Published> events = new ArrayList<>();
 
         @Override
-        public synchronized void publishFrame(int instrumentId, String payload) {
+        public synchronized void publishFrame(StreamKind stream, int instrumentId, String payload) {
             throw new AssertionError("the snapshot queue never publishes frames");
         }
 
         @Override
-        public synchronized void publishFrame(int instrumentId, ByteBuffer payload) {
+        public synchronized void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) {
             throw new AssertionError("the snapshot queue never publishes frames");
         }
 
         @Override
         public synchronized void publishSnapshot(int instrumentId, String payload) {
-            events.add(new Published(EventType.REST_MSG, instrumentId, payload));
+            events.add(new Published(EventSource.REST_MSG, instrumentId, payload));
         }
 
         @Override
         public synchronized void publishSnapshotFailure(int instrumentId) {
-            events.add(new Published(EventType.REST_FAILED, instrumentId, null));
+            events.add(new Published(EventSource.REST_FAILED, instrumentId, null));
         }
     }
 }

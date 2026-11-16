@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.adapter.binance;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
@@ -27,10 +27,10 @@ public final class BinanceStreamProtocol implements StreamProtocol {
     private static final String SYMBOL_FIELD = "\"s\":\"";
 
     private final Venue venue;
-    private final VenueProperties props;
+    private final StreamProperties props;
     private final String topicSuffix;
 
-    public BinanceStreamProtocol(Venue venue, VenueProperties props) {
+    public BinanceStreamProtocol(Venue venue, StreamProperties props) {
         this.venue = venue;
         this.props = props;
         this.topicSuffix = venue.market() == Market.SPOT ? "@depth" : "@depth@500ms";

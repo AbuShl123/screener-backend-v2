@@ -6,7 +6,7 @@ decisions, open questions, and a proposed phasing and team split. Nothing here i
 
 **Read first**
 - `.claude/docs/multi-exchange-progress.md` — SPI, core pipeline, sync contract.
-- `marketdata/core/ingress/DepthEventHandler` and `DisruptorShardManager` — where the detector is wired.
+- `marketdata/core/ingress/MarketEventHandler` and `DisruptorShardManager` — where the detector is wired.
 - `marketdata/core/book/OrderBook`, `PriceLevelEntry` — the data the detector walks.
 - `analysis/OrderBookClassifier`, `SymbolState` — the per-shard, per-instrument pattern to mirror.
 - `feed/OrderBookFeedStore`, `feed/OrderBookBroadcaster` — the delivery path clusters join, and
@@ -108,8 +108,9 @@ second walk of the book. Hot-path rules from `CLAUDE.md` apply.
 ### D1. One detector per shard, wired after classification
 
 `OrderClusterDetector` is created per shard by `DisruptorShardManager`, like `OrderBookClassifier`,
-and called from `MarketEventHandler.onEvent` (today's `DepthEventHandler`, renamed by spike-alerts
-D3) in the **depth** branch of its dispatcher, right after `classificationModule.process(...)`.
+and called from `MarketEventHandler` (renamed from `DepthEventHandler` by
+`market-event-generalization-plan.md`) in the **depth** arm of its `switch (event.stream)`, right
+after `classificationModule.process(...)`.
 Per-instrument state lives in a map keyed by `feedKey` (touched only by the owning shard thread).
 A book that is not `SYNCED`, or has an empty side, drops its clusters.
 
@@ -221,9 +222,9 @@ the shadow-tuning mode (Phase 3).
 
 ## 7. Coordination with spike alerts
 
-- Spike-alerts ticket 1 renames `DepthEventHandler` to `MarketEventHandler` and turns it into a
-  dispatcher (D3/D4 there). The cluster call goes in the **depth** branch. Whichever lands second
-  rebases onto the first — plan for it in sprint scheduling.
+- `market-event-generalization-plan.md` (spike-alerts ticket 1) renames `DepthEventHandler` to
+  `MarketEventHandler` and turns it into a dispatcher (D3/D4 there). The cluster call goes in the
+  **depth** arm. Whichever lands second rebases onto the first — plan for it in sprint scheduling.
 - Spike-alerts ticket 4 introduces the common envelope and `FeedChannel` (D16/D17 there). Cluster
   delivery (ticket 3 here) is built on it and starts after it lands.
 - Clusters and spike alerts share the session's batches but are separate channels and types.

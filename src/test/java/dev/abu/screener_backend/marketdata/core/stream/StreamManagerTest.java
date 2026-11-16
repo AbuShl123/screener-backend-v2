@@ -2,16 +2,19 @@ package dev.abu.screener_backend.marketdata.core.stream;
 
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.InstrumentUniverseChangedEvent;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.stream.ConnectionPool;
 import dev.abu.screener_backend.marketdata.core.stream.StreamManager;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
@@ -37,21 +40,24 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Per-venue pool lifecycle in {@link StreamManager}. Pools are recorded, never connected.
+ * Per-stream pool lifecycle in {@link StreamManager}. Pools are recorded, never connected.
  *
  * <p>Only Binance venues exist, so "another exchange streams while one fails to appear" is modelled
  * as "futures appears before spot" — the same code path: a venue first seen in a later event.
+ *
+ * <p>{@link StreamKind} has only {@code DEPTH}, so each venue here has exactly one stream. A venue
+ * with two enabled streams starting two pools needs a second kind; that test belongs with it.
  */
 class StreamManagerTest {
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties PROPS =
-            new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, null);
+    private static final VenueProperties VENUE = TestVenueProps.venue().build();
+    private static final StreamProperties STREAM = TestVenueProps.stream().build();
     private static final WebSocketProperties WS = new WebSocketProperties(100, 1000);
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final StreamKey SPOT_DEPTH = new StreamKey(Venue.BINANCE_SPOT, StreamKind.DEPTH);
+    private static final StreamKey FUTURES_DEPTH = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.DEPTH);
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
@@ -65,13 +71,13 @@ class StreamManagerTest {
 
     /** Records calls instead of opening sockets; {@code shutdown} still releases the real scheduler. */
     private static final class RecordingPool extends ConnectionPool {
-        final Venue venue;
+        final StreamKey stream;
         final List<List<Instrument>> starts = new ArrayList<>();
         boolean shutDown;
 
-        RecordingPool(Venue venue, StreamProtocol protocol) {
-            super(venue, PROPS, WS, protocol, NO_OP_PUBLISHER, new PipelineMetrics());
-            this.venue = venue;
+        RecordingPool(StreamKey stream, StreamProtocol protocol) {
+            super(stream, STREAM, WS, protocol, NO_OP_PUBLISHER, new PipelineMetrics());
+            this.stream = stream;
         }
 
         @Override
@@ -87,7 +93,7 @@ class StreamManagerTest {
     }
 
     private final List<RecordingPool> created = new ArrayList<>();
-    private final Set<Venue> failing = new HashSet<>();
+    private final Set<StreamKey> failing = new HashSet<>();
 
     @AfterEach
     void releaseSchedulers() {
@@ -96,15 +102,15 @@ class StreamManagerTest {
 
     private StreamManager manager(Market... enabledMarkets) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
-        for (Market m : enabledMarkets) venues.put(m, PROPS);
+        for (Market m : enabledMarkets) venues.put(m, VENUE);
         ExchangesProperties exchanges = new ExchangesProperties(
                 Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues, null)));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
-                new VenueStreamBinding(Venue.BINANCE_SPOT, new StubProtocol()),
-                new VenueStreamBinding(Venue.BINANCE_FUTURES, new StubProtocol())), exchanges);
-        return new StreamManager(exchanges, registry, (venue, protocol) -> {
-            if (failing.contains(venue)) throw new IllegalStateException("boom: " + venue);
-            RecordingPool pool = new RecordingPool(venue, protocol);
+                new VenueStreamBinding(SPOT_DEPTH, new StubProtocol()),
+                new VenueStreamBinding(FUTURES_DEPTH, new StubProtocol())), exchanges);
+        return new StreamManager(exchanges, registry, (stream, protocol) -> {
+            if (failing.contains(stream)) throw new IllegalStateException("boom: " + stream);
+            RecordingPool pool = new RecordingPool(stream, protocol);
             created.add(pool);
             return pool;
         });
@@ -122,12 +128,12 @@ class StreamManagerTest {
         return new InstrumentUniverseChangedEvent(new Object(), added, removed);
     }
 
-    private RecordingPool pool(Venue venue) {
-        return created.stream().filter(p -> p.venue == venue).findFirst().orElseThrow();
+    private RecordingPool pool(StreamKey stream) {
+        return created.stream().filter(p -> p.stream.equals(stream)).findFirst().orElseThrow();
     }
 
     @Test
-    @DisplayName("first event with both venues starts two pools, each with only its venue's instruments in id order")
+    @DisplayName("first event with both venues starts one pool per stream, each with its venue's full list in id order")
     void bothVenues() {
         StreamManager manager = manager(Market.SPOT, Market.FUTURES);
         Instrument s0 = spot(0, "BTCUSDT"), f1 = futures(1, "BTCUSDT"), s2 = spot(2, "ETHUSDT"), f3 = futures(3, "ETHUSDT");
@@ -135,8 +141,8 @@ class StreamManagerTest {
         manager.onUniverseChanged(event(List.of(s0, f1, s2, f3), List.of()));
 
         assertEquals(2, created.size());
-        assertEquals(List.of(List.of(s0, s2)), pool(Venue.BINANCE_SPOT).starts);
-        assertEquals(List.of(List.of(f1, f3)), pool(Venue.BINANCE_FUTURES).starts);
+        assertEquals(List.of(List.of(s0, s2)), pool(SPOT_DEPTH).starts);
+        assertEquals(List.of(List.of(f1, f3)), pool(FUTURES_DEPTH).starts);
     }
 
     @Test
@@ -147,12 +153,12 @@ class StreamManagerTest {
 
         manager.onUniverseChanged(event(List.of(f0), List.of()));
         assertEquals(1, created.size());
-        assertEquals(Venue.BINANCE_FUTURES, created.getFirst().venue);
+        assertEquals(FUTURES_DEPTH, created.getFirst().stream);
 
         manager.onUniverseChanged(event(List.of(s1, s2), List.of()));
         assertEquals(2, created.size());
-        assertEquals(List.of(List.of(s1, s2)), pool(Venue.BINANCE_SPOT).starts);
-        assertEquals(1, pool(Venue.BINANCE_FUTURES).starts.size(), "the futures pool must not restart");
+        assertEquals(List.of(List.of(s1, s2)), pool(SPOT_DEPTH).starts);
+        assertEquals(1, pool(FUTURES_DEPTH).starts.size(), "the futures pool must not restart");
     }
 
     @Test
@@ -164,7 +170,7 @@ class StreamManagerTest {
         manager.onUniverseChanged(event(List.of(spot(1, "ETHUSDT")), List.of()));
 
         assertEquals(1, created.size());
-        assertEquals(1, pool(Venue.BINANCE_SPOT).starts.size());
+        assertEquals(1, pool(SPOT_DEPTH).starts.size());
     }
 
     @Test
@@ -185,20 +191,33 @@ class StreamManagerTest {
         manager.onUniverseChanged(event(List.of(spot(0, "BTCUSDT"), futures(1, "BTCUSDT")), List.of()));
 
         assertEquals(1, created.size());
-        assertEquals(Venue.BINANCE_FUTURES, created.getFirst().venue);
+        assertEquals(FUTURES_DEPTH, created.getFirst().stream);
     }
 
     @Test
-    @DisplayName("one venue failing to start does not stop the other, and nothing escapes into discovery")
+    @DisplayName("one stream failing to start does not stop the others, and nothing escapes into discovery")
     void failureIsolated() {
         StreamManager manager = manager(Market.SPOT, Market.FUTURES);
-        failing.add(Venue.BINANCE_SPOT);
+        failing.add(SPOT_DEPTH);
         Instrument f1 = futures(1, "BTCUSDT");
 
         assertDoesNotThrow(() -> manager.onUniverseChanged(event(List.of(spot(0, "BTCUSDT"), f1), List.of())));
 
         assertEquals(1, created.size());
-        assertEquals(List.of(List.of(f1)), pool(Venue.BINANCE_FUTURES).starts);
+        assertEquals(List.of(List.of(f1)), pool(FUTURES_DEPTH).starts);
+    }
+
+    @Test
+    @DisplayName("a stream that failed to start is not retried by a later event, which would give it a partial list")
+    void failedStreamNotRetried() {
+        StreamManager manager = manager(Market.SPOT, Market.FUTURES);
+        failing.add(SPOT_DEPTH);
+        manager.onUniverseChanged(event(List.of(spot(0, "BTCUSDT")), List.of()));
+        failing.clear();
+
+        manager.onUniverseChanged(event(List.of(spot(1, "ETHUSDT")), List.of()));
+
+        assertTrue(created.isEmpty());
     }
 
     @Test

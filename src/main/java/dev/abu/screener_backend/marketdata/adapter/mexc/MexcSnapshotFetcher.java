@@ -2,7 +2,7 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcDepthClient.BodyKind;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeApiException;
 import dev.abu.screener_backend.marketdata.spi.SnapshotFetcher;
@@ -101,11 +101,11 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
     }
 
     @Override
-    public CompletionStage<Void> fetchAll(List<BookSlot> batch, SnapshotOutcome outcome) {
+    public CompletionStage<Void> fetchAll(List<InstrumentSlot> batch, SnapshotOutcome outcome) {
         long now = now();
         long firstDelayMs = Math.max(0, nextSendAtMs - now);
         List<Mono<Void>> sends = new ArrayList<>(batch.size());
-        for (BookSlot slot : batch) {
+        for (InstrumentSlot slot : batch) {
             long delayMs = Math.max(0, nextSendAtMs - now);
             nextSendAtMs = now + delayMs + requestIntervalMs;
             sends.add(fetchOne(slot, delayMs, outcome));
@@ -115,7 +115,7 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
         return Flux.merge(sends).then().toFuture();
     }
 
-    private Mono<Void> fetchOne(BookSlot slot, long delayMs, SnapshotOutcome outcome) {
+    private Mono<Void> fetchOne(InstrumentSlot slot, long delayMs, SnapshotOutcome outcome) {
         return Mono.delay(Duration.ofMillis(delayMs), scheduler)
                 .flatMap(tick -> {
                     if (!isAcceptingRequests()) {
@@ -136,7 +136,7 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
                 });
     }
 
-    private void onBody(BookSlot slot, String body, SnapshotOutcome outcome) {
+    private void onBody(InstrumentSlot slot, String body, SnapshotOutcome outcome) {
         switch (client.classifyDepth(body)) {
             case OK -> outcome.delivered(slot, body);
             case THROTTLED -> {
@@ -156,7 +156,7 @@ public class MexcSnapshotFetcher implements SnapshotFetcher {
     }
 
     /** The error itself is already logged at WARN by the REST client. */
-    private void onError(BookSlot slot, Throwable e) {
+    private void onError(InstrumentSlot slot, Throwable e) {
         if (!(e instanceof ExchangeApiException api)) {
             // Timeout, connection reset, codec overflow…
             log.debug("[{}] snapshot failed without an HTTP status: {}", slot.instrument().logName(), e.toString());

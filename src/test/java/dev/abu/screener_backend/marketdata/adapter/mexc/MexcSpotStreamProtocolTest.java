@@ -1,7 +1,7 @@
 package dev.abu.screener_backend.marketdata.adapter.mexc;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotTestSupport.Proto;
@@ -38,11 +38,9 @@ class MexcSpotStreamProtocolTest {
     private static final Instrument ETH = Instrument.of(22, Venue.MEXC_SPOT, "ETHUSDT", "ETH", "USDT");
     private static final Instrument LONGXIA = Instrument.of(23, Venue.MEXC_SPOT, "龙虾USDT", "龙虾", "USDT");
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-
-    private static VenueProperties props(int maxStreams, int chunkSize) {
-        return new VenueProperties(true, "wss://x", REST, maxStreams, 1, 30, chunkSize, 20, null);
+    private static StreamProperties props(int maxStreams, int chunkSize) {
+        return TestVenueProps.stream()
+                .maxStreamsPerConnection(maxStreams).connections(1, 30).chunk(chunkSize).heartbeatSeconds(20).build();
     }
 
     private static final MexcSpotStreamProtocol PROTOCOL = new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(30, 30));

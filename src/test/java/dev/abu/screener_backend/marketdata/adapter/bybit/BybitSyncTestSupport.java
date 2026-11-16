@@ -2,12 +2,13 @@ package dev.abu.screener_backend.marketdata.adapter.bybit;
 
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 
 import java.util.Map;
@@ -15,7 +16,7 @@ import java.util.StringJoiner;
 import java.util.TreeMap;
 
 /**
- * Fixtures for driving a real {@link BookSlot} through {@link BybitSyncStrategy}.
+ * Fixtures for driving a real {@link InstrumentSlot} through {@link BybitSyncStrategy}.
  *
  * <p>JSON is built as strings in the field orders Bybit actually sends
  * ({@code external-docs/bybit/bybit-api-contracts.md} §5.2): linear {@code topic, type, ts, data, cts},
@@ -37,10 +38,10 @@ final class BybitSyncTestSupport {
     /** One book, one strategy, one fake sink. No dispatch logic of its own. */
     static final class Harness {
 
-        final BookSlot slot;
+        final InstrumentSlot slot;
         final FakeRecoverySink sink = new FakeRecoverySink();
         final PipelineMetrics metrics = new PipelineMetrics();
-        private final DepthEvent event = new DepthEvent();
+        private final MarketEvent event = new MarketEvent();
 
         Harness() {
             this(VENUE, FILTER);
@@ -48,7 +49,7 @@ final class BybitSyncTestSupport {
 
         Harness(Venue venue, double filter) {
             BybitSyncStrategy strategy = new BybitSyncStrategy(sink, metrics);
-            this.slot = new BookSlot(
+            this.slot = new InstrumentSlot(
                     Instrument.of(1, venue, "ARBUSDT", "ARB", "USDT"),
                     new OrderBook(filter),
                     strategy,
@@ -60,11 +61,11 @@ final class BybitSyncTestSupport {
         }
 
         BybitSyncContext ctx() {
-            return (BybitSyncContext) slot.ctx();
+            return (BybitSyncContext) slot.syncCtx();
         }
 
         BybitSyncStrategy strategy() {
-            return (BybitSyncStrategy) slot.strategy();
+            return (BybitSyncStrategy) slot.syncStrategy();
         }
 
         int bufferSize() {
@@ -80,23 +81,24 @@ final class BybitSyncTestSupport {
         }
 
         void wsMsg(String rawJson) {
-            fire(EventType.WS_MSG, rawJson);
+            fire(EventSource.WS_MSG, rawJson);
         }
 
         void restMsg(String rawJson) {
-            fire(EventType.REST_MSG, rawJson);
+            fire(EventSource.REST_MSG, rawJson);
         }
 
         void restFailed() {
-            fire(EventType.REST_FAILED, null);
+            fire(EventSource.REST_FAILED, null);
         }
 
         /** Reuses one event instance, exactly as the ring buffer does. */
-        private void fire(EventType type, String rawJson) {
-            event.type = type;
+        private void fire(EventSource type, String rawJson) {
+            event.source = type;
+            event.stream = StreamKind.DEPTH;
             event.instrumentId = slot.instrument().id();
             event.rawJson = rawJson;
-            slot.strategy().onEvent(slot, event);
+            slot.syncStrategy().onEvent(slot, event);
             event.clear();
         }
     }

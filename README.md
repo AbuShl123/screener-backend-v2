@@ -218,7 +218,6 @@ the service.
 Detailed design notes live in [`.claude/docs/`](.claude/docs):
 
 - [`multi-exchange-progress.md`](.claude/docs/multi-exchange-progress.md): pipeline architecture, the sync contract, each adapter, known gaps
-- [`orderbook-classification.md`](.claude/docs/orderbook-classification.md): how levels are tiered and ranked
 - [`websocket-server.md`](.claude/docs/websocket-server.md): the delivery layer
 - [`payment-gateway-multicard.md`](.claude/docs/payment-gateway-multicard.md): payment integration
 - [`pipeline-benchmark-2026-09-08.md`](.claude/docs/pipeline-benchmark-2026-09-08.md): measured throughput and memory baseline

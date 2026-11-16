@@ -1,12 +1,14 @@
 package dev.abu.screener_backend.marketdata.core.stream;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import org.java_websocket.WebSocket;
@@ -61,17 +63,17 @@ class JavaWebSocketBufferOwnershipTest {
         @Override public Heartbeat heartbeat() { return new Heartbeat.ProtocolPing(Duration.ofHours(1)); }
     }
 
-    private static final class CapturingPublisher implements DepthEventPublisher {
+    private static final class CapturingPublisher implements MarketEventPublisher {
         final List<ByteBuffer> frames = new CopyOnWriteArrayList<>();
         final CountDownLatch received = new CountDownLatch(FRAMES);
 
         @Override
-        public void publishFrame(int instrumentId, ByteBuffer payload) {
+        public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) {
             frames.add(payload);
             received.countDown();
         }
 
-        @Override public void publishFrame(int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     }
@@ -110,11 +112,10 @@ class JavaWebSocketBufferOwnershipTest {
         assertTrue(started.await(5, TimeUnit.SECONDS), "server did not start");
 
         String url = "ws://127.0.0.1:" + server.getPort();
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties props = new VenueProperties(true, url, rest, 1024, 1, 1, 400, 120, null);
+        StreamProperties props = TestVenueProps.stream().url(url).build();
         scheduler = Executors.newSingleThreadScheduledExecutor();
         CapturingPublisher publisher = new CapturingPublisher();
-        connection = new StreamConnection(URI.create(url), Venue.BINANCE_SPOT,
+        connection = new StreamConnection(URI.create(url), new StreamKey(Venue.BINANCE_SPOT, StreamKind.DEPTH),
                 List.of(Instrument.of(0, Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT")),
                 new BinaryProtocol(), publisher, new PipelineMetrics(), scheduler, props,
                 new WebSocketProperties(100, 1000));

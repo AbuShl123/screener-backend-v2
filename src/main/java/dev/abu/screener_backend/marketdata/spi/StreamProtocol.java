@@ -7,11 +7,12 @@ import java.nio.ByteBuffer;
 import java.util.List;
 
 /**
- * One venue's wire protocol: what to send, how to read what comes back, and how to stay alive.
+ * One stream's wire protocol: what to send, how to read what comes back, and how to stay alive.
  *
  * <p>Core ({@code core/stream/}) owns connection lifecycle, reconnect, connection fan-out, subscribe
  * chunking and heartbeat scheduling. The protocol owns only byte-level knowledge of the venue.
- * One instance per venue, contributed through a {@link VenueStreamBinding}.
+ * One instance per stream ({@code (venue, kind)}), contributed through a {@link VenueStreamBinding}.
+ * Every connection it serves carries that one kind, so the kind is never parsed from a frame.
  */
 public interface StreamProtocol {
 

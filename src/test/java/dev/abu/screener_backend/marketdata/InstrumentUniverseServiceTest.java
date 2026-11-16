@@ -4,11 +4,11 @@ import dev.abu.screener_backend.config.DiscoveryProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.config.OrderbookProperties;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
-import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
+import dev.abu.screener_backend.config.TestVenueProps;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
 import dev.abu.screener_backend.marketdata.spi.BookSyncContext;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.InstrumentCandidate;
@@ -382,8 +382,7 @@ class InstrumentUniverseServiceTest {
     }
 
     private static VenueProperties venueProps(boolean enabled) {
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        return new VenueProperties(enabled, "wss://x", rest, 1024, 1, 1, 100, 120, null);
+        return TestVenueProps.venue().enabled(enabled).build();
     }
 
     private static Map<Venue, List<InstrumentCandidate>> both(List<InstrumentCandidate> spot,
@@ -433,7 +432,7 @@ class InstrumentUniverseServiceTest {
     }
 
     /** A real slot table that records allocate/publish into the shared call log. */
-    private static final class RecordingSlotTable extends BookSlotTable {
+    private static final class RecordingSlotTable extends InstrumentSlotTable {
         private final List<String> calls;
 
         RecordingSlotTable(List<String> calls) {
@@ -463,6 +462,6 @@ class InstrumentUniverseServiceTest {
         }
 
         @Override
-        public void onEvent(BookSlot slot, DepthEvent event) { }
+        public void onEvent(InstrumentSlot slot, MarketEvent event) { }
     }
 }

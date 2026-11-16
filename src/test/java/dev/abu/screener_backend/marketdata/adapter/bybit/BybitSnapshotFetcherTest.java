@@ -3,7 +3,7 @@ package dev.abu.screener_backend.marketdata.adapter.bybit;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotFetcher.BodyKind;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
 import org.junit.jupiter.api.DisplayName;
@@ -99,28 +99,28 @@ class BybitSnapshotFetcherTest {
 
     // --- Fixtures ------------------------------------------------------------------------------
 
-    private static List<BookSlot> batch(Venue venue, String... symbols) {
-        List<BookSlot> slots = new ArrayList<>();
+    private static List<InstrumentSlot> batch(Venue venue, String... symbols) {
+        List<InstrumentSlot> slots = new ArrayList<>();
         for (int i = 0; i < symbols.length; i++) {
-            slots.add(new BookSlot(Instrument.of(i, venue, symbols[i], symbols[i].replace("USDT", ""), "USDT"),
+            slots.add(new InstrumentSlot(Instrument.of(i, venue, symbols[i], symbols[i].replace("USDT", ""), "USDT"),
                     new OrderBook(0.1), null, null));
         }
         return slots;
     }
 
-    private static List<BookSlot> batch(String... symbols) {
+    private static List<InstrumentSlot> batch(String... symbols) {
         return batch(Venue.BYBIT_FUTURES, symbols);
     }
 
     /** Starts a batch and runs virtual time until every send window of it has passed. */
-    private CompletableFuture<Void> fetch(BybitSnapshotFetcher fetcher, List<BookSlot> batch) {
+    private CompletableFuture<Void> fetch(BybitSnapshotFetcher fetcher, List<InstrumentSlot> batch) {
         CompletableFuture<Void> stage = fetcher.fetchAll(batch, outcome).toCompletableFuture();
         scheduler.advanceBy(batch.size() * INTERVAL);
         assertTrue(stage.isDone(), "every slot has an outcome once its send window has passed");
         return stage;
     }
 
-    private CompletableFuture<Void> fetch(List<BookSlot> batch) {
+    private CompletableFuture<Void> fetch(List<InstrumentSlot> batch) {
         return fetch(fetcher, batch);
     }
 
@@ -148,13 +148,13 @@ class BybitSnapshotFetcherTest {
         final List<String> failed = Collections.synchronizedList(new ArrayList<>());
 
         @Override
-        public void delivered(BookSlot slot, String body) {
+        public void delivered(InstrumentSlot slot, String body) {
             delivered.add(slot.instrument().nativeSymbol());
             bodies.add(body);
         }
 
         @Override
-        public void failed(BookSlot slot) {
+        public void failed(InstrumentSlot slot) {
             failed.add(slot.instrument().nativeSymbol());
         }
     }

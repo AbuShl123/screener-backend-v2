@@ -1,12 +1,12 @@
 package dev.abu.screener_backend.marketdata.adapter.bybit;
 
 import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
 import dev.abu.screener_backend.marketdata.spi.BookSyncContext;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
@@ -77,11 +77,11 @@ public class BybitSyncStrategy implements DepthSyncStrategy {
     }
 
     @Override
-    public void onEvent(BookSlot slot, DepthEvent event) {
-        BybitSyncContext ctx = (BybitSyncContext) slot.ctx();
+    public void onEvent(InstrumentSlot slot, MarketEvent event) {
+        BybitSyncContext ctx = (BybitSyncContext) slot.syncCtx();
         OrderBookState state = slot.book().getState();
 
-        if (event.type == EventType.REST_MSG) {
+        if (event.source == EventSource.REST_MSG) {
             if (state != OrderBookState.RECOVERING) return;
             if (!handleSnapshot(slot, event.rawJson)) {
                 recover(slot, ctx);
@@ -91,7 +91,7 @@ public class BybitSyncStrategy implements DepthSyncStrategy {
             return;
         }
 
-        if (event.type == EventType.REST_FAILED) {
+        if (event.source == EventSource.REST_FAILED) {
             // As on Binance: no recover() (it would re-request at once and count a resync), and no
             // clearLevels() (a RECOVERING book is already empty). The next delta re-asks.
             if (state == OrderBookState.RECOVERING) {
@@ -181,8 +181,8 @@ public class BybitSyncStrategy implements DepthSyncStrategy {
         return CheckResult.DE_SYNCED;
     }
 
-    boolean handleDiff(BookSlot slot, String frame, long u) {
-        BybitSyncContext ctx = (BybitSyncContext) slot.ctx();
+    boolean handleDiff(InstrumentSlot slot, String frame, long u) {
+        BybitSyncContext ctx = (BybitSyncContext) slot.syncCtx();
         try {
             CheckResult result = check(u, ctx, slot.instrument().logName());
 
@@ -207,7 +207,7 @@ public class BybitSyncStrategy implements DepthSyncStrategy {
      * {@code SYNCED}. Any buffered deltas are discarded and a pending REST outcome will be dropped
      * by the state guard.
      */
-    boolean replaceBook(BookSlot slot, BybitSyncContext ctx, String frame, OrderBookState previous) {
+    boolean replaceBook(InstrumentSlot slot, BybitSyncContext ctx, String frame, OrderBookState previous) {
         ctx.reset();
         slot.book().clearLevels();
         try {
@@ -231,13 +231,13 @@ public class BybitSyncStrategy implements DepthSyncStrategy {
      * Loads a REST snapshot into the (empty) book and drains the buffer through {@link #handleDiff},
      * check included. An empty or all-stale buffer is success.
      */
-    boolean handleSnapshot(BookSlot slot, String body) {
+    boolean handleSnapshot(InstrumentSlot slot, String body) {
         try {
             long u = applySnapshot(slot, body);
             if (u == -1) return false;
             slot.book().computeDistance();
 
-            BybitSyncContext ctx = (BybitSyncContext) slot.ctx();
+            BybitSyncContext ctx = (BybitSyncContext) slot.syncCtx();
             ctx.lastU = u;
 
             while (!ctx.diffBuffer.isEmpty()) {
@@ -261,7 +261,7 @@ public class BybitSyncStrategy implements DepthSyncStrategy {
      * @return the snapshot's {@code u}, or {@code -1} if the body is malformed or has no
      *         {@code result.u}
      */
-    long applySnapshot(BookSlot slot, String body) {
+    long applySnapshot(InstrumentSlot slot, String body) {
         try {
             long u = applyBook(slot.book(), body);
             if (u == -1) {
@@ -338,7 +338,7 @@ public class BybitSyncStrategy implements DepthSyncStrategy {
      * The single recovery path — called from {@link #onEvent} and nowhere else, which is what
      * bounds the sink to at most one request per event.
      */
-    private void recover(BookSlot slot, BybitSyncContext ctx) {
+    private void recover(InstrumentSlot slot, BybitSyncContext ctx) {
         metrics.recordResync(slot.instrument().venue());
         ctx.reset();
         slot.book().clearLevels();

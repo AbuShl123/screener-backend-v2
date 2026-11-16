@@ -4,19 +4,21 @@ import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitRestCooldown.Kind;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.Cooldown;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.VenueBlock;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeWebClientFactory;
@@ -60,10 +62,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class BybitAdapterConfigTest {
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties SPOT = new VenueProperties(true, "wss://x", REST, 300, 2, 8, 10, 20, null);
-    private static final VenueProperties FUTURES = new VenueProperties(true, "wss://x", REST, 300, 2, 8, 200, 20, null);
+    private static final VenueProperties SPOT = venue(10);
+    private static final VenueProperties FUTURES = venue(200);
     private static final SnapshotQueueProperties QUEUE =
             new SnapshotQueueProperties(10, Duration.ofMillis(250), Duration.ofSeconds(20));
     private static final Duration INTERVAL = Duration.ofMillis(100);
@@ -71,6 +71,11 @@ class BybitAdapterConfigTest {
             Market.SPOT, new VenueBlock(new MarketSnapshot(INTERVAL)),
             Market.FUTURES, new VenueBlock(new MarketSnapshot(INTERVAL))),
             new Cooldown(Duration.ofSeconds(10), Duration.ofMinutes(10)));
+
+    private static VenueProperties venue(int chunkSize) {
+        return TestVenueProps.venue().depth(TestVenueProps.stream()
+                .maxStreamsPerConnection(300).connections(2, 8).chunk(chunkSize).heartbeatSeconds(20)).build();
+    }
 
     private static ExchangesProperties exchanges(SnapshotQueueProperties queue) {
         return new ExchangesProperties(Map.of(Exchange.BYBIT,
@@ -107,9 +112,9 @@ class BybitAdapterConfigTest {
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
                 config.bybitSpotStreamBinding(exchanges), config.bybitFuturesStreamBinding(exchanges)), exchanges);
 
-        assertInstanceOf(BybitStreamProtocol.class, registry.forVenue(Venue.BYBIT_SPOT));
-        assertInstanceOf(BybitStreamProtocol.class, registry.forVenue(Venue.BYBIT_FUTURES));
-        assertNotSame(registry.forVenue(Venue.BYBIT_SPOT), registry.forVenue(Venue.BYBIT_FUTURES));
+        assertInstanceOf(BybitStreamProtocol.class, registry.forStream(depth(Venue.BYBIT_SPOT)));
+        assertInstanceOf(BybitStreamProtocol.class, registry.forStream(depth(Venue.BYBIT_FUTURES)));
+        assertNotSame(registry.forStream(depth(Venue.BYBIT_SPOT)), registry.forStream(depth(Venue.BYBIT_FUTURES)));
         // Spot is enabled by the same switch: a futures-only binding set fails at startup.
         assertThrows(IllegalStateException.class, () -> new StreamProtocolRegistry(
                 List.of(config.bybitFuturesStreamBinding(exchanges)), exchanges));
@@ -118,7 +123,7 @@ class BybitAdapterConfigTest {
     @Test
     @DisplayName("a spot subscribe-chunk-size over Bybit's 10-arg limit fails at startup")
     void oversizedSpotChunkThrows() {
-        VenueProperties spot = new VenueProperties(true, "wss://x", REST, 300, 2, 8, 11, 20, null);
+        VenueProperties spot = venue(11);
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BYBIT,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, FUTURES), null)));
 
@@ -136,9 +141,9 @@ class BybitAdapterConfigTest {
 
     // --- Snapshot recovery wiring --------------------------------------------------------------
 
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
@@ -207,8 +212,8 @@ class BybitAdapterConfigTest {
         assertFalse(futures.requestRecovery(slot(Venue.BYBIT_FUTURES, 2)), "the other venue pauses too");
     }
 
-    private static BookSlot slot(Venue venue, int id) {
-        return new BookSlot(Instrument.of(id, venue, "BTCUSDT", "BTC", "USDT"), new OrderBook(0.1), null, null);
+    private static InstrumentSlot slot(Venue venue, int id) {
+        return new InstrumentSlot(Instrument.of(id, venue, "BTCUSDT", "BTC", "USDT"), new OrderBook(0.1), null, null);
     }
 
     @Test
@@ -275,7 +280,7 @@ class BybitAdapterConfigTest {
                     StreamProtocolRegistry streams = context.getBean(StreamProtocolRegistry.class);
                     for (Venue venue : List.of(Venue.BYBIT_SPOT, Venue.BYBIT_FUTURES)) {
                         assertInstanceOf(BybitSyncStrategy.class, strategies.forVenue(venue));
-                        assertInstanceOf(BybitStreamProtocol.class, streams.forVenue(venue));
+                        assertInstanceOf(BybitStreamProtocol.class, streams.forStream(depth(venue)));
                     }
 
                     // Each same-typed bean went to the right venue.
@@ -310,5 +315,9 @@ class BybitAdapterConfigTest {
         assertDoesNotThrow(() -> config.bybitFuturesStreamBinding(exchanges));
         assertEquals(Venue.BYBIT_SPOT, spotQueue(queues, exchanges, cooldown, snapshot).venue());
         assertEquals(Venue.BYBIT_FUTURES, futuresQueue(queues, exchanges, cooldown, snapshot).venue());
+    }
+
+    private static StreamKey depth(Venue venue) {
+        return new StreamKey(venue, StreamKind.DEPTH);
     }
 }

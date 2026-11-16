@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.spi;
 
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 
 import java.util.List;
 import java.util.concurrent.CompletionStage;
@@ -33,5 +33,5 @@ public interface SnapshotFetcher {
      * Core fails any slot left unreported when the stage completes or times out, and drops any
      * report after that.
      */
-    CompletionStage<Void> fetchAll(List<BookSlot> batch, SnapshotOutcome outcome);
+    CompletionStage<Void> fetchAll(List<InstrumentSlot> batch, SnapshotOutcome outcome);
 }

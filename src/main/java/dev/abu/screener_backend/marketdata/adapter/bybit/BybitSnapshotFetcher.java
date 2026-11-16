@@ -2,7 +2,7 @@ package dev.abu.screener_backend.marketdata.adapter.bybit;
 
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitRestCooldown.Kind;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeApiException;
 import dev.abu.screener_backend.marketdata.spi.SnapshotFetcher;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
@@ -109,11 +109,11 @@ public class BybitSnapshotFetcher implements SnapshotFetcher {
     }
 
     @Override
-    public CompletionStage<Void> fetchAll(List<BookSlot> batch, SnapshotOutcome outcome) {
+    public CompletionStage<Void> fetchAll(List<InstrumentSlot> batch, SnapshotOutcome outcome) {
         long now = now();
         long firstDelayMs = Math.max(0, nextSendAtMs - now);
         List<Mono<Void>> sends = new ArrayList<>(batch.size());
-        for (BookSlot slot : batch) {
+        for (InstrumentSlot slot : batch) {
             long delayMs = Math.max(0, nextSendAtMs - now);
             nextSendAtMs = now + delayMs + requestIntervalMs;
             sends.add(fetchOne(slot, delayMs, outcome));
@@ -123,7 +123,7 @@ public class BybitSnapshotFetcher implements SnapshotFetcher {
         return Flux.merge(sends).then().toFuture();
     }
 
-    private Mono<Void> fetchOne(BookSlot slot, long delayMs, SnapshotOutcome outcome) {
+    private Mono<Void> fetchOne(InstrumentSlot slot, long delayMs, SnapshotOutcome outcome) {
         return Mono.delay(Duration.ofMillis(delayMs), scheduler)
                 .flatMap(tick -> {
                     if (!isAcceptingRequests()) {
@@ -144,7 +144,7 @@ public class BybitSnapshotFetcher implements SnapshotFetcher {
                 });
     }
 
-    private void onBody(BookSlot slot, String body, SnapshotOutcome outcome) {
+    private void onBody(InstrumentSlot slot, String body, SnapshotOutcome outcome) {
         switch (classify(body)) {
             case OK -> outcome.delivered(slot, body);
             case RATE_LIMITED -> {

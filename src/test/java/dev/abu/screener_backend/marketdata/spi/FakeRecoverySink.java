@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.spi;
 
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 
 /**
  * Stands in for a venue's {@code SnapshotRequestQueue}.
@@ -23,10 +23,10 @@ public final class FakeRecoverySink implements RecoverySink {
     public int requests = 0;
 
     /** The slot handed to the most recent call, so tests can assert the book's state at that moment. */
-    public BookSlot lastSlot;
+    public InstrumentSlot lastSlot;
 
     @Override
-    public boolean requestRecovery(BookSlot slot) {
+    public boolean requestRecovery(InstrumentSlot slot) {
         requests++;
         lastSlot = slot;
         return accepts;

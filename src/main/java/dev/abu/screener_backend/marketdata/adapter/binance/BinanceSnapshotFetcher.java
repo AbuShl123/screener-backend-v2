@@ -2,7 +2,7 @@ package dev.abu.screener_backend.marketdata.adapter.binance;
 
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProperties.MarketSnapshot;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeApiException;
 import dev.abu.screener_backend.marketdata.spi.SnapshotFetcher;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
@@ -70,7 +70,7 @@ public class BinanceSnapshotFetcher implements SnapshotFetcher {
     }
 
     @Override
-    public CompletionStage<Void> fetchAll(List<BookSlot> batch, SnapshotOutcome outcome) {
+    public CompletionStage<Void> fetchAll(List<InstrumentSlot> batch, SnapshotOutcome outcome) {
         long now = clock.getAsLong();
         boolean banned = guard.isBanned(now);
         long remaining = guard.remaining(weightBudget, now);
@@ -92,7 +92,7 @@ public class BinanceSnapshotFetcher implements SnapshotFetcher {
                 .toFuture();
     }
 
-    private Mono<Void> fetchOne(BookSlot slot, SnapshotOutcome outcome) {
+    private Mono<Void> fetchOne(InstrumentSlot slot, SnapshotOutcome outcome) {
         return client.depth(slot.instrument().nativeSymbol(), depthLimit)
                 .doOnNext(response -> onResponse(slot, response, outcome))
                 .then()
@@ -103,7 +103,7 @@ public class BinanceSnapshotFetcher implements SnapshotFetcher {
                 });
     }
 
-    private void onResponse(BookSlot slot, ResponseEntity<String> response, SnapshotOutcome outcome) {
+    private void onResponse(InstrumentSlot slot, ResponseEntity<String> response, SnapshotOutcome outcome) {
         guard.observe(response.getHeaders(), clock.getAsLong());
         String body = response.getBody();
         if (body == null || body.isEmpty()) {
@@ -120,7 +120,7 @@ public class BinanceSnapshotFetcher implements SnapshotFetcher {
      * to the local clock, since it is relative — or, without the header, until the next server minute
      * (429) or for {@code ban-fallback} (418).
      */
-    private void onError(BookSlot slot, Throwable e) {
+    private void onError(InstrumentSlot slot, Throwable e) {
         if (!(e instanceof ExchangeApiException api)) {
             // Timeout, connection reset, codec overflow… — no headers to learn from.
             log.debug("[{}] snapshot failed without an HTTP status: {}", slot.instrument().logName(), e.toString());

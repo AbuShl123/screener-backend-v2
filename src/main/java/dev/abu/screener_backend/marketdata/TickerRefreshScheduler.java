@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
  * Periodically refreshes the tracked instrument universe on a configurable interval.
  *
  * <p>The first execution happens at startup, which is what brings the pipeline up: discovery
- * registers instruments, allocates their book slots and publishes the universe-changed event that
+ * registers instruments, allocates their instrument slots and publishes the universe-changed event that
  * starts the WebSocket pools.
  *
  * <p>Uses {@code fixedDelayString} (not {@code fixedRateString}) so that the next refresh

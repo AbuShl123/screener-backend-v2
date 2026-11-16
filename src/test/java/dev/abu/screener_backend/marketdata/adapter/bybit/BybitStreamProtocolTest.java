@@ -1,9 +1,11 @@
 package dev.abu.screener_backend.marketdata.adapter.bybit;
 
 import dev.abu.screener_backend.config.ExchangesProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.StreamKey;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
@@ -47,11 +49,9 @@ class BybitStreamProtocolTest {
     private static final Instrument LINEAR_BABYDOGE = Instrument.of(32, Venue.BYBIT_FUTURES,
             "1000000BABYDOGEUSDT", "1000000BABYDOGE", "USDT", 1);
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-
-    private static VenueProperties props(int chunkSize) {
-        return new VenueProperties(true, "wss://x", REST, 300, 1, 8, chunkSize, 20, null);
+    private static StreamProperties props(int chunkSize) {
+        return TestVenueProps.stream()
+                .maxStreamsPerConnection(300).connections(1, 8).chunk(chunkSize).heartbeatSeconds(20).build();
     }
 
     private static final BybitStreamProtocol SPOT = new BybitStreamProtocol(Venue.BYBIT_SPOT, props(10));
@@ -122,7 +122,7 @@ class BybitStreamProtocolTest {
     @EnumSource(value = Venue.class, names = {"BYBIT_SPOT", "BYBIT_FUTURES"})
     @DisplayName("the shipped application.yml passes the construction checks")
     void shippedYamlConstructs(Venue venue) throws IOException {
-        new BybitStreamProtocol(venue, shippedYaml().venue(venue));
+        new BybitStreamProtocol(venue, shippedYaml().stream(new StreamKey(venue, StreamKind.DEPTH)));
     }
 
     // --- Routing -------------------------------------------------------------------------------

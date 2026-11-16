@@ -1,7 +1,7 @@
 package dev.abu.screener_backend.marketdata.adapter.binance;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceStreamProtocol;
@@ -28,11 +28,7 @@ class BinanceStreamProtocolTest {
     private static final Instrument ETH_SPOT = Instrument.of(8, Venue.BINANCE_SPOT, "ETHUSDT", "ETH", "USDT");
     private static final Instrument BTC_FUT = Instrument.of(9, Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT");
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-
-    private static final VenueProperties PROPS =
-            new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, null);
+    private static final StreamProperties PROPS = TestVenueProps.stream().build();
 
     private static final BinanceStreamProtocol SPOT =
             new BinanceStreamProtocol(Venue.BINANCE_SPOT, PROPS);

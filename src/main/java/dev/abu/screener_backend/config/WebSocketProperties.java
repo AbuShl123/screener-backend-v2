@@ -6,9 +6,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * Exchange-WebSocket reconnect timing.
  *
  * <p>Everything venue-shaped that used to live here — stream URLs, connection counts, subscribe
- * chunk size, and the heartbeat interval — moved to {@code screener.exchanges.<exchange>.venues.*}
- * (see {@link ExchangesProperties}); the heartbeat's <em>kind</em> (protocol ping vs. text frame) is
- * the venue's {@code StreamProtocol}'s call. Only reconnect backoff stays uniform across venues.
+ * chunk size, and the heartbeat interval — moved to
+ * {@code screener.exchanges.<exchange>.venues.<market>.streams.<KIND>.*} (see
+ * {@link ExchangesProperties}); the heartbeat's <em>kind</em> (protocol ping vs. text frame) is the
+ * stream's {@code StreamProtocol}'s call. Only reconnect backoff stays uniform across venues.
  *
  * @param reconnectInitialDelayMs base delay for the exponential reconnect backoff
  * @param reconnectMaxDelayMs     backoff ceiling

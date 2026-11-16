@@ -1,5 +1,6 @@
 package dev.abu.screener_backend.marketdata.core.health;
 
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import org.springframework.stereotype.Component;
 
@@ -26,12 +27,14 @@ import java.util.concurrent.atomic.LongAdder;
 @Component
 public class PipelineMetrics {
 
-    private final LongAdder[] frames = perVenue();
-    private final LongAdder[] resyncs = perVenue();
-    private final LongAdder[] snapshotFailures = perVenue();
+    /** Per stream, indexed by {@link StreamKey#index()}. */
+    private final LongAdder[] frames = adders(StreamKey.COUNT);
+    /** Per venue: resyncs and snapshot failures are depth-sync concepts, not per stream. */
+    private final LongAdder[] resyncs = adders(Venue.values().length);
+    private final LongAdder[] snapshotFailures = adders(Venue.values().length);
 
-    private static LongAdder[] perVenue() {
-        LongAdder[] adders = new LongAdder[Venue.values().length];
+    private static LongAdder[] adders(int count) {
+        LongAdder[] adders = new LongAdder[count];
         for (int i = 0; i < adders.length; i++) {
             adders[i] = new LongAdder();
         }
@@ -39,20 +42,21 @@ public class PipelineMetrics {
     }
 
     /**
-     * One data frame arrived on a venue's WebSocket and was routed to an instrument. The only
-     * per-venue throughput number: the Disruptor counts per shard, and every shard mixes venues.
+     * One data frame arrived on a stream's WebSocket and was routed to an instrument. The only
+     * per-stream throughput number: the Disruptor counts per shard, and every shard mixes venues
+     * and kinds.
      *
      * <p><b>Hot path</b> — called on the WebSocket reader thread for every routed frame. A
      * {@link LongAdder} increment is allocation-free once its cells exist, and striping keeps a
-     * venue's several reader threads from contending on one cache line.
+     * stream's several reader threads from contending on one cache line.
      */
-    public void recordFrame(Venue venue) {
-        frames[venue.ordinal()].increment();
+    public void recordFrame(StreamKey stream) {
+        frames[stream.index()].increment();
     }
 
     /** Monotonic total since startup. Subtract two samples for a rate. */
-    public long frames(Venue venue) {
-        return frames[venue.ordinal()].sum();
+    public long frames(StreamKey stream) {
+        return frames[stream.index()].sum();
     }
 
     /**
