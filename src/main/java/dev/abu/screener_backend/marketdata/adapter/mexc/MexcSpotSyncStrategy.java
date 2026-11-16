@@ -2,12 +2,12 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcVersionRange.CheckResult;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
 import dev.abu.screener_backend.marketdata.spi.BookSyncContext;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
@@ -61,11 +61,11 @@ public class MexcSpotSyncStrategy implements DepthSyncStrategy {
     }
 
     @Override
-    public void onEvent(BookSlot slot, DepthEvent event) {
-        MexcSpotSyncContext ctx = (MexcSpotSyncContext) slot.ctx();
+    public void onEvent(InstrumentSlot slot, MarketEvent event) {
+        MexcSpotSyncContext ctx = (MexcSpotSyncContext) slot.syncCtx();
         OrderBookState state = slot.book().getState();
 
-        if (event.type == EventType.REST_MSG) {
+        if (event.source == EventSource.REST_MSG) {
             if (state != OrderBookState.RECOVERING) return;
             if (!handleSnapshot(slot, event.rawJson)) {
                 recover(slot, ctx);
@@ -75,7 +75,7 @@ public class MexcSpotSyncStrategy implements DepthSyncStrategy {
             return;
         }
 
-        if (event.type == EventType.REST_FAILED) {
+        if (event.source == EventSource.REST_FAILED) {
             // As on Binance: no recover() (it would re-request at once and count a resync), and no
             // clearLevels() (a RECOVERING book is already empty). The next push re-asks.
             if (state == OrderBookState.RECOVERING) {
@@ -110,8 +110,8 @@ public class MexcSpotSyncStrategy implements DepthSyncStrategy {
      *
      * @return {@code false} on a gap or a malformed frame; the caller resyncs
      */
-    boolean handleDiff(BookSlot slot, ByteBuffer frame) {
-        MexcSpotSyncContext ctx = (MexcSpotSyncContext) slot.ctx();
+    boolean handleDiff(InstrumentSlot slot, ByteBuffer frame) {
+        MexcSpotSyncContext ctx = (MexcSpotSyncContext) slot.syncCtx();
 
         try {
             long body = MexcSpotFrameReader.bodyRange(frame);
@@ -139,14 +139,14 @@ public class MexcSpotSyncStrategy implements DepthSyncStrategy {
         }
     }
 
-    boolean handleSnapshot(BookSlot slot, String rawJson) {
+    boolean handleSnapshot(InstrumentSlot slot, String rawJson) {
         try {
             // the book is guaranteed to be empty here
             long lastUpdateId = applySnapshot(slot, rawJson);
             if (lastUpdateId == -1) return false;
             slot.book().computeDistance();
 
-            MexcSpotSyncContext ctx = (MexcSpotSyncContext) slot.ctx();
+            MexcSpotSyncContext ctx = (MexcSpotSyncContext) slot.syncCtx();
             ctx.lastVersion = lastUpdateId;
 
             while (!ctx.diffBuffer.isEmpty()) {
@@ -169,7 +169,7 @@ public class MexcSpotSyncStrategy implements DepthSyncStrategy {
      * @return {@code lastUpdateId}, or {@code -1} if the body is malformed or has none — which
      *         covers an error body ({@code {"code":…,"msg":…}}), should one get past the fetcher
      */
-    long applySnapshot(BookSlot slot, String rawJson) {
+    long applySnapshot(InstrumentSlot slot, String rawJson) {
         OrderBook book = slot.book();
         long millis = System.currentTimeMillis();
         long lastUpdateId = -1;
@@ -219,7 +219,7 @@ public class MexcSpotSyncStrategy implements DepthSyncStrategy {
      * The single recovery path — called from {@link #onEvent} and nowhere else, which is what
      * bounds the sink to at most one request per event.
      */
-    private void recover(BookSlot slot, MexcSpotSyncContext ctx) {
+    private void recover(InstrumentSlot slot, MexcSpotSyncContext ctx) {
         metrics.recordResync(slot.instrument().venue());
         ctx.reset();
         slot.book().clearLevels();

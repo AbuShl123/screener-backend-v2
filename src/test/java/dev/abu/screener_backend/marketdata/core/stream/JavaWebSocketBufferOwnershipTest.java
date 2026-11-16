@@ -6,7 +6,8 @@ import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import org.java_websocket.WebSocket;
@@ -61,17 +62,17 @@ class JavaWebSocketBufferOwnershipTest {
         @Override public Heartbeat heartbeat() { return new Heartbeat.ProtocolPing(Duration.ofHours(1)); }
     }
 
-    private static final class CapturingPublisher implements DepthEventPublisher {
+    private static final class CapturingPublisher implements MarketEventPublisher {
         final List<ByteBuffer> frames = new CopyOnWriteArrayList<>();
         final CountDownLatch received = new CountDownLatch(FRAMES);
 
         @Override
-        public void publishFrame(int instrumentId, ByteBuffer payload) {
+        public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) {
             frames.add(payload);
             received.countDown();
         }
 
-        @Override public void publishFrame(int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     }

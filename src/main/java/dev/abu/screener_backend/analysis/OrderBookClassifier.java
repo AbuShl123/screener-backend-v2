@@ -131,7 +131,7 @@ public class OrderBookClassifier {
         }
     }
 
-    /// Entry point called by DepthEventHandler after every ring buffer event.
+    /// Entry point called by the depth arm of MarketEventHandler after every depth event.
     public void process(Instrument inst, OrderBook ob) {
         String stateKey = inst.feedKey();                                  // venue-specific, precomputed
         String ruleKey  = inst.ruleKey();                                  // venue-agnostic, precomputed

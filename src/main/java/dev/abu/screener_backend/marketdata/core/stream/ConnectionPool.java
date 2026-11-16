@@ -5,7 +5,7 @@ import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import lombok.extern.slf4j.Slf4j;
 
@@ -28,7 +28,7 @@ public class ConnectionPool {
     private final VenueProperties venueProps;
     private final WebSocketProperties wsProps;
     private final StreamProtocol protocol;
-    private final DepthEventPublisher publisher;
+    private final MarketEventPublisher publisher;
     private final PipelineMetrics metrics;
 
     private final List<StreamConnection> connections = new ArrayList<>();
@@ -39,7 +39,7 @@ public class ConnectionPool {
                           VenueProperties venueProps,
                           WebSocketProperties wsProps,
                           StreamProtocol protocol,
-                          DepthEventPublisher publisher,
+                          MarketEventPublisher publisher,
                           PipelineMetrics metrics) {
         this.venue = venue;
         this.venueProps = venueProps;

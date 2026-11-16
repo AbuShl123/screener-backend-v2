@@ -1,7 +1,7 @@
 package dev.abu.screener_backend.marketdata.spi;
 
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
 
 /**
  * Keeps one venue's books in sync. Called on the book's shard consumer thread for every event.
@@ -18,6 +18,6 @@ public interface DepthSyncStrategy {
 
     BookSyncContext newContext();
 
-    void onEvent(BookSlot slot, DepthEvent event);
+    void onEvent(InstrumentSlot slot, MarketEvent event);
 
 }

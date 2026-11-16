@@ -6,7 +6,8 @@ import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.core.stream.StreamConnection;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
@@ -70,20 +71,23 @@ class StreamConnectionTest {
         }
     }
 
-    private static final class RecordingPublisher implements DepthEventPublisher {
+    private static final class RecordingPublisher implements MarketEventPublisher {
         final List<Integer> ids = new ArrayList<>();
+        final List<StreamKind> streams = new ArrayList<>();
         final List<String> payloads = new ArrayList<>();
         final List<ByteBuffer> binaryPayloads = new ArrayList<>();
 
         @Override
-        public void publishFrame(int instrumentId, String payload) {
+        public void publishFrame(StreamKind stream, int instrumentId, String payload) {
             ids.add(instrumentId);
+            streams.add(stream);
             payloads.add(payload);
         }
 
         @Override
-        public void publishFrame(int instrumentId, ByteBuffer payload) {
+        public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) {
             ids.add(instrumentId);
+            streams.add(stream);
             binaryPayloads.add(payload);
         }
 
@@ -104,11 +108,11 @@ class StreamConnectionTest {
         return out;
     }
 
-    private static StreamConnection connection(StreamProtocol protocol, DepthEventPublisher publisher) {
+    private static StreamConnection connection(StreamProtocol protocol, MarketEventPublisher publisher) {
         return connection(protocol, publisher, new PipelineMetrics());
     }
 
-    private static StreamConnection connection(StreamProtocol protocol, DepthEventPublisher publisher,
+    private static StreamConnection connection(StreamProtocol protocol, MarketEventPublisher publisher,
                                                PipelineMetrics metrics) {
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
         VenueProperties props = new VenueProperties(true, "ws://localhost:1", rest, 1024, 1, 1, 400, 120, null);
@@ -141,6 +145,7 @@ class StreamConnectionTest {
         connection(protocol, publisher).onMessage(frame);
 
         assertEquals(List.of(2), publisher.ids);
+        assertEquals(List.of(StreamKind.DEPTH), publisher.streams);
         assertSame(frame, publisher.payloads.getFirst());
     }
 
@@ -204,6 +209,7 @@ class StreamConnectionTest {
         connection(protocol, publisher, metrics).onMessage(frame);
 
         assertEquals(List.of(2), publisher.ids);
+        assertEquals(List.of(StreamKind.DEPTH), publisher.streams);
         assertSame(frame, publisher.binaryPayloads.getFirst());
         assertEquals(1, frame.position());
         assertEquals(5, frame.limit());

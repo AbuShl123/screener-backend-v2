@@ -2,7 +2,7 @@ package dev.abu.screener_backend.marketdata;
 
 import dev.abu.screener_backend.config.DiscoveryProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
-import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.spi.InstrumentCandidate;
 import dev.abu.screener_backend.marketdata.spi.InstrumentSource;
 import lombok.extern.slf4j.Slf4j;
@@ -53,7 +53,7 @@ import java.util.stream.Collectors;
  * <h3>Ordering invariant</h3>
  * {@code register all → allocate slots → publish → fire event → transport subscribes.} The event
  * listener runs synchronously on this thread, so the ordering holds naturally — but it is asserted
- * here rather than assumed. See {@link BookSlotTable}.
+ * here rather than assumed. See {@link InstrumentSlotTable}.
  *
  * <p>Ids are assigned on the calling thread in {@code (venue.ordinal(), nativeSymbol)} order, so
  * they are reproducible across restarts regardless of the order sources report in.
@@ -75,7 +75,7 @@ public class InstrumentUniverseService {
 
     private final List<SourceHandle> sources;
     private final InstrumentRegistry registry;
-    private final BookSlotTable slots;
+    private final InstrumentSlotTable slots;
     private final Duration sourceTimeout;
     private final Set<String> excludedSymbols;
     private final ApplicationEventPublisher eventPublisher;
@@ -85,7 +85,7 @@ public class InstrumentUniverseService {
 
     public InstrumentUniverseService(List<InstrumentSource> sources,
                                      InstrumentRegistry registry,
-                                     BookSlotTable slots,
+                                     InstrumentSlotTable slots,
                                      ExchangesProperties exchanges,
                                      DiscoveryProperties discovery,
                                      ApplicationEventPublisher eventPublisher) {

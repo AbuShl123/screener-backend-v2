@@ -2,11 +2,12 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 
 import java.io.ByteArrayOutputStream;
@@ -34,7 +35,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /**
  * Fixtures for MEXC spot: Protobuf frames built field by field in the wire order MEXC sends
  * ({@code external-docs/mexc/mexc-spot-depth-empirical.md} §1), JSON snapshot bodies, a harness
- * driving a real {@link BookSlot} through {@link MexcSpotSyncStrategy}, and the Phase 0 captures
+ * driving a real {@link InstrumentSlot} through {@link MexcSpotSyncStrategy}, and the Phase 0 captures
  * under {@code src/test/resources/mexc/spot/}.
  *
  * <p>The frames are encoded by a tiny writer here rather than by {@code protobuf-java}, which the
@@ -59,10 +60,10 @@ final class MexcSpotTestSupport {
     /** One book, one strategy, one fake sink. No dispatch logic of its own. */
     static final class Harness {
 
-        final BookSlot slot;
+        final InstrumentSlot slot;
         final FakeRecoverySink sink = new FakeRecoverySink();
         final PipelineMetrics metrics = new PipelineMetrics();
-        private final DepthEvent event = new DepthEvent();
+        private final MarketEvent event = new MarketEvent();
 
         Harness() {
             this(FILTER);
@@ -71,7 +72,7 @@ final class MexcSpotTestSupport {
         /** @param filter the book's price filter, as a fraction of mid */
         Harness(double filter) {
             MexcSpotSyncStrategy strategy = new MexcSpotSyncStrategy(sink, metrics);
-            this.slot = new BookSlot(
+            this.slot = new InstrumentSlot(
                     Instrument.of(1, VENUE, SYMBOL, "BTC", "USDT"),
                     new OrderBook(filter),
                     strategy,
@@ -83,7 +84,7 @@ final class MexcSpotTestSupport {
         }
 
         MexcSpotSyncContext ctx() {
-            return (MexcSpotSyncContext) slot.ctx();
+            return (MexcSpotSyncContext) slot.syncCtx();
         }
 
         int bufferSize() {
@@ -100,28 +101,31 @@ final class MexcSpotTestSupport {
         }
 
         void wsMsg(ByteBuffer frame) {
-            event.type = EventType.WS_MSG;
+            event.source = EventSource.WS_MSG;
+            event.stream = StreamKind.DEPTH;
             event.instrumentId = slot.instrument().id();
             event.rawBytes = frame;
             fire();
         }
 
         void restMsg(String rawJson) {
-            event.type = EventType.REST_MSG;
+            event.source = EventSource.REST_MSG;
+            event.stream = StreamKind.DEPTH;
             event.instrumentId = slot.instrument().id();
             event.rawJson = rawJson;
             fire();
         }
 
         void restFailed() {
-            event.type = EventType.REST_FAILED;
+            event.source = EventSource.REST_FAILED;
+            event.stream = StreamKind.DEPTH;
             event.instrumentId = slot.instrument().id();
             fire();
         }
 
         /** Reuses one event instance, exactly as the ring buffer does. */
         private void fire() {
-            slot.strategy().onEvent(slot, event);
+            slot.syncStrategy().onEvent(slot, event);
             event.clear();
         }
     }

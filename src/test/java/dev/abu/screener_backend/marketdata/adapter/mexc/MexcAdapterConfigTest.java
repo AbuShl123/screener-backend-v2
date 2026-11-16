@@ -10,7 +10,8 @@ import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.*;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.VenueBlock;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
@@ -54,7 +55,7 @@ class MexcAdapterConfigTest {
     }
 
     @Test
-    @DisplayName("MEXC futures is bound to its real sync strategy, so BookSlotTable can allocate its books")
+    @DisplayName("MEXC futures is bound to its real sync strategy, so InstrumentSlotTable can allocate its books")
     void futuresStrategyBound() {
         SyncStrategyRegistry registry = new SyncStrategyRegistry(List.of(
                 new MexcAdapterConfig().mexcFuturesStrategyBinding(new FakeRecoverySink(), new PipelineMetrics())));
@@ -105,9 +106,9 @@ class MexcAdapterConfigTest {
 
     // --- Snapshot recovery wiring --------------------------------------------------------------
 
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };

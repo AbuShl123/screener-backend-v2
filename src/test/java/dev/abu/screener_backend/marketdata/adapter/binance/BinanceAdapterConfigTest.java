@@ -12,7 +12,8 @@ import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
@@ -41,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The Binance adapter's venue bindings, and what {@link SyncStrategyRegistry} makes of them.
  *
  * <p>Worth pinning because the failure mode is remote from the cause: an unbound venue would
- * otherwise surface as a {@code null} strategy on a {@code BookSlot}, and then as an NPE on a
+ * otherwise surface as a {@code null} strategy on an {@code InstrumentSlot}, and then as an NPE on a
  * Disruptor consumer thread on the first depth message for that instrument.
  */
 class BinanceAdapterConfigTest {
@@ -143,9 +144,9 @@ class BinanceAdapterConfigTest {
 
     // --- Snapshot recovery wiring --------------------------------------------------------------
 
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };

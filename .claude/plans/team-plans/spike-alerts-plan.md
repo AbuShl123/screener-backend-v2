@@ -8,8 +8,8 @@ decisions, open questions, and a proposed phasing and team split. Nothing here i
 - `.claude/docs/epics.md` — why this feature spans Epic 1 (kline ingestion) and Epic 2 (signal and
   delivery); see §9.
 - `.claude/docs/multi-exchange-progress.md` — SPI, core pipeline, sync contract.
-- `marketdata/core/ingress/` (`DepthEvent`, `EventType`, `DepthEventHandler`,
-  `DisruptorDepthEventPublisher`) and `marketdata/core/stream/` (`StreamManager`, `ConnectionPool`,
+- `marketdata/core/ingress/` (`MarketEvent`, `EventSource`, `StreamKind`, `MarketEventHandler`,
+  `DisruptorMarketEventPublisher`) and `marketdata/core/stream/` (`StreamManager`, `ConnectionPool`,
   `StreamConnection`) — the code this plan generalizes.
 - `feed/OrderBookBroadcaster`, `ws/UserWebSocketSession` and
   `.claude/docs/for-frontend/websocket-feed-api.md` — the delivery path and the WS contract that
@@ -130,7 +130,7 @@ with the depth firehose on the same socket. One connection per (venue, stream ki
 ### D2. Klines go through the existing Disruptor shards (same rings, same consumer threads)
 
 **Main reason — co-location.** CLAUDE.md lists "klines/candlestick streams for extra signals"
-under Future Work. If candle state lives in the instrument's `BookSlot` on the same shard thread,
+under Future Work. If candle state lives in the instrument's `InstrumentSlot` on the same shard thread,
 the classifier can later read 1m/5m volume next to the book with **zero synchronization**. A
 separate pipeline would need a thread-safe bridge later.
 
@@ -142,34 +142,36 @@ delays klines by milliseconds — irrelevant for 5-minute windows.
 
 ### D3. A generic ring event; stream kind is a new axis on it
 
-The ring slot no longer carries depth only, so the ingress types lose the `Depth` prefix:
+The ring slot no longer carries depth only, so the ingress types lost the `Depth` prefix. This is
+done — see `.claude/plans/market-event-generalization-plan.md`:
 
-| Today | After |
+| Before | Now |
 |---|---|
 | `DepthEvent` | `MarketEvent` |
 | `DepthEventHandler` | `MarketEventHandler` |
 | `DepthEventPublisher` / `DisruptorDepthEventPublisher` | `MarketEventPublisher` / `DisruptorMarketEventPublisher` |
 | `DepthEventFactory` | `MarketEventFactory` |
 | `EventType` (field `type`) | `EventSource` (field `source`) |
+| `BookSlot` / `BookSlotTable` (`core/book/`) | `InstrumentSlot` / `InstrumentSlotTable` (`core/slot/`) |
 
 `EventSource` (`WS_MSG` / `REST_MSG` / `REST_FAILED`) stays **provenance**, and the backpressure
-policy hangs off it. Stream kind is orthogonal: a new field `stream` of type
-`StreamKind { DEPTH, KLINE }`. A REST kline backfill is `REST_MSG + KLINE`, which composes
-naturally. With both fields on the event, `source` reads unambiguously where `type` would not.
+policy hangs off it. Stream kind is orthogonal: a new field `stream` of type `StreamKind`, which is
+`{ DEPTH }` today and gains `KLINE` with the kline work. A REST kline backfill is
+`REST_MSG + KLINE`, which composes naturally. With both fields on the event, `source` reads
+unambiguously where `type` would not.
 
 `DepthSyncStrategy` keeps its name — it is depth-only — and takes a `MarketEvent`.
 
 ### D4. The shard consumer becomes a dispatcher
 
-Today `DepthEventHandler.onEvent` runs `slot.strategy().onEvent(...)` then
-`classificationModule.process(...)` for **every** event. `MarketEventHandler.onEvent` switches on
-`event.stream` **before** both: `KLINE` → candle state update → detectors; `DEPTH` → the current
-path, unchanged.
+`MarketEventHandler.onEvent` switches on `event.stream` **before** the sync strategy and the
+classifier: today with the single arm `DEPTH` → `onDepth` (`slot.syncStrategy().onEvent(...)` then
+`classificationModule.process(...)`). The kline work adds `KLINE` → candle state update → detectors.
 
 ### D5. `StreamManager` / `ConnectionPool` keyed by (venue, stream kind)
 
 Today: one pool per `Venue` (`EnumMap<Venue, ConnectionPool>`), and `StreamConnection` /
-`ConnectionPool` are bound to `DepthEventPublisher`. Generalize: pools keyed by (venue, kind);
+`ConnectionPool` are bound to `MarketEventPublisher`. Generalize: pools keyed by (venue, kind);
 each connection publishes to `MarketEventPublisher` with its kind. Kline subscriptions follow the
 same universe events as depth. Kline URLs/topics go in YAML under
 `screener.exchanges.<exchange>.venues.<market>.*` (per CLAUDE.md conventions), e.g.
@@ -275,7 +277,7 @@ Per-venue `klines-enabled` (D5) gates ingestion.
 
 ### D14. `CandleStore` owns candles; detectors only read
 
-- One `CandleStore` per instrument, in its `BookSlot` (D2), mutated only on the shard thread. It
+- One `CandleStore` per instrument, in its `InstrumentSlot` (D2), mutated only on the shard thread. It
   holds the forming candle and a primitive ring of `candle-ring-size` closed candles (`h`, `l`, `q`
   per candle). Both detectors read the same store through `CandleWindow` (D10) — neither keeps its
   own candle state.
@@ -395,7 +397,7 @@ Field names inside `data` and the symbol display convention (`PEPE_USDT`? base/q
 |------|------|
 | **New** | `alert/` package (detectors, re-arm state, alert store, `SpikeChannel`); `CandleStore` + `CandleWindow` under `marketdata/`; Binance kline `StreamProtocol` + parser; REST backfill; `FeedChannel`, `DepthChannel` and the envelope helper in `feed/`; config (`screener.alerts.*`, kline URL/topic per venue); metrics; admin endpoints (candles, recent alerts) |
 | **Modified — moderate** | `core/ingress/` (D3 rename, `stream` field, handler dispatch, publisher signature); `core/stream/` (pools keyed by venue + kind, publisher decoupling); `spi/StreamProtocolRegistry` + `VenueStreamBinding` (keyed by kind, completeness check for `DEPTH` only); `feed/OrderBookBroadcaster` (reduced to the session loop, D17); the WS contract (D16, breaking for depth) |
-| **Modified — small** | `BookSlot` (candle state); `DepthSyncStrategy` and both adapters' sync strategies (event type in the signature only); `ExchangesProperties`; `BinanceAdapterConfig` (kline bindings); `monitoring/`; `websocket-feed-api.md`; frontend WS parser |
+| **Modified — small** | `InstrumentSlot` (candle state); `DepthSyncStrategy` and both adapters' sync strategies (event type in the signature only); `ExchangesProperties`; `BinanceAdapterConfig` (kline bindings); `monitoring/`; `websocket-feed-api.md`; frontend WS parser |
 | **Untouched** | Book logic, sync logic, recovery, classifier logic, auth, billing, entitlement, payments |
 
 ---
@@ -483,7 +485,7 @@ Preconditions, not tickets:
   forming candle, primitive ring of `candle-ring-size` closed candles, rollover on `t`, gap
   handling (D14); Binance kline `StreamProtocol` for futures (`/market/stream`) and spot,
   `VenueStreamBinding`s, YAML (`kline-stream-url`, `kline-stream-topic`, `klines-enabled`);
-  candle store in `BookSlot`, kline branch of the dispatcher writing into it. Metrics (kline msg/s
+  candle store in `InstrumentSlot`, kline branch of the dispatcher writing into it. Metrics (kline msg/s
   per venue) and an admin debug endpoint showing an instrument's candles. Re-check ring sizing
   (Q-T2).
 - **Ticket 3**: REST backfill on startup through `WeightGuard` (Q-T3). Deferrable for v1: without

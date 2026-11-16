@@ -5,7 +5,8 @@ import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import lombok.extern.slf4j.Slf4j;
@@ -39,7 +40,7 @@ public class StreamConnection extends WebSocketClient {
     private final Venue venue;
     private final List<Instrument> instruments;
     private final StreamProtocol protocol;
-    private final DepthEventPublisher publisher;
+    private final MarketEventPublisher publisher;
     private final PipelineMetrics metrics;
     private final ScheduledExecutorService reconnectScheduler;
     private final VenueProperties venueProps;
@@ -68,7 +69,7 @@ public class StreamConnection extends WebSocketClient {
             Venue venue,
             List<Instrument> instruments,
             StreamProtocol protocol,
-            DepthEventPublisher publisher,
+            MarketEventPublisher publisher,
             PipelineMetrics metrics,
             ScheduledExecutorService reconnectScheduler,
             VenueProperties venueProps,
@@ -117,7 +118,8 @@ public class StreamConnection extends WebSocketClient {
     public void onMessage(String message) {
         int instrumentId = protocol.route(message, index);
         if (instrumentId >= 0) {
-            publisher.publishFrame(instrumentId, message);
+            // TODO(transport): kind comes from the pool
+            publisher.publishFrame(StreamKind.DEPTH, instrumentId, message);
             metrics.recordFrame(venue);
         } else if (instrumentId == StreamProtocol.UNKNOWN) {
             // Venues only push what was subscribed, so this should never fire; a partial
@@ -142,7 +144,8 @@ public class StreamConnection extends WebSocketClient {
     public void onMessage(ByteBuffer bytes) {
         int instrumentId = protocol.route(bytes, index);
         if (instrumentId >= 0) {
-            publisher.publishFrame(instrumentId, bytes);
+            // TODO(transport): kind comes from the pool
+            publisher.publishFrame(StreamKind.DEPTH, instrumentId, bytes);
             metrics.recordFrame(venue);
         } else if (instrumentId == StreamProtocol.UNKNOWN) {
             noteUnknownFrame(bytes);

@@ -10,7 +10,7 @@ import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.config.DisruptorProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -26,15 +26,15 @@ import java.util.Map;
 public class DisruptorShardManager {
 
     private final DisruptorProperties       props;
-    private final BookSlotTable             slots;
+    private final InstrumentSlotTable       slots;
     private final OrderBookFeedStore        feedStore;
     private final DefaultClassificationRule defaultRule;
     private final ExchangesProperties       exchangesProps;
 
-    private Disruptor<DepthEvent>[]  disruptors;
-    private RingBuffer<DepthEvent>[] ringBuffers;
-    private OrderBookClassifier[]    classifiers;
-    private DepthEventHandler[]      handlers;
+    private Disruptor<MarketEvent>[]  disruptors;
+    private RingBuffer<MarketEvent>[] ringBuffers;
+    private OrderBookClassifier[]     classifiers;
+    private MarketEventHandler[]      handlers;
 
     /** {@code shardCount - 1}; valid only because shardCount is validated as a power of two. */
     private int shardMask;
@@ -51,20 +51,20 @@ public class DisruptorShardManager {
         disruptors  = new Disruptor[shardCount];
         ringBuffers = new RingBuffer[shardCount];
         classifiers = new OrderBookClassifier[shardCount];
-        handlers    = new DepthEventHandler[shardCount];
+        handlers    = new MarketEventHandler[shardCount];
         Map<Venue, Double> maxVisibleDistances = exchangesProps.maxVisibleDistances();
 
         for (int i = 0; i < shardCount; i++) {
             int shardIndex = i;
-            Disruptor<DepthEvent> disruptor = new Disruptor<>(
-                    new DepthEventFactory(),
+            Disruptor<MarketEvent> disruptor = new Disruptor<>(
+                    new MarketEventFactory(),
                     props.ringBufferSize(),
                     r -> new Thread(r, "disruptor-shard-" + shardIndex),
                     ProducerType.MULTI,
                     new BlockingWaitStrategy()
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule, maxVisibleDistances);
-            handlers[i]    = new DepthEventHandler(i, slots, classifiers[i]);
+            handlers[i]    = new MarketEventHandler(i, slots, classifiers[i]);
             disruptor.handleEventsWith(handlers[i]);
 
             ringBuffers[i] = disruptor.start();
@@ -95,7 +95,7 @@ public class DisruptorShardManager {
      * perfectly rather than by hash luck — and removes a latent crash, since
      * {@code Math.abs(Integer.MIN_VALUE)} is negative and could index out of bounds.
      */
-    public RingBuffer<DepthEvent> getRingBuffer(int instrumentId) {
+    public RingBuffer<MarketEvent> getRingBuffer(int instrumentId) {
         return ringBuffers[instrumentId & shardMask];
     }
 
@@ -124,7 +124,7 @@ public class DisruptorShardManager {
      * derives from sequences the Disruptor already maintains. At steady state these should sit at
      * essentially {@link DisruptorProperties#ringBufferSize()}; a persistent dip means producers
      * are outrunning consumers, which is what makes the blocking {@code next()} in
-     * {@link DisruptorDepthEventPublisher} a live risk rather than a theoretical one.
+     * {@link DisruptorMarketEventPublisher} a live risk rather than a theoretical one.
      */
     public long[] ringFreePerShard() {
         long[] out = new long[shardCount()];
@@ -134,7 +134,7 @@ public class DisruptorShardManager {
 
     @PreDestroy
     public void shutdown() {
-        for (Disruptor<DepthEvent> d : disruptors) {
+        for (Disruptor<MarketEvent> d : disruptors) {
             d.shutdown();
         }
         log.info("Disruptor pipeline shut down");

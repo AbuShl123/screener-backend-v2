@@ -1,9 +1,9 @@
 package dev.abu.screener_backend.marketdata.spi;
 
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 
 public interface RecoverySink {
 
-    boolean requestRecovery(BookSlot slot);
+    boolean requestRecovery(InstrumentSlot slot);
 
 }

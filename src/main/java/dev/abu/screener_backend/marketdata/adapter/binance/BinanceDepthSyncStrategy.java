@@ -1,12 +1,12 @@
 package dev.abu.screener_backend.marketdata.adapter.binance;
 
 import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
 import dev.abu.screener_backend.marketdata.spi.BookSyncContext;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
@@ -70,11 +70,11 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
     }
 
     @Override
-    public void onEvent(BookSlot slot, DepthEvent event) {
-        BinanceSyncContext ctx = (BinanceSyncContext) slot.ctx();
+    public void onEvent(InstrumentSlot slot, MarketEvent event) {
+        BinanceSyncContext ctx = (BinanceSyncContext) slot.syncCtx();
         OrderBookState state = slot.book().getState();
 
-        if (event.type == EventType.REST_MSG) {
+        if (event.source == EventSource.REST_MSG) {
             if (state != OrderBookState.RECOVERING) return;
             if (!handleSnapshot(slot, event)) {
                 recover(slot, ctx);
@@ -84,7 +84,7 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
             return;
         }
 
-        if (event.type == EventType.REST_FAILED) {
+        if (event.source == EventSource.REST_FAILED) {
             // Not recover(): that would re-request at once and count as a resync. The book re-asks
             // on its next diff through the PENDING path, like any refused request. No clearLevels()
             // either — a RECOVERING book is already empty. A failure reaching a book that is not
@@ -115,8 +115,8 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
         }
     }
 
-    protected boolean handleDiff(BookSlot slot, String rawJson) {
-        BinanceSyncContext ctx = (BinanceSyncContext) slot.ctx();
+    protected boolean handleDiff(InstrumentSlot slot, String rawJson) {
+        BinanceSyncContext ctx = (BinanceSyncContext) slot.syncCtx();
 
         try (JsonParser p = JSON_FACTORY.createParser(ObjectReadContext.empty(), rawJson)) {
             p.nextToken();
@@ -138,14 +138,14 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
         }
     }
 
-    protected boolean handleSnapshot(BookSlot slot, DepthEvent event) {
+    protected boolean handleSnapshot(InstrumentSlot slot, MarketEvent event) {
         try {
             // the book is guaranteed to be empty here
             long lastUpdateId = applySnapshot(slot, event.rawJson);
             if (lastUpdateId == -1) return false;
             slot.book().computeDistance();
 
-            BinanceSyncContext ctx = (BinanceSyncContext) slot.ctx();
+            BinanceSyncContext ctx = (BinanceSyncContext) slot.syncCtx();
             ctx.lastUpdateId = lastUpdateId;
 
             while (!ctx.diffBuffer.isEmpty()) {
@@ -176,7 +176,7 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
         }
     }
 
-    protected long applySnapshot(BookSlot slot, String rawJson) {
+    protected long applySnapshot(InstrumentSlot slot, String rawJson) {
         long millis = System.currentTimeMillis();
         long lastUpdateId = -1;
 
@@ -224,7 +224,7 @@ public abstract class BinanceDepthSyncStrategy implements DepthSyncStrategy {
      * bounds the sink to at most one request per event. Every helper reports failure by returning
      * {@code false} rather than recovering on its own.
      */
-    private void recover(BookSlot slot, BinanceSyncContext ctx) {
+    private void recover(InstrumentSlot slot, BinanceSyncContext ctx) {
         metrics.recordResync(slot.instrument().venue());
         ctx.reset();
         slot.book().clearLevels();

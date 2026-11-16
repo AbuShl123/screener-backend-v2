@@ -4,7 +4,7 @@ import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesRestClient;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotFetcher;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
@@ -99,18 +99,18 @@ class MexcSnapshotFetcherTest {
 
     // --- Fixtures ------------------------------------------------------------------------------
 
-    private static List<BookSlot> batch(String... symbols) {
-        List<BookSlot> slots = new ArrayList<>();
+    private static List<InstrumentSlot> batch(String... symbols) {
+        List<InstrumentSlot> slots = new ArrayList<>();
         for (int i = 0; i < symbols.length; i++) {
             String base = symbols[i].replace("_USDT", "");
-            slots.add(new BookSlot(Instrument.of(i, Venue.MEXC_FUTURES, symbols[i], base, "USDT", 0.0001),
+            slots.add(new InstrumentSlot(Instrument.of(i, Venue.MEXC_FUTURES, symbols[i], base, "USDT", 0.0001),
                     new OrderBook(0.1), null, null));
         }
         return slots;
     }
 
     /** Starts a batch and runs virtual time until every send window of it has passed. */
-    private CompletableFuture<Void> fetch(List<BookSlot> batch) {
+    private CompletableFuture<Void> fetch(List<InstrumentSlot> batch) {
         CompletableFuture<Void> stage = fetcher.fetchAll(batch, outcome).toCompletableFuture();
         scheduler.advanceBy(batch.size() * INTERVAL);
         assertTrue(stage.isDone(), "every slot has an outcome once its send window has passed");
@@ -131,13 +131,13 @@ class MexcSnapshotFetcherTest {
         final List<String> failed = Collections.synchronizedList(new ArrayList<>());
 
         @Override
-        public void delivered(BookSlot slot, String body) {
+        public void delivered(InstrumentSlot slot, String body) {
             delivered.add(slot.instrument().nativeSymbol());
             bodies.add(body);
         }
 
         @Override
-        public void failed(BookSlot slot) {
+        public void failed(InstrumentSlot slot) {
             failed.add(slot.instrument().nativeSymbol());
         }
     }
@@ -334,7 +334,7 @@ class MexcSnapshotFetcherTest {
                 new MarketSnapshot(2000, Duration.ofMillis(INTERVAL), Duration.ofMillis(THROTTLE_COOLDOWN),
                         Duration.ofMillis(WAF_COOLDOWN)),
                 scheduler);
-        List<BookSlot> batch = List.of(spotSlot(0, "BTCUSDT"), spotSlot(1, "NOPEUSDT"), spotSlot(2, "WAFUSDT"),
+        List<InstrumentSlot> batch = List.of(spotSlot(0, "BTCUSDT"), spotSlot(1, "NOPEUSDT"), spotSlot(2, "WAFUSDT"),
                 spotSlot(3, "ETHUSDT"));
 
         spot.fetchAll(batch, outcome);
@@ -349,8 +349,8 @@ class MexcSnapshotFetcherTest {
         assertTrue(fetcher.isAcceptingRequests(), "each venue's fetcher has its own cooldown");
     }
 
-    private static BookSlot spotSlot(int id, String symbol) {
-        return new BookSlot(Instrument.of(id, Venue.MEXC_SPOT, symbol, symbol.replace("USDT", ""), "USDT"),
+    private static InstrumentSlot spotSlot(int id, String symbol) {
+        return new InstrumentSlot(Instrument.of(id, Venue.MEXC_SPOT, symbol, symbol.replace("USDT", ""), "USDT"),
                 new OrderBook(0.1), null, null);
     }
 }

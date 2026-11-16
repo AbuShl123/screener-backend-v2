@@ -4,17 +4,18 @@ import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncStrategy;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesSyncContext;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 
 import java.util.StringJoiner;
 
 /**
- * Fixtures for driving a real {@link BookSlot} through {@link MexcFuturesSyncStrategy}.
+ * Fixtures for driving a real {@link InstrumentSlot} through {@link MexcFuturesSyncStrategy}.
  *
  * <p>JSON is built as strings so the real {@code JsonParser} + {@code JavaDoubleParser} path runs
  * <em>with MEXC's field order as delivered</em>: {@code channel} last at the top level, and
@@ -36,10 +37,10 @@ final class MexcFuturesSyncTestSupport {
     /** One book, one strategy, one fake sink. No dispatch logic of its own. */
     static final class Harness {
 
-        final BookSlot slot;
+        final InstrumentSlot slot;
         final FakeRecoverySink sink = new FakeRecoverySink();
         final PipelineMetrics metrics = new PipelineMetrics();
-        private final DepthEvent event = new DepthEvent();
+        private final MarketEvent event = new MarketEvent();
 
         Harness() {
             this(1.0);
@@ -48,7 +49,7 @@ final class MexcFuturesSyncTestSupport {
         /** @param contractSize the instrument's quantity multiplier */
         Harness(double contractSize) {
             MexcFuturesSyncStrategy strategy = new MexcFuturesSyncStrategy(sink, metrics);
-            this.slot = new BookSlot(
+            this.slot = new InstrumentSlot(
                     Instrument.of(1, VENUE, "BTC_USDT", "BTC", "USDT", contractSize),
                     new OrderBook(FILTER),
                     strategy,
@@ -60,7 +61,7 @@ final class MexcFuturesSyncTestSupport {
         }
 
         MexcFuturesSyncContext ctx() {
-            return (MexcFuturesSyncContext) slot.ctx();
+            return (MexcFuturesSyncContext) slot.syncCtx();
         }
 
         int bufferSize() {
@@ -72,23 +73,24 @@ final class MexcFuturesSyncTestSupport {
         }
 
         void wsMsg(String rawJson) {
-            fire(EventType.WS_MSG, rawJson);
+            fire(EventSource.WS_MSG, rawJson);
         }
 
         void restMsg(String rawJson) {
-            fire(EventType.REST_MSG, rawJson);
+            fire(EventSource.REST_MSG, rawJson);
         }
 
         void restFailed() {
-            fire(EventType.REST_FAILED, null);
+            fire(EventSource.REST_FAILED, null);
         }
 
         /** Reuses one event instance, exactly as the ring buffer does. */
-        private void fire(EventType type, String rawJson) {
-            event.type = type;
+        private void fire(EventSource type, String rawJson) {
+            event.source = type;
+            event.stream = StreamKind.DEPTH;
             event.instrumentId = slot.instrument().id();
             event.rawJson = rawJson;
-            slot.strategy().onEvent(slot, event);
+            slot.syncStrategy().onEvent(slot, event);
             event.clear();
         }
     }

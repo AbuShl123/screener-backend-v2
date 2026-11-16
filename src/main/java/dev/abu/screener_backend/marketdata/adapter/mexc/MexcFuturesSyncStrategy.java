@@ -2,12 +2,12 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 
 import ch.randelshofer.fastdoubleparser.JavaDoubleParser;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcVersionRange.CheckResult;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
 import dev.abu.screener_backend.marketdata.spi.BookSyncContext;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
@@ -70,11 +70,11 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
     }
 
     @Override
-    public void onEvent(BookSlot slot, DepthEvent event) {
-        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
+    public void onEvent(InstrumentSlot slot, MarketEvent event) {
+        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.syncCtx();
         OrderBookState state = slot.book().getState();
 
-        if (event.type == EventType.REST_MSG) {
+        if (event.source == EventSource.REST_MSG) {
             if (state != OrderBookState.RECOVERING) return;
             if (!handleSnapshot(slot, event.rawJson)) {
                 recover(slot, ctx);
@@ -84,7 +84,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
             return;
         }
 
-        if (event.type == EventType.REST_FAILED) {
+        if (event.source == EventSource.REST_FAILED) {
             // As on Binance: no recover() (it would re-request at once and count a resync), and no
             // clearLevels() (a RECOVERING book is already empty). The next push re-asks.
             if (state == OrderBookState.RECOVERING) {
@@ -157,8 +157,8 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
         return value;
     }
 
-    boolean handleDiff(BookSlot slot, String rawJson) {
-        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
+    boolean handleDiff(InstrumentSlot slot, String rawJson) {
+        MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.syncCtx();
 
         try {
             CheckResult result = check(rawJson, ctx, slot.instrument().logName());
@@ -179,14 +179,14 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
         }
     }
 
-    boolean handleSnapshot(BookSlot slot, String rawJson) {
+    boolean handleSnapshot(InstrumentSlot slot, String rawJson) {
         try {
             // the book is guaranteed to be empty here
             long version = applySnapshot(slot, rawJson);
             if (version == -1) return false;
             slot.book().computeDistance();
 
-            MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.ctx();
+            MexcFuturesSyncContext ctx = (MexcFuturesSyncContext) slot.syncCtx();
             ctx.lastVersion = version;
 
             while (!ctx.diffBuffer.isEmpty()) {
@@ -211,7 +211,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
      *         {@code data.version} — which covers a throttled {@code success:false} body, should one
      *         ever get past the fetcher
      */
-    long applySnapshot(BookSlot slot, String rawJson) {
+    long applySnapshot(InstrumentSlot slot, String rawJson) {
         try {
             return applyData(slot, rawJson);
         } catch (Exception e) {
@@ -228,7 +228,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
      * @return {@code data.version}, or {@code -1} if there is no {@code data} object or it has no
      *         {@code version}
      */
-    private long applyData(BookSlot slot, String rawJson) {
+    private long applyData(InstrumentSlot slot, String rawJson) {
         OrderBook book = slot.book();
         double multiplier = slot.instrument().quantityMultiplier();
         long millis = System.currentTimeMillis();
@@ -289,7 +289,7 @@ public class MexcFuturesSyncStrategy implements DepthSyncStrategy {
      * The single recovery path — called from {@link #onEvent} and nowhere else, which is what
      * bounds the sink to at most one request per event.
      */
-    private void recover(BookSlot slot, MexcFuturesSyncContext ctx) {
+    private void recover(InstrumentSlot slot, MexcFuturesSyncContext ctx) {
         metrics.recordResync(slot.instrument().venue());
         ctx.reset();
         slot.book().clearLevels();

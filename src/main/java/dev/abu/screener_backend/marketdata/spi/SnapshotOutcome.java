@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.spi;
 
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 
 /**
  * Where a {@link SnapshotFetcher} reports each request's result. Implemented by core, so the
@@ -10,8 +10,8 @@ import dev.abu.screener_backend.marketdata.core.book.BookSlot;
 public interface SnapshotOutcome {
 
     /** The request succeeded; {@code body} is the raw response, parsed later by the sync strategy. */
-    void delivered(BookSlot slot, String body);
+    void delivered(InstrumentSlot slot, String body);
 
     /** The request failed, timed out, or was never sent. The book goes back to {@code PENDING}. */
-    void failed(BookSlot slot);
+    void failed(InstrumentSlot slot);
 }

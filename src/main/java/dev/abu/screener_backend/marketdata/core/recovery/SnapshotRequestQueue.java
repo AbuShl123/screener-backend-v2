@@ -2,9 +2,9 @@ package dev.abu.screener_backend.marketdata.core.recovery;
 
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
 import dev.abu.screener_backend.marketdata.spi.SnapshotFetcher;
 import lombok.extern.slf4j.Slf4j;
@@ -52,7 +52,7 @@ public class SnapshotRequestQueue implements RecoverySink {
 
     private final Venue venue;
     private final SnapshotFetcher fetcher;
-    private final DepthEventPublisher publisher;
+    private final MarketEventPublisher publisher;
     private final PipelineMetrics metrics;
     private final int maxBatchSize;
     private final long batchTimeoutNanos;
@@ -64,10 +64,10 @@ public class SnapshotRequestQueue implements RecoverySink {
      */
     private final AtomicInteger state = new AtomicInteger();
     /** Index {@code i} is written once by the consumer that reserved it, and emptied by {@link #tick}. */
-    private final AtomicReferenceArray<BookSlot> slots;
+    private final AtomicReferenceArray<InstrumentSlot> slots;
 
     SnapshotRequestQueue(Venue venue, SnapshotFetcher fetcher, SnapshotQueueProperties props,
-                         DepthEventPublisher publisher, PipelineMetrics metrics) {
+                         MarketEventPublisher publisher, PipelineMetrics metrics) {
         this.venue = venue;
         this.fetcher = fetcher;
         this.publisher = publisher;
@@ -91,7 +91,7 @@ public class SnapshotRequestQueue implements RecoverySink {
      * overflow. {@link #tick} drops such a duplicate.
      */
     @Override
-    public boolean requestRecovery(BookSlot slot) {
+    public boolean requestRecovery(InstrumentSlot slot) {
         int n = state.get();
         if (n == CLOSED || n >= maxBatchSize) return false;
         if (!fetcher.isAcceptingRequests()) return false;
@@ -117,7 +117,7 @@ public class SnapshotRequestQueue implements RecoverySink {
         }
         if (reserved <= 0) return CompletableFuture.completedFuture(null);   // empty, or in flight
 
-        List<BookSlot> batch = drain(reserved);
+        List<InstrumentSlot> batch = drain(reserved);
         BatchOutcome outcome = new BatchOutcome(batch, publisher, metrics);
         CompletableFuture<Void> stage;
         try {
@@ -140,10 +140,10 @@ public class SnapshotRequestQueue implements RecoverySink {
      * here on the queue's thread rather than on the consumer's. Nothing between that CAS and that
      * store can throw, so the wait always ends.
      */
-    private List<BookSlot> drain(int reserved) {
-        Map<Integer, BookSlot> unique = new LinkedHashMap<>();
+    private List<InstrumentSlot> drain(int reserved) {
+        Map<Integer, InstrumentSlot> unique = new LinkedHashMap<>();
         for (int i = 0; i < reserved; i++) {
-            BookSlot slot;
+            InstrumentSlot slot;
             while ((slot = slots.getAndSet(i, null)) == null) {
                 Thread.onSpinWait();
             }

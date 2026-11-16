@@ -1,8 +1,8 @@
 package dev.abu.screener_backend.marketdata.core.recovery;
 
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
 import lombok.extern.slf4j.Slf4j;
 
@@ -27,8 +27,8 @@ import java.util.Set;
 @Slf4j
 final class BatchOutcome implements SnapshotOutcome {
 
-    private final List<BookSlot> batch;
-    private final DepthEventPublisher publisher;
+    private final List<InstrumentSlot> batch;
+    private final MarketEventPublisher publisher;
     private final PipelineMetrics metrics;
 
     // Guarded by this. Batches are small (max-batch-size), so plain boxed sets are fine.
@@ -36,24 +36,24 @@ final class BatchOutcome implements SnapshotOutcome {
     private final Set<Integer> reported = new HashSet<>();
     private boolean sealed;
 
-    BatchOutcome(List<BookSlot> batch, DepthEventPublisher publisher, PipelineMetrics metrics) {
+    BatchOutcome(List<InstrumentSlot> batch, MarketEventPublisher publisher, PipelineMetrics metrics) {
         this.batch = batch;
         this.publisher = publisher;
         this.metrics = metrics;
-        for (BookSlot slot : batch) {
+        for (InstrumentSlot slot : batch) {
             members.add(slot.instrument().id());
         }
     }
 
     @Override
-    public void delivered(BookSlot slot, String body) {
+    public void delivered(InstrumentSlot slot, String body) {
         if (claim(slot, "delivered")) {
             publisher.publishSnapshot(slot.instrument().id(), body);
         }
     }
 
     @Override
-    public void failed(BookSlot slot) {
+    public void failed(InstrumentSlot slot) {
         if (claim(slot, "failed")) {
             publishFailure(slot);
         }
@@ -65,11 +65,11 @@ final class BatchOutcome implements SnapshotOutcome {
      * @return how many slots core had to fail on the fetcher's behalf
      */
     int seal() {
-        List<BookSlot> unreported = new ArrayList<>();
+        List<InstrumentSlot> unreported = new ArrayList<>();
         synchronized (this) {
             if (sealed) return 0;
             sealed = true;
-            for (BookSlot slot : batch) {
+            for (InstrumentSlot slot : batch) {
                 if (!reported.contains(slot.instrument().id())) {
                     unreported.add(slot);
                 }
@@ -77,13 +77,13 @@ final class BatchOutcome implements SnapshotOutcome {
         }
         // Published outside the lock: a full ring blocks the publisher, and a reporter waiting on
         // this monitor meanwhile would only be dropped anyway.
-        for (BookSlot slot : unreported) {
+        for (InstrumentSlot slot : unreported) {
             publishFailure(slot);
         }
         return unreported.size();
     }
 
-    private void publishFailure(BookSlot slot) {
+    private void publishFailure(InstrumentSlot slot) {
         metrics.recordSnapshotFailure(slot.instrument().venue());
         publisher.publishSnapshotFailure(slot.instrument().id());
     }
@@ -92,7 +92,7 @@ final class BatchOutcome implements SnapshotOutcome {
      * Decides under the lock, publishes outside it. Safe because a claimed slot's book stays
      * {@code RECOVERING} — and so cannot be re-queued — until the event it is about to receive.
      */
-    private boolean claim(BookSlot slot, String kind) {
+    private boolean claim(InstrumentSlot slot, String kind) {
         int id = slot.instrument().id();
         String reason;
         synchronized (this) {

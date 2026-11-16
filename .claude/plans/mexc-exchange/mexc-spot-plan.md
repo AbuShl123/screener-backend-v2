@@ -24,9 +24,9 @@ streams depth as **Protobuf binary frames**. Read `.claude/docs/multi-exchange-p
    object graph with a `String` per price and quantity on every frame. That is exactly the full-POJO
    decode the hot-path rules forbid, and it adds `protoc` + a Maven plugin to the build. The wire
    format is varint tags + length-delimited fields, and we need about 10 fields across 3 messages.
-3. **`DepthEvent` gets a second typed payload field** (`ByteBuffer rawBytes`) rather than one
+3. **`MarketEvent` gets a second typed payload field** (`ByteBuffer rawBytes`) rather than one
    `Object payload`, so the hot path never casts.
-4. **`EventType` is unchanged.** It is provenance, not encoding. A MEXC spot `WS_MSG` is always
+4. **`EventSource` is unchanged.** It is provenance, not encoding. A MEXC spot `WS_MSG` is always
    binary, and the strategy knows that.
 5. **No copy of the frame.** The `ByteBuffer` from java-websocket goes into the ring as-is, like the
    `String` does today. This relies on Java-WebSocket 1.5.7 allocating a fresh payload buffer per
@@ -37,7 +37,7 @@ streams depth as **Protobuf binary frames**. Read `.claude/docs/multi-exchange-p
 
 ## What does not change
 
-`OrderBookClassifier`, `feed/`, `ws/`, `DepthEventHandler`, `BookSlotTable`, `SnapshotRequestQueue`,
+`OrderBookClassifier`, `feed/`, `ws/`, `MarketEventHandler`, `InstrumentSlotTable`, `SnapshotRequestQueue`,
 and the Binance and MEXC futures adapters. User rules are exchange-independent (`ruleKey` =
 `base + quote : SPOT`), so an existing SPOT rule applies to MEXC spot books with no change.
 `quantityMultiplier` is 1 (spot quantities are already base asset).
@@ -82,9 +82,9 @@ No venue uses it yet; mergeable on its own.
 
 | File | Change |
 |---|---|
-| `core/ingress/DepthEvent` | add `public ByteBuffer rawBytes`; `clear()` nulls it |
-| `core/ingress/DepthEventPublisher` | add `publishFrame(int instrumentId, ByteBuffer payload)` |
-| `core/ingress/DisruptorDepthEventPublisher` | implement it (`WS_MSG`, sets `rawBytes`, `rawJson = null`) |
+| `core/ingress/MarketEvent` | add `public ByteBuffer rawBytes`; `clear()` nulls it |
+| `core/ingress/MarketEventPublisher` | add `publishFrame(int instrumentId, ByteBuffer payload)` |
+| `core/ingress/DisruptorMarketEventPublisher` | implement it (`WS_MSG`, sets `rawBytes`, `rawJson = null`) |
 | `spi/StreamProtocol` | add `default int route(ByteBuffer frame, SubscriptionIndex index) { return IGNORED; }`. Documented as hot path, absolute reads only |
 | `core/stream/StreamConnection` | `onMessage(ByteBuffer)` routes through the protocol and publishes; an `IGNORED` binary frame keeps the existing rate-limited warning, `UNKNOWN` goes through `noteUnknownFrame` |
 | `core/stream/SubscriptionIndex` | add `resolve(ByteBuffer buf, int start, int end)`: decode the range as **UTF-8** to a `String` and look it up (same allocation as today's `substring`). Not ASCII: five MEXC spot symbols are CJK (`龙虾USDT`, `币安人生USDT`, …) |
@@ -92,7 +92,7 @@ No venue uses it yet; mergeable on its own.
 Tests: binary routing and publishing in `StreamConnection` tests; `SubscriptionIndex` byte resolve
 (including a multi-byte UTF-8 symbol);
 a test that pins decision 5 (two consecutive binary frames delivered by java-websocket are distinct
-buffers). Update the javadoc on `EventType.REST_FAILED` and `StreamConnection.onMessage(ByteBuffer)`.
+buffers). Update the javadoc on `EventSource.REST_FAILED` and `StreamConnection.onMessage(ByteBuffer)`.
 
 ## Phase 2: Wire reader and sync strategy
 

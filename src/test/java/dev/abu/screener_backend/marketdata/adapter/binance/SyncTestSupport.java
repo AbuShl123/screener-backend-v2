@@ -6,17 +6,18 @@ import dev.abu.screener_backend.marketdata.adapter.binance.BinanceDepthSyncStrat
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceFuturesSyncStrategy;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSpotSyncStrategy;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSyncContext;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEvent;
-import dev.abu.screener_backend.marketdata.core.ingress.EventType;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
+import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 
 import java.util.StringJoiner;
 
 /**
- * Fixtures for driving a real {@link BookSlot} through the Binance sync strategies.
+ * Fixtures for driving a real {@link InstrumentSlot} through the Binance sync strategies.
  *
  * <p>Lives in the {@code binance} package on purpose: {@link BinanceSyncContext}'s
  * {@code diffBuffer}, {@code lastUpdateId} and {@code syncPointFound} are package-private, so the
@@ -48,17 +49,17 @@ final class SyncTestSupport {
      */
     static final class Harness {
 
-        final BookSlot slot;
+        final InstrumentSlot slot;
         final FakeRecoverySink sink = new FakeRecoverySink();
         /** Real instance, not a mock — resyncs() doubles as an independent check on recover() calls. */
         final PipelineMetrics metrics = new PipelineMetrics();
-        private final DepthEvent event = new DepthEvent();
+        private final MarketEvent event = new MarketEvent();
 
         Harness(Venue venue, double filterThreshold) {
             BinanceDepthSyncStrategy strategy = venue == Venue.BINANCE_SPOT
                     ? new BinanceSpotSyncStrategy(sink, metrics)
                     : new BinanceFuturesSyncStrategy(sink, metrics);
-            this.slot = new BookSlot(
+            this.slot = new InstrumentSlot(
                     Instrument.of(1, venue, "BTCUSDT", "BTC", "USDT"),
                     new OrderBook(filterThreshold),
                     strategy,
@@ -70,7 +71,7 @@ final class SyncTestSupport {
         }
 
         BinanceSyncContext ctx() {
-            return (BinanceSyncContext) slot.ctx();
+            return (BinanceSyncContext) slot.syncCtx();
         }
 
         int bufferSize() {
@@ -83,25 +84,26 @@ final class SyncTestSupport {
 
         /** Feed a stream frame — the {@code WS_MSG} lane. */
         void wsMsg(String rawJson) {
-            fire(EventType.WS_MSG, rawJson);
+            fire(EventSource.WS_MSG, rawJson);
         }
 
         /** Feed a REST snapshot body — the {@code REST_MSG} lane. */
         void restMsg(String rawJson) {
-            fire(EventType.REST_MSG, rawJson);
+            fire(EventSource.REST_MSG, rawJson);
         }
 
         /** Report the book's snapshot request as failed — the {@code REST_FAILED} lane, no body. */
         void restFailed() {
-            fire(EventType.REST_FAILED, null);
+            fire(EventSource.REST_FAILED, null);
         }
 
         /** Reuses one event instance, exactly as the ring buffer does. */
-        private void fire(EventType type, String rawJson) {
-            event.type = type;
+        private void fire(EventSource type, String rawJson) {
+            event.source = type;
+            event.stream = StreamKind.DEPTH;
             event.instrumentId = slot.instrument().id();
             event.rawJson = rawJson;
-            slot.strategy().onEvent(slot, event);
+            slot.syncStrategy().onEvent(slot, event);
             event.clear();
         }
     }

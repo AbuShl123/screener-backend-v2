@@ -13,10 +13,11 @@ import dev.abu.screener_backend.marketdata.adapter.bybit.BybitRestCooldown.Kind;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.Cooldown;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.VenueBlock;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeWebClientFactory;
@@ -136,9 +137,9 @@ class BybitAdapterConfigTest {
 
     // --- Snapshot recovery wiring --------------------------------------------------------------
 
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
@@ -207,8 +208,8 @@ class BybitAdapterConfigTest {
         assertFalse(futures.requestRecovery(slot(Venue.BYBIT_FUTURES, 2)), "the other venue pauses too");
     }
 
-    private static BookSlot slot(Venue venue, int id) {
-        return new BookSlot(Instrument.of(id, venue, "BTCUSDT", "BTC", "USDT"), new OrderBook(0.1), null, null);
+    private static InstrumentSlot slot(Venue venue, int id) {
+        return new InstrumentSlot(Instrument.of(id, venue, "BTCUSDT", "BTC", "USDT"), new OrderBook(0.1), null, null);
     }
 
     @Test

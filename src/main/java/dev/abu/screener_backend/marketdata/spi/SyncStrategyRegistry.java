@@ -13,8 +13,8 @@ import java.util.List;
  * holds no reference to any adapter package. Adding an exchange contributes new bindings from its
  * own {@code adapter/<name>/} config and touches nothing here.
  *
- * <p>Cold path only — {@code BookSlotTable.allocate} calls this at discovery time and pins the
- * result into the {@code BookSlot}. The consumer thread reads {@code slot.strategy()} and never
+ * <p>Cold path only — {@code InstrumentSlotTable.allocate} calls this at discovery time and pins the
+ * result into the {@code InstrumentSlot}. The consumer thread reads {@code slot.syncStrategy()} and never
  * walks {@code id → Instrument → Venue → strategy}.
  */
 @Component

@@ -1,8 +1,8 @@
 package dev.abu.screener_backend.monitoring;
 
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
-import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.DisruptorShardManager;
@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
  * events are being consumed, how much ring headroom is left, and whether the feed's drain loop is
  * keeping inside its budget.
  *
- * <p>Replaces the {@code sync count: spot=… fut=…} line that {@code BookSlotTable} used to emit.
+ * <p>Replaces the {@code sync count: spot=… fut=…} line that {@code InstrumentSlotTable} used to emit.
  * A synced count alone has a blind spot big enough to hide a broken sequence rule: a book that
  * de-syncs and recovers continuously still reports {@code SYNCED} most of the time, so the count
  * sits flat and looks healthy. Each of the other numbers exists to make one specific failure
@@ -54,7 +54,7 @@ public class PipelineHealthLogger {
     /** venue | synced | resyncs | snap fails | frames/s — wide enough for {@code binance/futures}. */
     private static final String ROW = "  %-16s %9s %8s %11s %9s";
 
-    private final BookSlotTable slots;
+    private final InstrumentSlotTable slots;
     private final DisruptorShardManager shardManager;
     private final PipelineMetrics metrics;
     private final FeedBroadcaster broadcaster;
@@ -91,7 +91,7 @@ public class PipelineHealthLogger {
     private void appendVenueTable(StringBuilder out, double elapsedSec) {
         int[] synced = new int[Venue.values().length];
         int[] total = new int[Venue.values().length];
-        for (BookSlot slot : slots.snapshot()) {
+        for (InstrumentSlot slot : slots.snapshot()) {
             if (slot == null) continue;
             int v = slot.instrument().venue().ordinal();
             total[v]++;

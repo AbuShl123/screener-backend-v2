@@ -7,7 +7,7 @@ import dev.abu.screener_backend.marketdata.adapter.binance.BinanceRestClient;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotFetcher;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.binance.WeightGuard;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.spi.SnapshotOutcome;
 import org.junit.jupiter.api.DisplayName;
@@ -99,17 +99,17 @@ class BinanceSnapshotFetcherTest {
 
     // --- Fixtures ------------------------------------------------------------------------------
 
-    private static List<BookSlot> batch(String... symbols) {
-        List<BookSlot> slots = new ArrayList<>();
+    private static List<InstrumentSlot> batch(String... symbols) {
+        List<InstrumentSlot> slots = new ArrayList<>();
         for (int i = 0; i < symbols.length; i++) {
             String base = symbols[i].replace("USDT", "");
-            slots.add(new BookSlot(Instrument.of(i, Venue.BINANCE_SPOT, symbols[i], base, "USDT"),
+            slots.add(new InstrumentSlot(Instrument.of(i, Venue.BINANCE_SPOT, symbols[i], base, "USDT"),
                     new OrderBook(0.1), null, null));
         }
         return slots;
     }
 
-    private void fetch(List<BookSlot> batch) {
+    private void fetch(List<InstrumentSlot> batch) {
         fetcher.fetchAll(batch, outcome).toCompletableFuture().orTimeout(5, TimeUnit.SECONDS).join();
     }
 
@@ -118,12 +118,12 @@ class BinanceSnapshotFetcherTest {
         final List<String> failed = Collections.synchronizedList(new ArrayList<>());
 
         @Override
-        public void delivered(BookSlot slot, String body) {
+        public void delivered(InstrumentSlot slot, String body) {
             delivered.add(slot.instrument().nativeSymbol());
         }
 
         @Override
-        public void failed(BookSlot slot) {
+        public void failed(InstrumentSlot slot) {
             failed.add(slot.instrument().nativeSymbol());
         }
 

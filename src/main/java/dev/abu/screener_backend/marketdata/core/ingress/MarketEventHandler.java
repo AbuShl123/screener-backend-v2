@@ -2,8 +2,8 @@ package dev.abu.screener_backend.marketdata.core.ingress;
 
 import com.lmax.disruptor.EventHandler;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
-import dev.abu.screener_backend.marketdata.core.book.BookSlot;
-import dev.abu.screener_backend.marketdata.core.book.BookSlotTable;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
+import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 // Consumer for an assigned shard in LMAX Disruptor
 @Slf4j
-public class DepthEventHandler implements EventHandler<DepthEvent> {
+public class MarketEventHandler implements EventHandler<MarketEvent> {
 
     private static final long MISSING_SLOT_LOG_INTERVAL_MS = 60_000;
     private final AtomicLong missingSlots = new AtomicLong();
@@ -19,7 +19,7 @@ public class DepthEventHandler implements EventHandler<DepthEvent> {
 
     @Getter
     private final int shardIndex;
-    private final BookSlotTable slots;
+    private final InstrumentSlotTable slots;
     private final OrderBookClassifier classificationModule;
 
     /**
@@ -33,7 +33,7 @@ public class DepthEventHandler implements EventHandler<DepthEvent> {
      */
     private long processed;
 
-    public DepthEventHandler(int shardIndex, BookSlotTable slots, OrderBookClassifier classificationModule) {
+    public MarketEventHandler(int shardIndex, InstrumentSlotTable slots, OrderBookClassifier classificationModule) {
         this.shardIndex = shardIndex;
         this.slots = slots;
         this.classificationModule = classificationModule;
@@ -45,9 +45,9 @@ public class DepthEventHandler implements EventHandler<DepthEvent> {
     }
 
     @Override
-    public void onEvent(DepthEvent event, long sequence, boolean endOfBatch) {
+    public void onEvent(MarketEvent event, long sequence, boolean endOfBatch) {
         processed++;
-        BookSlot slot = slots.get(event.instrumentId);
+        InstrumentSlot slot = slots.get(event.instrumentId);
 
         // should never happen
         if (slot == null) {
@@ -56,14 +56,20 @@ public class DepthEventHandler implements EventHandler<DepthEvent> {
             return;
         }
 
-        // manage local orderbook of this event
-        slot.strategy().onEvent(slot, event);
-
-        // run default & per-user classification
-        classificationModule.process(slot.instrument(), slot.book());
+        switch (event.stream) {
+            case DEPTH -> onDepth(slot, event);
+        }
 
         // free
         event.clear();
+    }
+
+    private void onDepth(InstrumentSlot slot, MarketEvent event) {
+        // manage local orderbook of this event
+        slot.syncStrategy().onEvent(slot, event);
+
+        // run default & per-user classification
+        classificationModule.process(slot.instrument(), slot.book());
     }
 
     private void noteMissingSlot(int instrumentId) {
@@ -71,7 +77,7 @@ public class DepthEventHandler implements EventHandler<DepthEvent> {
         long now = System.currentTimeMillis();
         long last = missingSlotsLoggedAt.get();
         if (now - last >= MISSING_SLOT_LOG_INTERVAL_MS && missingSlotsLoggedAt.compareAndSet(last, now)) {
-            log.warn("No book slot for instrument id {} — event dropped ({} total)", instrumentId, total);
+            log.warn("No instrument slot for instrument id {} — event dropped ({} total)", instrumentId, total);
         }
     }
 }

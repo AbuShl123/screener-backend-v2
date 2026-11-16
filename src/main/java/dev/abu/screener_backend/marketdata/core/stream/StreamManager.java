@@ -6,7 +6,7 @@ import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.InstrumentUniverseChangedEvent;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocolRegistry;
 import jakarta.annotation.PreDestroy;
@@ -57,7 +57,7 @@ public class StreamManager {
 
     @Autowired
     public StreamManager(ExchangesProperties exchanges, WebSocketProperties wsProps,
-                         StreamProtocolRegistry protocols, DepthEventPublisher publisher,
+                         StreamProtocolRegistry protocols, MarketEventPublisher publisher,
                          PipelineMetrics metrics) {
         this(exchanges, protocols, (venue, protocol) ->
                 new ConnectionPool(venue, exchanges.venue(venue), wsProps, protocol, publisher, metrics));
@@ -71,7 +71,7 @@ public class StreamManager {
 
     /**
      * Runs synchronously on the discovery thread, after slots have been published — so every id
-     * these subscriptions can produce already has a book slot behind it. Never throws back into
+     * these subscriptions can produce already has an instrument slot behind it. Never throws back into
      * discovery: a venue that fails to start is logged and isolated from the others.
      */
     @EventListener

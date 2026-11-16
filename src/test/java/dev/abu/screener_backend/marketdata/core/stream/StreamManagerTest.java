@@ -11,7 +11,8 @@ import dev.abu.screener_backend.marketdata.InstrumentUniverseChangedEvent;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
-import dev.abu.screener_backend.marketdata.core.ingress.DepthEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
+import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
 import dev.abu.screener_backend.marketdata.core.stream.ConnectionPool;
 import dev.abu.screener_backend.marketdata.core.stream.StreamManager;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
@@ -49,9 +50,9 @@ class StreamManagerTest {
     private static final VenueProperties PROPS =
             new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, null);
     private static final WebSocketProperties WS = new WebSocketProperties(100, 1000);
-    private static final DepthEventPublisher NO_OP_PUBLISHER = new DepthEventPublisher() {
-        @Override public void publishFrame(int instrumentId, String payload) { }
-        @Override public void publishFrame(int instrumentId, ByteBuffer payload) { }
+    private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
+        @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
+        @Override public void publishFrame(StreamKind stream, int instrumentId, ByteBuffer payload) { }
         @Override public void publishSnapshot(int instrumentId, String payload) { }
         @Override public void publishSnapshotFailure(int instrumentId) { }
     };
