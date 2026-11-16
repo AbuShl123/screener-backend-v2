@@ -63,8 +63,10 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
 
         switch (event.stream) {
             case DEPTH -> onDepth(slot, event);
+            // Routed and counted (processed, per-stream frame counter); decoding and detection arrive in Phase 2.
+            case TRADE -> { }
             // A kind that is bound and streaming but has no arm here: count it so it cannot go dark
-            // silently. Unreachable while DEPTH is the only kind.
+            // silently. Unreachable while every kind has an arm.
             default -> noteUnhandledKind(event.stream);
         }
 

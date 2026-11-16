@@ -104,7 +104,7 @@ including parts that are not built yet; §2.2 maps each box to the code.*
 | `StreamConnection` (×N), `ping/subscribe` | `core/stream/StreamConnection`, `ConnectionPool` (one per `StreamKey`), `StreamManager` | built |
 | `StreamProtocol` (SPI) | `spi/StreamProtocol`, bound per stream (`StreamKey`) | built |
 | `Ring Buffer (×N)`, `(id, frame)` | `core/ingress/DisruptorShardManager`, `DisruptorMarketEventPublisher`, `MarketEvent` | built |
-| `Router` (`KLINE` / `DEPTH`) | the `switch (event.stream)` in `core/ingress/MarketEventHandler`; `marketdata/StreamKind` | built, `DEPTH` arm only (a `default` arm counts kinds with no arm) |
+| `Router` (`KLINE` / `DEPTH`) | the `switch (event.stream)` in `core/ingress/MarketEventHandler`; `marketdata/StreamKind` | built, `DEPTH` arm plus an empty `TRADE` arm (a `default` arm counts kinds with no arm) |
 | `SyncStrategy` (SPI) → `OrderBook` | `spi/DepthSyncStrategy` + one per venue; `core/book/OrderBook` | built |
 | `requestRecovery(id)`, `SnapshotRequestQueue` | `spi/RecoverySink`, `core/recovery/SnapshotRequestQueue` | built |
 | `SnapshotFetchPacer` (SPI) | `spi/SnapshotFetcher` + one per venue | built |
@@ -253,7 +253,7 @@ that).
 | Field | Meaning |
 |---|---|
 | `source` (`EventSource`) | **Provenance**: `WS_MSG`, `REST_MSG`, `REST_FAILED`. Drives the strategy's parse path and backpressure: REST events are never dropped, because each is the single outcome of a request |
-| `stream` (`StreamKind`) | **What the payload is**, taken from the publishing connection; the consumer dispatches on it. `DEPTH` today, `TRADE` and `KLINE` planned |
+| `stream` (`StreamKind`) | **What the payload is**, taken from the publishing connection; the consumer dispatches on it. `DEPTH` and `TRADE` today (`TRADE` bound for Binance only, dropped by its arm until Phase 2 of the trade-alerts plan), `KLINE` planned |
 | `instrumentId` | Dense id |
 | `rawJson` / `rawBytes` | At most one payload; fixed per venue by its wire protocol |
 
@@ -498,12 +498,13 @@ no dynamic subscribe, no startup retry for discovery.
 ## 12. Planned (not built)
 
 The diagram and the Requirements Document show the pipeline with additional stream kinds and signals.
-Today only `DEPTH` exists. The seams for the rest are already in place:
+Today `DEPTH` is fully built and `TRADE` is wired through the transport only. The seams for the rest
+are already in place:
 
 | Planned | Seam already built | Where it is designed |
 |---|---|---|
 | **Kline streams**: `KLINE` stream kind, `CandleDecoder` SPI, `CandleStore` in `InstrumentSlot`, `KLINE` arm in `MarketEventHandler`, Binance futures `/market` endpoint | `StreamKind`, the dispatch `switch`, `MarketEvent.stream`, generic `MarketEventPublisher`, **transport keyed by `StreamKey`** (per-stream pools, protocol bindings, `streams.<KIND>` config, per-kind frame counters) | `.claude/plans/team-plans/spike-alerts-plan.md`; the generalization steps, already done, are `.claude/plans/market-event-generalization-plan.md` and `.claude/plans/multi-stream-transport-plan.md` |
-| **Trade streams**: `TRADE` stream kind, `TradeDecoder` SPI, trade state in `InstrumentSlot`, `TRADE` arm in `MarketEventHandler` | same as klines | no plan file yet; follows the recipe in §13 |
+| **Trade streams**: `TradeDecoder` SPI, trade state in `InstrumentSlot`, trade logic in the `TRADE` arm of `MarketEventHandler`, Bybit and MEXC trade protocols | **transport done**: `StreamKind.TRADE`, Binance spot and futures `@aggTrade` bindings (`BinanceStreamProtocol.aggTrade`, futures on `/market/ws`), `streams.TRADE` blocks (off by default), an explicit `TRADE` arm that drops frames | `.claude/plans/trade-alerts-plan.md` (Phase 1 done: `.claude/plans/trade-streams-transport-plan.md`) |
 | **`SpikeDetector`** (price and volume spikes from candles) | `FeedChannel` interface for delivery | `spike-alerts-plan.md` |
 | **`OrderClusterDetector`** (split-order walls across adjacent levels) | depth arm of the handler; `FeedChannel` | `.claude/plans/team-plans/order-cluster-plan.md` |
 | **Trade alerts** (large trades) | trade streams (above); `FeedChannel` | named in the Architectural Model; no plan file at the time of writing |

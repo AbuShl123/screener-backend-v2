@@ -73,6 +73,25 @@ class MarketEventHandlerTest {
     }
 
     @Test
+    @DisplayName("a TRADE event is counted and cleared without reaching the sync strategy or the classifier")
+    void tradeEventIsCountedAndCleared() {
+        event.source = EventSource.WS_MSG;
+        event.stream = StreamKind.TRADE;
+        event.instrumentId = ID;
+        event.rawJson = "{\"e\":\"aggTrade\"}";
+
+        handler.onEvent(event, 0, true);
+
+        assertTrue(strategy.calls.isEmpty(), "trades never touch the book");
+        assertTrue(classifier.instruments.isEmpty());
+        assertEquals(1, handler.processed());
+        assertNull(event.source);
+        assertNull(event.stream);
+        assertNull(event.rawJson);
+        assertEquals(-1, event.instrumentId);
+    }
+
+    @Test
     @DisplayName("an event for a missing slot is counted, touches nothing and is cleared")
     void missingSlotIsCountedAndCleared() {
         event.source = EventSource.WS_MSG;

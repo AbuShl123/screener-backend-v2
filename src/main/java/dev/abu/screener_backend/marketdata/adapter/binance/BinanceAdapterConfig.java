@@ -35,6 +35,11 @@ import org.springframework.web.reactive.function.client.WebClient;
  * seam is already there for the first config value that diverges. Discovery is the exception: one
  * source spans both venues, because spot inclusion depends on the futures list.
  *
+ * <p>Each venue binds two streams, each with its own {@link BinanceStreamProtocol}: {@code DEPTH}
+ * ({@code @depth}) and {@code TRADE} ({@code @aggTrade}). Both venues ship a {@code streams.TRADE}
+ * block, since {@code ExchangesProperties.stream} throws on a missing one; the binding exists even
+ * while that block is {@code enabled: false}.
+ *
  * <p>Each venue recovers through its own core {@link SnapshotRequestQueue}, fed by its own
  * {@link BinanceSnapshotFetcher} — which alone tracks that venue's request weight. The queue's shape
  * is {@code binance.snapshot-queue}; each fetcher's pricing is its venue's {@code snapshot} block.
@@ -78,17 +83,31 @@ public class BinanceAdapterConfig {
     }
 
     @Bean
-    VenueStreamBinding binanceSpotStreamBinding(ExchangesProperties exchanges) {
+    VenueStreamBinding binanceSpotDepthStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.BINANCE_SPOT, StreamKind.DEPTH);
         return new VenueStreamBinding(depth,
-                new BinanceStreamProtocol(Venue.BINANCE_SPOT, exchanges.stream(depth)));
+                BinanceStreamProtocol.depth(Venue.BINANCE_SPOT, exchanges.stream(depth)));
     }
 
     @Bean
-    VenueStreamBinding binanceFuturesStreamBinding(ExchangesProperties exchanges) {
+    VenueStreamBinding binanceFuturesDepthStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.DEPTH);
         return new VenueStreamBinding(depth,
-                new BinanceStreamProtocol(Venue.BINANCE_FUTURES, exchanges.stream(depth)));
+                BinanceStreamProtocol.depth(Venue.BINANCE_FUTURES, exchanges.stream(depth)));
+    }
+
+    @Bean
+    VenueStreamBinding binanceSpotTradeStreamBinding(ExchangesProperties exchanges) {
+        StreamKey trade = new StreamKey(Venue.BINANCE_SPOT, StreamKind.TRADE);
+        return new VenueStreamBinding(trade,
+                BinanceStreamProtocol.aggTrade(Venue.BINANCE_SPOT, exchanges.stream(trade)));
+    }
+
+    @Bean
+    VenueStreamBinding binanceFuturesTradeStreamBinding(ExchangesProperties exchanges) {
+        StreamKey trade = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.TRADE);
+        return new VenueStreamBinding(trade,
+                BinanceStreamProtocol.aggTrade(Venue.BINANCE_FUTURES, exchanges.stream(trade)));
     }
 
     @Bean

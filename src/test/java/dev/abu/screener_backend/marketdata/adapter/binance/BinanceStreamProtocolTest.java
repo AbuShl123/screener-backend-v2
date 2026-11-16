@@ -30,10 +30,19 @@ class BinanceStreamProtocolTest {
 
     private static final StreamProperties PROPS = TestVenueProps.stream().build();
 
-    private static final BinanceStreamProtocol SPOT =
-            new BinanceStreamProtocol(Venue.BINANCE_SPOT, PROPS);
-    private static final BinanceStreamProtocol FUTURES =
-            new BinanceStreamProtocol(Venue.BINANCE_FUTURES, PROPS);
+    private static final BinanceStreamProtocol SPOT = BinanceStreamProtocol.depth(Venue.BINANCE_SPOT, PROPS);
+    private static final BinanceStreamProtocol FUTURES = BinanceStreamProtocol.depth(Venue.BINANCE_FUTURES, PROPS);
+    private static final BinanceStreamProtocol SPOT_TRADE = BinanceStreamProtocol.aggTrade(Venue.BINANCE_SPOT, PROPS);
+    private static final BinanceStreamProtocol FUTURES_TRADE =
+            BinanceStreamProtocol.aggTrade(Venue.BINANCE_FUTURES, PROPS);
+
+    /** Real frames, captured 2026-11-17. */
+    private static final String SPOT_AGG_TRADE = "{\"e\":\"aggTrade\",\"E\":1794857964130,\"s\":\"BTCUSDT\","
+            + "\"a\":4120467472,\"p\":\"64826.00000000\",\"q\":\"0.02711000\",\"f\":6870090619,\"l\":6870090619,"
+            + "\"T\":1794857964129,\"m\":true,\"M\":true}";
+    private static final String FUTURES_AGG_TRADE = "{\"e\":\"aggTrade\",\"E\":1794860803575,\"a\":3528412961,"
+            + "\"s\":\"BTCUSDT\",\"p\":\"65079.50\",\"q\":\"0.006\",\"nq\":\"0.006\",\"f\":8285985083,"
+            + "\"l\":8285985083,\"T\":1794860803450,\"m\":true,\"st\":1}";
 
     private static SubscriptionIndex index(StreamProtocol protocol, Instrument... instruments) {
         return new SubscriptionIndex(List.of(instruments), protocol::routingKey);
@@ -75,6 +84,33 @@ class BinanceStreamProtocolTest {
                 + "\"u\":160,\"pu\":149,\"b\":[[\"0.0024\",\"10\"]],\"a\":[[\"0.0026\",\"100\"]]}";
 
         assertEquals(9, FUTURES.route(frame, index(FUTURES, BTC_FUT)));
+    }
+
+    @Test
+    @DisplayName("aggTrade subscribe frames use the @aggTrade topic on both venues")
+    void aggTradeSubscribeFrames() {
+        assertEquals("{\"method\":\"SUBSCRIBE\",\"params\":[\"btcusdt@aggTrade\",\"ethusdt@aggTrade\"],\"id\":1}",
+                SPOT_TRADE.subscribeFrame(List.of(BTC_SPOT, ETH_SPOT), 1));
+        assertEquals("{\"method\":\"SUBSCRIBE\",\"params\":[\"btcusdt@aggTrade\"],\"id\":2}",
+                FUTURES_TRADE.subscribeFrame(List.of(BTC_FUT), 2));
+    }
+
+    @Test
+    @DisplayName("a spot aggTrade frame routes to its instrument id")
+    void routesSpotAggTrade() {
+        assertEquals(7, SPOT_TRADE.route(SPOT_AGG_TRADE, index(SPOT_TRADE, BTC_SPOT, ETH_SPOT)));
+    }
+
+    @Test
+    @DisplayName("a futures aggTrade frame (\"a\" before \"s\", extra \"st\" field) routes to its instrument id")
+    void routesFuturesAggTrade() {
+        assertEquals(9, FUTURES_TRADE.route(FUTURES_AGG_TRADE, index(FUTURES_TRADE, BTC_FUT)));
+    }
+
+    @Test
+    @DisplayName("an aggTrade frame for a symbol this connection never subscribed is UNKNOWN")
+    void unsubscribedAggTradeUnknown() {
+        assertEquals(StreamProtocol.UNKNOWN, SPOT_TRADE.route(SPOT_AGG_TRADE, index(SPOT_TRADE, ETH_SPOT)));
     }
 
     @Test

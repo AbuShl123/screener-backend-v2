@@ -15,6 +15,7 @@ import java.util.Map;
  *
  * <pre>{@code
  * VenueProperties v = TestVenueProps.venue().rest(rest).depth(TestVenueProps.stream().chunk(30)).build();
+ * VenueProperties t = TestVenueProps.venue().stream(StreamKind.TRADE, TestVenueProps.stream().enabled(false)).build();
  * }</pre>
  */
 public final class TestVenueProps {
@@ -89,7 +90,7 @@ public final class TestVenueProps {
         private Double maxVisibleDistance;
 
         private VenueBuilder() {
-            streams.put(StreamKind.DEPTH, stream().build());
+            streams.put(StreamKind.DEPTH, TestVenueProps.stream().build());
         }
 
         public VenueBuilder enabled(boolean enabled) {
@@ -107,7 +108,16 @@ public final class TestVenueProps {
         }
 
         public VenueBuilder depth(StreamProperties depth) {
-            streams.put(StreamKind.DEPTH, depth);
+            return stream(StreamKind.DEPTH, depth);
+        }
+
+        /** Adds or replaces the block for {@code kind}. */
+        public VenueBuilder stream(StreamKind kind, StreamBuilder stream) {
+            return stream(kind, stream.build());
+        }
+
+        public VenueBuilder stream(StreamKind kind, StreamProperties stream) {
+            streams.put(kind, stream);
             return this;
         }
 

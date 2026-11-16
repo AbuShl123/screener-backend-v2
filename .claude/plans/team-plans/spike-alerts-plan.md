@@ -60,7 +60,7 @@ closed).
 
 | Market | Kline endpoint | Notes |
 |--------|----------------|-------|
-| Futures | `wss://fstream.binance.com/market/stream` | **Different from the depth endpoint.** The `/ws` variant does not work. Combined-stream envelope. |
+| Futures | `wss://fstream.binance.com/market/stream` | **Different from the depth endpoint.** The `/ws` variant does not work. Combined-stream envelope. *Correction (2026-11-17): `/market/ws` does work (probed with `@aggTrade`, which the transport now uses); only legacy `/ws` without `/market` is silent for `/market` streams. Re-probe with a kline topic.* |
 | Spot | `wss://stream.binance.com/stream` | `/ws` also works. Same host as depth. |
 
 The `/stream` (combined) endpoints wrap every payload as `{"stream":"...","data":{...}}`, unlike

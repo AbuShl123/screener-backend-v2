@@ -68,6 +68,14 @@ screener:
               max-connections: 8
               subscribe-chunk-size: 400
               heartbeat-interval-seconds: 120
+            TRADE:
+              enabled: ${BINANCE_SPOT_TRADE_ENABLED:false}
+              stream-url: wss://stream.binance.com/ws
+              max-streams-per-connection: 1024
+              min-connections: 1
+              max-connections: 2
+              subscribe-chunk-size: 400
+              heartbeat-interval-seconds: 120
         FUTURES:
           enabled: ${BINANCE_FUTURES_ENABLED:true}
           rest:
@@ -81,11 +89,22 @@ screener:
             weight-reserve: 200
             ban-fallback: PT2M
           streams:
+            # Futures streams are routed by URL path. A stream on the wrong path is acked and then stays
+            # silent (no error frame), so a wrong URL shows up only as 0 frames/s in the health log.
             DEPTH:
-              stream-url: wss://fstream.binance.com/ws
+              stream-url: wss://fstream.binance.com/public/ws
               max-streams-per-connection: 1024
               min-connections: 3
               max-connections: 8
+              subscribe-chunk-size: 400
+              heartbeat-interval-seconds: 120
+            TRADE:
+              enabled: ${BINANCE_FUTURES_TRADE_ENABLED:true}
+              # aggTrade is served only on /market; on /public or legacy /ws it is acked and stays silent.
+              stream-url: wss://fstream.binance.com/market/ws
+              max-streams-per-connection: 1024
+              min-connections: 1
+              max-connections: 2
               subscribe-chunk-size: 400
               heartbeat-interval-seconds: 120
 

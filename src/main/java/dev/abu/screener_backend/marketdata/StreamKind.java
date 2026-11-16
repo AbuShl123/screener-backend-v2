@@ -11,9 +11,17 @@ import dev.abu.screener_backend.marketdata.core.ingress.MarketEventHandler;
  *
  * <p>An identity axis like {@link Venue}: a {@link StreamKey} pairs the two, and config, the adapter
  * SPIs and core are all keyed by it. The consumer dispatches on this: each kind has its own arm in
- * {@link MarketEventHandler}. Later work adds values here, together with the arm that handles them.
+ * {@link MarketEventHandler}. A new value lands together with the arm that handles it.
+ *
+ * <p>A kind is bound per stream, so not every venue carries every kind: a venue with no binding for
+ * a kind simply has no such stream.
  */
 public enum StreamKind {
     /** Order-book depth: diffs and in-stream snapshots, plus the REST snapshots that seed a book. */
-    DEPTH
+    DEPTH,
+    /**
+     * Executed trades (Binance {@code aggTrade}): events, not state. No sync and no REST recovery;
+     * only WebSocket frames carry this kind.
+     */
+    TRADE
 }
