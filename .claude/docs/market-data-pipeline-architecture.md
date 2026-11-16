@@ -101,10 +101,10 @@ including parts that are not built yet; §2.2 maps each box to the code.*
 | `InstrumentUniverseService`, `instrument`, `universeChangedEvent()` | `marketdata/InstrumentUniverseService`, `InstrumentUniverseChangedEvent` | built |
 | `InstrumentSource` (SPI) | `spi/InstrumentSource` + one per exchange | built |
 | `InstrumentSlotArray`, `slot[id]` | `core/slot/InstrumentSlotTable`; `InstrumentSlot = {instrument, book, syncStrategy, syncCtx}` | built (no `CandleStore` yet) |
-| `StreamConnection` (×N), `ping/subscribe` | `core/stream/StreamConnection`, `ConnectionPool`, `StreamManager` | built |
-| `StreamProtocol` (SPI) | `spi/StreamProtocol` | built |
+| `StreamConnection` (×N), `ping/subscribe` | `core/stream/StreamConnection`, `ConnectionPool` (one per `StreamKey`), `StreamManager` | built |
+| `StreamProtocol` (SPI) | `spi/StreamProtocol`, bound per stream (`StreamKey`) | built |
 | `Ring Buffer (×N)`, `(id, frame)` | `core/ingress/DisruptorShardManager`, `DisruptorMarketEventPublisher`, `MarketEvent` | built |
-| `Router` (`KLINE` / `DEPTH`) | the `switch (event.stream)` in `core/ingress/MarketEventHandler`; `StreamKind` | built, `DEPTH` arm only |
+| `Router` (`KLINE` / `DEPTH`) | the `switch (event.stream)` in `core/ingress/MarketEventHandler`; `marketdata/StreamKind` | built, `DEPTH` arm only (a `default` arm counts kinds with no arm) |
 | `SyncStrategy` (SPI) → `OrderBook` | `spi/DepthSyncStrategy` + one per venue; `core/book/OrderBook` | built |
 | `requestRecovery(id)`, `SnapshotRequestQueue` | `spi/RecoverySink`, `core/recovery/SnapshotRequestQueue` | built |
 | `SnapshotFetchPacer` (SPI) | `spi/SnapshotFetcher` + one per venue | built |
@@ -144,16 +144,19 @@ class: `spi/` sits beside both and is inside neither.
 | SPI | What the adapter decides | What core keeps |
 |---|---|---|
 | `InstrumentSource` | How to fetch the venue's tradable instruments and which are eligible (quote asset, contract type, status) | Merging all sources, per-source failure isolation, exclusion list, id assignment, enable switches |
-| `StreamProtocol` | Subscribe frame format; how a raw frame maps to an instrument (`route`); heartbeat kind | Connections, chunking, fan-out, reconnect with backoff, resubscribe, scheduling the heartbeat |
+| `StreamProtocol` | Per stream (venue + kind): the channel, subscribe frame format, how a raw frame maps to an instrument (`route`), heartbeat kind | Connections, chunking, fan-out, reconnect with backoff, resubscribe, scheduling the heartbeat, tagging each frame with the connection's kind |
 | `DepthSyncStrategy` | Parsing diffs and snapshots; the sequence-continuity rule; when to ask for recovery | Calling it on the shard thread, owning the book, the `PENDING → RECOVERING → SYNCED` states' storage |
 | `SnapshotFetcher` | Snapshot endpoint, request cost, pacing, rate-limit and ban handling | Queueing, batching, the exactly-one-outcome guarantee, publishing results into the ring |
 | `CandleDecoder` | *(planned)* Parsing kline frames into a normalized candle | |
 
-Each SPI is bound to a venue through a `Venue*Binding` bean built by that exchange's single
-`@Configuration` (`BinanceAdapterConfig`, `MexcAdapterConfig`, `BybitAdapterConfig`). Core assembles
-`EnumMap<Venue, …>` registries from the bindings and **fails startup** on a duplicate binding or an
-enabled venue with no binding. Adapter classes are constructed in that config and are deliberately
-not `@Component`s.
+Each SPI is bound through a `Venue*Binding` bean built by that exchange's single `@Configuration`
+(`BinanceAdapterConfig`, `MexcAdapterConfig`, `BybitAdapterConfig`). Most are bound per venue.
+`StreamProtocol` is bound per **stream**: `VenueStreamBinding(StreamKey, StreamProtocol)`, where
+`StreamKey = (Venue, StreamKind)`, because one connection carries one kind (§5.1). Core assembles
+registries from the bindings and **fails startup** on a duplicate binding or an enabled venue (for
+protocols: an enabled stream) with no binding. A protocol bound for a disabled stream is accepted,
+so an adapter can ship a kind dark. Adapter classes are constructed in that config and are
+deliberately not `@Component`s.
 
 ### 3.2 Where the line is drawn
 
@@ -185,7 +188,7 @@ placements that are not obvious:
         3. InstrumentSlotTable.publish()                    (one volatile store)
         4. fire InstrumentUniverseChangedEvent
                          ▼
-        StreamManager: first event for a venue ─► start one ConnectionPool ─► subscribe
+        StreamManager: first event for a venue ─► one ConnectionPool per enabled stream ─► subscribe
 ```
 
 The order of steps 1–4 is an invariant: if a subscribe went out before `publish()`, a frame could
@@ -205,13 +208,13 @@ durable identity. Each `Instrument` also carries four precomputed strings (`symb
 ### 5.1 Life of a message
 
 ```
- exchange WS
+ exchange WS (one connection = one StreamKey = one kind)
      │  text or binary frame
      ▼
  StreamConnection.onMessage            ── WebSocket reader thread (one per connection) ──
      │  id = protocol.route(frame, SubscriptionIndex)       ← adapter SPI, no allocation
      ▼
- DisruptorMarketEventPublisher.publishFrame(stream, id, frame)
+ DisruptorMarketEventPublisher.publishFrame(kind, id, frame)   ← kind is the connection's final field
      │  ring = rings[id & (shards - 1)]
      │  slot = ring.next();  fill source/stream/id/payload;  ring.publish()
      ▼
@@ -222,12 +225,20 @@ durable identity. Each `Instrument` also carries four precomputed strings (`symb
      slot = slotTable.get(id)
      switch (event.stream):  DEPTH ─►  slot.syncStrategy().onEvent(slot, event)   ← parse + sync + book
                                        classifier.process(instrument, book)        ← only if SYNCED
+                             default ─► count + WARN at most once a minute (kind with no arm)
      event.clear()
 ```
 
 The connection thread does the minimum: ask the protocol which instrument the frame belongs to, then
 publish the **raw, unparsed** frame. Everything expensive (parsing, sequence check, book mutation,
 classification) happens on the shard thread, in parallel across shards.
+
+**One connection carries one stream kind.** The transport unit is a `StreamKey = (Venue, StreamKind)`:
+one `ConnectionPool` per key, every connection in it subscribed to one channel, and the kind is a
+`final` field of the connection, never parsed from the frame. Venues require it (Binance futures
+serves trades and klines on a different endpoint from depth; MEXC spot's 30-subscription cap would
+be split between kinds), it keeps `route()` and `SubscriptionIndex` unchanged, and a high-rate kind
+gets its own sockets, heartbeats and reconnects. The cost is more sockets per venue.
 
 Why raw frames and not parsed objects: parsing on the reader thread would put the venue's slowest
 step on the thread that must keep up with the socket, and any normalized object would be allocated
@@ -242,7 +253,7 @@ that).
 | Field | Meaning |
 |---|---|
 | `source` (`EventSource`) | **Provenance**: `WS_MSG`, `REST_MSG`, `REST_FAILED`. Drives the strategy's parse path and backpressure: REST events are never dropped, because each is the single outcome of a request |
-| `stream` (`StreamKind`) | **What the payload is**; the consumer dispatches on it. `DEPTH` today, `KLINE` planned |
+| `stream` (`StreamKind`) | **What the payload is**, taken from the publishing connection; the consumer dispatches on it. `DEPTH` today, `TRADE` and `KLINE` planned |
 | `instrumentId` | Dense id |
 | `rawJson` / `rawBytes` | At most one payload; fixed per venue by its wire protocol |
 
@@ -427,7 +438,7 @@ each exchange's book is still classified and delivered separately. Full detail:
 | Thread | Created by | Owns / does |
 |---|---|---|
 | java-websocket reader (one per connection) | `StreamConnection` | route a frame, publish it into the ring |
-| `reconnect-<venue>` | `ConnectionPool` | reconnect backoff, heartbeats |
+| `reconnect-<venue>-<kind>` (lower case, e.g. `reconnect-binance_futures-depth`) | `ConnectionPool`, one per stream | reconnect backoff, heartbeats |
 | `disruptor-shard-N` | `DisruptorShardManager` | **the only writer** of its instruments' books, sync contexts and classification state; strategy + classifier |
 | `snapshot-queue` (daemon) | `SnapshotQueueFactory` | ticks every venue's queue; dedicated so a blocked discovery refresh cannot stall it |
 | Reactor / Netty | REST clients, fetchers | HTTP I/O; fixed-interval pacing on `Schedulers.parallel()`; publishes outcomes into the ring |
@@ -472,7 +483,9 @@ inherit these rules.
 | Venue rate-limits or IP-bans | fetcher | fetcher stops accepting (cooldown); requests are refused, nothing is sent |
 | WebSocket drop | `StreamConnection` | reconnect with exponential backoff, resubscribe; Binance/MEXC books resync on the first non-continuing frame, Bybit books are replaced by the new in-stream snapshot |
 | Discovery source fails | `InstrumentUniverseService` | that source's venues keep their previous universe; others unaffected |
-| A venue's pool fails to start | `StreamManager` | logged; other venues unaffected |
+| A stream's pool fails to start | `StreamManager` | logged; the venue's other streams and other venues unaffected |
+| An enabled venue has no enabled stream (e.g. a config file still using the pre-`streams.<KIND>` flat keys) | `ExchangesProperties` | startup fails, pointing at `streams.DEPTH` |
+| A bound, streaming kind has no handler arm | `MarketEventHandler` `default` arm | event counted and dropped, WARN at most once a minute |
 | Ring full | blocking `next()` | the reader thread stalls (TCP backpressure) |
 | Slow client | bounded session queue | session evicted, client reconnects to a fresh snapshot |
 
@@ -489,10 +502,11 @@ Today only `DEPTH` exists. The seams for the rest are already in place:
 
 | Planned | Seam already built | Where it is designed |
 |---|---|---|
-| **Kline streams**: `KLINE` stream kind, `CandleDecoder` SPI, `CandleStore` in `InstrumentSlot`, `KLINE` arm in `MarketEventHandler`, transport pools keyed by (venue, kind) | `StreamKind`, the dispatch `switch`, `MarketEvent.stream`, generic `MarketEventPublisher` | `.claude/plans/team-plans/spike-alerts-plan.md` (the generalization step, already done, is `.claude/plans/market-event-generalization-plan.md`) |
+| **Kline streams**: `KLINE` stream kind, `CandleDecoder` SPI, `CandleStore` in `InstrumentSlot`, `KLINE` arm in `MarketEventHandler`, Binance futures `/market` endpoint | `StreamKind`, the dispatch `switch`, `MarketEvent.stream`, generic `MarketEventPublisher`, **transport keyed by `StreamKey`** (per-stream pools, protocol bindings, `streams.<KIND>` config, per-kind frame counters) | `.claude/plans/team-plans/spike-alerts-plan.md`; the generalization steps, already done, are `.claude/plans/market-event-generalization-plan.md` and `.claude/plans/multi-stream-transport-plan.md` |
+| **Trade streams**: `TRADE` stream kind, `TradeDecoder` SPI, trade state in `InstrumentSlot`, `TRADE` arm in `MarketEventHandler` | same as klines | no plan file yet; follows the recipe in §13 |
 | **`SpikeDetector`** (price and volume spikes from candles) | `FeedChannel` interface for delivery | `spike-alerts-plan.md` |
 | **`OrderClusterDetector`** (split-order walls across adjacent levels) | depth arm of the handler; `FeedChannel` | `.claude/plans/team-plans/order-cluster-plan.md` |
-| **Trade alerts** | none yet | named in the Architectural Model; no plan file at the time of writing |
+| **Trade alerts** (large trades) | trade streams (above); `FeedChannel` | named in the Architectural Model; no plan file at the time of writing |
 | Non-blocking ingress with reset lane | `DisruptorMarketEventPublisher` is the single place for the change | `multi-exchange-progress.md` §13 |
 | Primitive-array book store replacing `TreeMap<Double,…>` | none (the classifier reads `getBids()` / `getAsks()` directly) | `CLAUDE.md` Future Work |
 
@@ -502,15 +516,38 @@ Today only `DEPTH` exists. The seams for the rest are already in place:
 
 **Add an exchange.** One new `adapter/<name>/` package with a single `@Configuration`, a YAML block
 under `screener.exchanges.<name>`, an `Exchange` constant and `Venue` constants. The config supplies
-an `InstrumentSource`, a `VenueStreamBinding` (→ `StreamProtocol`), a `VenueStrategyBinding`
+an `InstrumentSource`, a `VenueStreamBinding` per stream (→ `StreamProtocol`; `DEPTH` at least, with
+its transport settings under `venues.<MARKET>.streams.DEPTH`), a `VenueStrategyBinding`
 (→ `DepthSyncStrategy` + `BookSyncContext`), and, if it recovers over REST, a `SnapshotFetcher`
 handed to `SnapshotQueueFactory`. **No core edit.** Checklist and the seams Bybit exercised:
 `multi-exchange-progress.md` §12.
 
-**Add a stream kind** (klines, trades). Add a `StreamKind` value, give the transport a pool for it,
-add an arm to the `switch` in `MarketEventHandler`, and put its state beside `book` in
-`InstrumentSlot`. The shard thread already serializes everything for the instrument, so the new
-state needs no locking.
+**Add a stream kind** (trades, klines). The recipe:
+
+1. Add the `StreamKind` value (`marketdata/StreamKind`).
+2. Add a `streams.<KIND>` block under each venue that will stream it, in `application.yml`
+   (`screener.exchanges.<exchange>.venues.<MARKET>.streams.<KIND>`), with `enabled: false` until it
+   is ready. A missing block or `enabled: false` keeps the stream off.
+3. Add a `StreamProtocol` per venue for the new channel and bind it with
+   `VenueStreamBinding(new StreamKey(venue, KIND), protocol)`. Where the exchange's control frames
+   (subscribe, ack, heartbeat, error) are the same as for depth, reuse its protocol class and pass the
+   channel in (Bybit's topic prefix, Binance's topic suffix) instead of copying it.
+4. Add a decoder SPI, bound per venue. For kinds that need no sync, the adapter **only decodes**: it
+   parses the frame in place and reports each item to a core-owned sink as primitives (one callback
+   per trade or candle update, so a batched frame needs no allocation), converting quantities through
+   `Instrument.quantityMultiplier`. **Core owns the state.** Depth stays the only kind with an
+   adapter-owned sync strategy.
+5. Add the kind's state as a new field in `InstrumentSlot`, `null` for venues that do not stream it,
+   allocated in `InstrumentSlotTable.allocate`. The shard thread already serializes everything for
+   the instrument, so the new state needs no locking.
+6. Add an arm to the `switch` in `MarketEventHandler`. Until it exists, the kind's events are counted
+   and dropped by the `default` arm with a WARN.
+7. Deliver it, if it is delivered, through a `FeedChannel` bean.
+
+What does **not** change: the transport classes (`StreamManager`, `ConnectionPool`,
+`StreamConnection`, `SubscriptionIndex`), the ring and `MarketEvent`, the publisher, shard routing,
+and the health log (it gets a frames/s column per `StreamKind` on its own). Before enabling a
+high-rate kind, check the exchange's per-IP connection limit: each kind adds its own pool of sockets.
 
 **Add a signal / feed message.** Implement `FeedChannel` as a bean. The broadcaster's per-session
 loop, queueing and eviction apply unchanged.
@@ -527,6 +564,7 @@ the architecture:
 | Decision | Reason |
 |---|---|
 | Venue (not exchange) is the adapter unit | Spot and futures of one exchange differ in sequence rules, URLs and units; one bean set per venue keeps each simple |
+| Stream (venue + kind) is the transport unit; one kind per connection | Venues serve kinds on different endpoints and cap subscriptions per socket; the kind stays a connection field, so routing is unchanged |
 | Dense `int` instrument id as the key | Array indexing on the hot path; shard routing becomes a mask |
 | Raw frames in the ring; parse on the shard | Keeps reader threads thin; no per-message normalized object |
 | One SPI entry point per role, no snapshot/delta split | `EventSource` is provenance only; the strategy owns meaning |

@@ -2,6 +2,7 @@ package dev.abu.screener_backend.marketdata.core.ingress;
 
 import com.lmax.disruptor.EventHandler;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import lombok.Getter;
@@ -16,6 +17,10 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     private static final long MISSING_SLOT_LOG_INTERVAL_MS = 60_000;
     private final AtomicLong missingSlots = new AtomicLong();
     private final AtomicLong missingSlotsLoggedAt = new AtomicLong();
+
+    private static final long UNHANDLED_KIND_LOG_INTERVAL_MS = 60_000;
+    private final AtomicLong unhandledKinds = new AtomicLong();
+    private final AtomicLong unhandledKindsLoggedAt = new AtomicLong();
 
     @Getter
     private final int shardIndex;
@@ -58,6 +63,9 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
 
         switch (event.stream) {
             case DEPTH -> onDepth(slot, event);
+            // A kind that is bound and streaming but has no arm here: count it so it cannot go dark
+            // silently. Unreachable while DEPTH is the only kind.
+            default -> noteUnhandledKind(event.stream);
         }
 
         // free
@@ -78,6 +86,15 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
         long last = missingSlotsLoggedAt.get();
         if (now - last >= MISSING_SLOT_LOG_INTERVAL_MS && missingSlotsLoggedAt.compareAndSet(last, now)) {
             log.warn("No instrument slot for instrument id {} — event dropped ({} total)", instrumentId, total);
+        }
+    }
+
+    private void noteUnhandledKind(StreamKind kind) {
+        long total = unhandledKinds.incrementAndGet();
+        long now = System.currentTimeMillis();
+        long last = unhandledKindsLoggedAt.get();
+        if (now - last >= UNHANDLED_KIND_LOG_INTERVAL_MS && unhandledKindsLoggedAt.compareAndSet(last, now)) {
+            log.warn("No handler arm for stream kind {} — event dropped ({} total on shard {})", kind, total, shardIndex);
         }
     }
 }

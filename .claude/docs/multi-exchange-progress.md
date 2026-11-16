@@ -36,7 +36,7 @@ disconnects (local network, see the benchmark doc), and `BINANCE_FUTURES` resync
 |---|---|
 | Identity (`Venue`, `Instrument`, dense ids, `InstrumentSlotTable`) | Done |
 | Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC spot, MEXC futures, Bybit spot + futures) |
-| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames |
+| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames; keyed by stream (`StreamKey` = venue + kind), only `DEPTH` bound |
 | Snapshot recovery (core queue + per-venue `SnapshotFetcher`) | Done |
 | Discovery (`InstrumentSource` per exchange, merged by core) | Done; no startup retry (§13) |
 | Config consolidation under `screener.exchanges.*` | Partial: `screener.orderbook.*` and `screener.websocket.*` still sit outside it |
@@ -146,7 +146,7 @@ process-local and must never be used as an identity.
  venue WS ──► StreamConnection.onMessage(String | ByteBuffer)  (reader thread, one per connection)
                 │  protocol.route(frame, SubscriptionIndex) → instrument id
                 ▼
-            MarketEventPublisher.publishFrame ──► ring[id & (shards-1)]  (WS_MSG, stream, rawJson | rawBytes)
+            MarketEventPublisher.publishFrame ──► ring[id & (shards-1)]  (WS_MSG, connection's kind, rawJson | rawBytes)
                                                       │
  snapshot-queue thread ──► SnapshotFetcher.fetchAll   │
                 │  HTTP threads report each slot      │
@@ -158,12 +158,13 @@ process-local and must never be used as an identity.
                                    switch (event.stream):  DEPTH → onDepth
                                        slot.syncStrategy().onEvent(slot, event)   ← sync + book mutation
                                        classifier.process(instrument, book)   ← gates on SYNCED
+                                   default → counted + rate-limited WARN (a kind with no arm)
 ```
 
 | Thread | Owner | Work |
 |---|---|---|
 | java-websocket reader, one per connection | `StreamConnection` | route a frame, publish it into the ring |
-| `reconnect-<venue>` | `ConnectionPool` | reconnect backoff and heartbeats for that venue's connections |
+| `reconnect-<venue>-<kind>` (lower case) | `ConnectionPool`, one per stream | reconnect backoff and heartbeats for that stream's connections |
 | `disruptor-shard-N` | `DisruptorShardManager` | **the only writer of its books and sync contexts**; runs strategy + classifier |
 | `snapshot-queue` (daemon) | `SnapshotQueueFactory` | ticks every venue's queue at its `flush-interval` |
 | Reactor / Netty | fetchers, REST clients | HTTP I/O; MEXC and Bybit send pacing on `Schedulers.parallel()` |
@@ -191,8 +192,9 @@ fill-and-publish site, so an instrument's events can never split across shards.
 | `Heartbeat` | sealed | `ProtocolPing(interval)` (WS control frame) or `TextPing(interval, payload)` |
 | `InstrumentSource` | interface | `venues()` + blocking `fetch()` → `Map<Venue, List<InstrumentCandidate>>` |
 | `InstrumentCandidate` | record | `nativeSymbol, base, quote, quantityMultiplier` (validated positive and finite) |
-| `VenueStrategyBinding`, `VenueStreamBinding` | records | bind a venue to its strategy / protocol |
-| `SyncStrategyRegistry`, `StreamProtocolRegistry` | core `@Component`s | `EnumMap<Venue, …>` assembled from the binding beans |
+| `VenueStrategyBinding` | record | binds a venue to its strategy |
+| `VenueStreamBinding` | record | binds a **stream** (`StreamKey` = venue + `StreamKind`) to its protocol; one protocol instance serves one stream |
+| `SyncStrategyRegistry`, `StreamProtocolRegistry` | core `@Component`s | assembled from the binding beans: `EnumMap<Venue, …>` / `Map<StreamKey, …>` (`forVenue` / `forStream`) |
 
 **Registration.** Each adapter has one `@Configuration` (`BinanceAdapterConfig`,
 `MexcAdapterConfig`, `BybitAdapterConfig`) that **constructs** its strategies, protocols, sources, REST clients and
@@ -202,8 +204,10 @@ a second instance and fail startup as a duplicate binding or a second venue clai
 - `SyncStrategyRegistry` throws on a duplicate binding, and `forVenue` throws for an unbound venue.
   `InstrumentSlotTable.allocate` resolves the strategy once per book and pins it in the `InstrumentSlot`, so the
   consumer never walks `id → venue → strategy`.
-- `StreamProtocolRegistry` also checks completeness at construction: an **enabled** venue with no
-  binding fails startup.
+- `StreamProtocolRegistry` throws on a duplicate `StreamKey` and also checks completeness at
+  construction: an **enabled stream** (`ExchangesProperties.isEnabled(StreamKey)`) with no binding
+  fails startup. A binding for a disabled or unconfigured stream is accepted, so an adapter can ship
+  a kind dark.
 
 **Bean cycle.** `InstrumentSlotTable → SyncStrategyRegistry → VenueStrategyBinding (adapter config) →
 SnapshotRequestQueue → SnapshotQueueFactory → MarketEventPublisher → DisruptorShardManager →
@@ -217,14 +221,18 @@ that does this. Removing it fails the context.
 ### 6.1 `core/stream/` — transport
 
 - **`StreamManager`** listens for `InstrumentUniverseChangedEvent`. The first time a venue appears in
-  `added`, that list is its whole universe, so the manager starts one `ConnectionPool` for it. Later
-  changes to a venue that already has a pool are **only logged** ("dynamic re-subscription not yet
-  implemented"). A pool that fails to start is logged, and the other venues are unaffected.
-- **`ConnectionPool`** splits a venue's instruments evenly over
+  `added`, that list is its whole universe, so the manager starts one `ConnectionPool` per enabled
+  stream of the venue (`Map<StreamKey, ConnectionPool>`), each with the full instrument list.
+  "Started" is tracked per venue. Later changes to a started venue are **only logged** ("dynamic
+  re-subscription not yet implemented"). A pool that fails to start is logged, and the venue's other
+  streams and the other venues are unaffected.
+- **`ConnectionPool`** (one per `StreamKey`, settings from `StreamProperties`) splits the stream's
+  instruments evenly over
   `clamp(ceil(streams / max-streams-per-connection), min-connections, max-connections)` connections.
 - **`StreamConnection`** (a java-websocket `WebSocketClient`) sends subscribe frames on open, chunked
   by `subscribe-chunk-size` and built by the protocol. It routes each frame, text or binary, through
-  the matching `protocol.route` overload and publishes it (`PipelineMetrics.recordFrame`). It
+  the matching `protocol.route` overload and publishes it with the connection's `final` kind
+  (`PipelineMetrics.recordFrame(StreamKey)`, a per-stream counter). It
   schedules the protocol's heartbeat. It reconnects with exponential backoff
   (`screener.websocket.reconnect-*`) and resubscribes everything. A frame for an unsubscribed key
   (text or binary) and a binary frame the protocol returns `IGNORED` for are dropped with a
@@ -250,8 +258,9 @@ that does this. Removing it fails the context.
   writes every field on every claim, so a stale value cannot leak from the slot's previous use.
 - `StreamKind` says what the payload *is* (today only `DEPTH`) and is what the consumer dispatches
   on. `publishFrame` takes it from the transport; `publishSnapshot` / `publishSnapshotFailure` set
-  `DEPTH` themselves, since snapshot recovery is a depth-sync concept. `StreamConnection` passes the
-  literal `DEPTH` for now (a `TODO(transport)` marks where the pool's kind goes).
+  `DEPTH` themselves, since snapshot recovery is a depth-sync concept. `StreamConnection` passes its
+  stream's kind, a `final` field, on both the text and binary paths. A kind with no arm in the
+  handler's `switch` hits a `default` arm that counts it and WARNs at most once a minute.
 - `EventSource` records **provenance, not semantics** or encoding: `WS_MSG`, `REST_MSG`, `REST_FAILED`
   (no payload). A venue's `WS_MSG` is always text or always binary, fixed by its wire protocol, so
   its strategy reads the right field without checking. Whether a payload is a snapshot is the
@@ -306,9 +315,11 @@ It cannot know a fetcher's pacing, so a pacing adapter adds its own check (§9.4
 
 ### 6.5 `core/health/` and the health log
 
-`PipelineMetrics` keeps per-venue `LongAdder` totals: `frames` (reader threads), `resyncs`
-(strategies' `recover()`) and `snapshotFailures` (`BatchOutcome`). `monitoring/PipelineHealthLogger`
-logs a block every 30s with one row per venue (synced/tracked, resyncs, snapshot failures, frames/s),
+`PipelineMetrics` keeps `LongAdder` totals: `frames` per stream (reader threads, indexed by
+`StreamKey.index()`), and per venue `resyncs` (strategies' `recover()`) and `snapshotFailures`
+(`BatchOutcome`), which are depth-sync concepts. `monitoring/PipelineHealthLogger` logs a block
+every 30s with one row per venue (synced/tracked, resyncs, snapshot failures, and one frames/s
+column per `StreamKind`, e.g. `depth/s`),
 then msgs/s and free ring slots per shard, and the feed drain's worst tick. Nothing is queryable.
 
 ---
@@ -775,7 +786,8 @@ is `limit=1000`, the subscribed depth.
 | `screener.exchanges.<exchange>.venues.<MARKET>.enabled` | `ExchangesProperties` (core) | venue switch (`<EXCHANGE>_<MARKET>_ENABLED`, default on), consulted only under an enabled exchange. A disabled venue keeps its block: discovery may still read its `rest` config |
 | `screener.exchanges.<exchange>.snapshot-queue` | core | `max-batch-size`, `flush-interval`, `batch-timeout`; required only when an adapter creates a queue |
 | `screener.exchanges.<exchange>.venues.<MARKET>.rest` | core | `base-url`, `codec-buffer-size-mb`, `connect-timeout`, `response-timeout` |
-| `screener.exchanges.<exchange>.venues.<MARKET>.*` | core | `stream-url`, `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds` |
+| `screener.exchanges.<exchange>.venues.<MARKET>.streams.<KIND>` | `StreamProperties` (core) | per-stream transport: `enabled` (default `true`), `stream-url`, `max-streams-per-connection`, `min-/max-connections`, `subscribe-chunk-size`, `heartbeat-interval-seconds`. `<KIND>` is a `StreamKind` in upper case (`DEPTH`). A stream is on when its venue is on, its block exists and `enabled` is true (`ExchangesProperties.isEnabled(StreamKey)`). An enabled venue with no enabled stream fails startup, so a file still using the old flat keys cannot leave a venue silently dark |
+| `screener.exchanges.<exchange>.venues.<MARKET>.max-visible-distance` | core | stays per venue |
 | `screener.exchanges.<exchange>.venues.<MARKET>.snapshot` | the adapter (`BinanceSnapshotProperties`, `MexcSnapshotProperties`, `BybitSnapshotProperties`) | fetcher pricing / pacing; core ignores this key and the adapter ignores core's |
 | `screener.exchanges.bybit.snapshot-cooldown` | `BybitSnapshotProperties` | the pause shared by both Bybit fetchers (§10.2) |
 | `screener.discovery.source-timeout`, `.excluded-symbols` | `DiscoveryProperties` | per-source fetch deadline; the exchange-agnostic exclusion list |
@@ -796,13 +808,14 @@ a `Venue` constant (and an `Exchange` constant). Through that config the adapter
 | Seam | What the adapter supplies |
 |---|---|
 | Discovery | an `InstrumentSource` bean with hardcoded eligibility; `quantityMultiplier` if the wire is not base asset |
-| Transport | a `VenueStreamBinding` → `StreamProtocol` (frames, routing, heartbeat kind); core owns connections, chunking, reconnect |
+| Transport | a `VenueStreamBinding` per stream (`StreamKey(venue, DEPTH)` at least) → `StreamProtocol` (frames, routing, heartbeat kind); core owns connections, chunking, reconnect |
 | Sync | a `VenueStrategyBinding` → `DepthSyncStrategy` + its `BookSyncContext`, following §7 |
 | Recovery | REST: a `SnapshotFetcher` handed to `SnapshotQueueFactory`, plus a `snapshot-queue` block. Anything else: its own `RecoverySink` |
-| Config | `venues.<MARKET>` transport keys, plus any adapter-bound `snapshot` keys |
+| Config | `venues.<MARKET>.streams.DEPTH` transport keys, plus any adapter-bound `snapshot` keys |
 
-Add the `Venue` constant together with its adapter. An enabled venue with no stream binding fails
-startup, and an allocated book with no strategy throws.
+Add the `Venue` constant together with its adapter. An enabled stream with no protocol binding fails
+startup, and an allocated book with no strategy throws. Adding a stream kind (trades, klines) is a
+different recipe: `market-data-pipeline-architecture.md` §13.
 
 **Exercised since Bybit:**
 - **In-stream snapshot**: a `WS_MSG` can be a full book. `EventSource` is provenance, so the strategy
