@@ -4,6 +4,8 @@ import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.InstrumentUniverseChangedEvent;
+import dev.abu.screener_backend.marketdata.StreamKey;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
@@ -59,8 +61,9 @@ public class StreamManager {
     public StreamManager(ExchangesProperties exchanges, WebSocketProperties wsProps,
                          StreamProtocolRegistry protocols, MarketEventPublisher publisher,
                          PipelineMetrics metrics) {
-        this(exchanges, protocols, (venue, protocol) ->
-                new ConnectionPool(venue, exchanges.venue(venue), wsProps, protocol, publisher, metrics));
+        // TODO(transport): pools are keyed by stream in stage 2 of multi-stream-transport-plan.md.
+        this(exchanges, protocols, (venue, protocol) -> new ConnectionPool(venue,
+                exchanges.stream(new StreamKey(venue, StreamKind.DEPTH)), wsProps, protocol, publisher, metrics));
     }
 
     StreamManager(ExchangesProperties exchanges, StreamProtocolRegistry protocols, PoolFactory poolFactory) {

@@ -3,7 +3,7 @@ package dev.abu.screener_backend.marketdata.spi;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Market;
@@ -30,13 +30,10 @@ class StreamProtocolRegistryTest {
         @Override public Heartbeat heartbeat() { return new Heartbeat.ProtocolPing(Duration.ofSeconds(1)); }
     }
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-
     private static ExchangesProperties enabled(Market... markets) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
         for (Market m : markets) {
-            venues.put(m, new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, null));
+            venues.put(m, TestVenueProps.venue().build());
         }
         return new ExchangesProperties(Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues, null)));
     }

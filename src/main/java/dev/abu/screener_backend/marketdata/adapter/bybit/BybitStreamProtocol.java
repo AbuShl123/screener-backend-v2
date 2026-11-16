@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.adapter.bybit;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
@@ -79,14 +79,14 @@ public final class BybitStreamProtocol implements StreamProtocol {
     private static final String SUBSCRIBE_OP = "\"op\":\"subscribe\"";
 
     private final Venue venue;
-    private final VenueProperties props;
+    private final StreamProperties props;
 
     /**
      * @throws IllegalArgumentException if {@code subscribe-chunk-size} could break a server limit:
      *         over {@value #SPOT_MAX_ARGS} on spot, or a chunk whose worst-case {@code args} array
      *         exceeds {@value #ARGS_MAX_CHARS} chars on either venue
      */
-    public BybitStreamProtocol(Venue venue, VenueProperties props) {
+    public BybitStreamProtocol(Venue venue, StreamProperties props) {
         int chunkSize = props.subscribeChunkSize();
         if (venue.market() == Market.SPOT && chunkSize > SPOT_MAX_ARGS) {
             throw new IllegalArgumentException(venue + ": subscribe-chunk-size must be <= " + SPOT_MAX_ARGS

@@ -1,12 +1,12 @@
 package dev.abu.screener_backend.marketdata.core.stream;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import lombok.extern.slf4j.Slf4j;
@@ -43,7 +43,7 @@ public class StreamConnection extends WebSocketClient {
     private final MarketEventPublisher publisher;
     private final PipelineMetrics metrics;
     private final ScheduledExecutorService reconnectScheduler;
-    private final VenueProperties venueProps;
+    private final StreamProperties streamProps;
     private final WebSocketProperties wsProps;
 
     /**
@@ -72,7 +72,7 @@ public class StreamConnection extends WebSocketClient {
             MarketEventPublisher publisher,
             PipelineMetrics metrics,
             ScheduledExecutorService reconnectScheduler,
-            VenueProperties venueProps,
+            StreamProperties streamProps,
             WebSocketProperties wsProps
     ) {
         super(serverUri);
@@ -83,7 +83,7 @@ public class StreamConnection extends WebSocketClient {
         this.publisher = publisher;
         this.metrics = metrics;
         this.reconnectScheduler = reconnectScheduler;
-        this.venueProps = venueProps;
+        this.streamProps = streamProps;
         this.wsProps = wsProps;
         this.index = new SubscriptionIndex(this.instruments, protocol::routingKey);
     }
@@ -93,7 +93,7 @@ public class StreamConnection extends WebSocketClient {
         reconnectAttempt.set(0);
         startHeartbeat();
 
-        List<String> frames = subscribeFrames(protocol, instruments, venueProps.subscribeChunkSize());
+        List<String> frames = subscribeFrames(protocol, instruments, streamProps.subscribeChunkSize());
         for (String frame : frames) {
             send(frame);
         }

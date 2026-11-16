@@ -4,14 +4,14 @@ import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.*;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.VenueBlock;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
@@ -39,10 +39,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /** The MEXC adapter's bindings, and what core's registries make of them. */
 class MexcAdapterConfigTest {
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties FUTURES = new VenueProperties(true, "wss://x", REST, 300, 1, 8, 1, 15, null);
-    private static final VenueProperties SPOT = new VenueProperties(true, "wss://x", REST, 30, 1, 30, 30, 20, null);
+    /** {@link TestVenueProps#REST}'s 10 s response timeout is what {@link #batchTimeoutMustCoverPacing} counts on. */
+    private static final VenueProperties FUTURES = TestVenueProps.venue().depth(TestVenueProps.stream()
+            .maxStreamsPerConnection(300).connections(1, 8).chunk(1).heartbeatSeconds(15)).build();
+    private static final VenueProperties SPOT = TestVenueProps.venue().depth(TestVenueProps.stream()
+            .maxStreamsPerConnection(30).connections(1, 30).chunk(30).heartbeatSeconds(20)).build();
     private static final SnapshotQueueProperties QUEUE =
             new SnapshotQueueProperties(12, Duration.ofMillis(250), Duration.ofSeconds(20));
     private static final MexcSnapshotProperties SNAPSHOT = new MexcSnapshotProperties(Map.of(

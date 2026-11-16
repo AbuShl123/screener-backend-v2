@@ -4,7 +4,7 @@ import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
@@ -78,8 +78,7 @@ class BybitSnapshotPropertiesTest {
     }
 
     private static ExchangesProperties exchanges(Duration batchTimeout) {
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties venue = new VenueProperties(true, "wss://x", rest, 300, 2, 8, 200, 20, null);
+        VenueProperties venue = TestVenueProps.venue().build(); // its REST response timeout is the 10 s above
         return new ExchangesProperties(Map.of(Exchange.BYBIT, new ExchangeProperties(true,
                 Map.of(Market.FUTURES, venue), new SnapshotQueueProperties(10, Duration.ofMillis(250), batchTimeout))));
     }

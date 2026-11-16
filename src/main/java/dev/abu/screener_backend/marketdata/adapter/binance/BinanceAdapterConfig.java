@@ -1,6 +1,8 @@
 package dev.abu.screener_backend.marketdata.adapter.binance;
 
 import dev.abu.screener_backend.config.ExchangesProperties;
+import dev.abu.screener_backend.marketdata.StreamKey;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
@@ -77,14 +79,16 @@ public class BinanceAdapterConfig {
 
     @Bean
     VenueStreamBinding binanceSpotStreamBinding(ExchangesProperties exchanges) {
+        StreamKey depth = new StreamKey(Venue.BINANCE_SPOT, StreamKind.DEPTH);
         return new VenueStreamBinding(Venue.BINANCE_SPOT,
-                new BinanceStreamProtocol(Venue.BINANCE_SPOT, exchanges.venue(Venue.BINANCE_SPOT)));
+                new BinanceStreamProtocol(Venue.BINANCE_SPOT, exchanges.stream(depth)));
     }
 
     @Bean
     VenueStreamBinding binanceFuturesStreamBinding(ExchangesProperties exchanges) {
+        StreamKey depth = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.DEPTH);
         return new VenueStreamBinding(Venue.BINANCE_FUTURES,
-                new BinanceStreamProtocol(Venue.BINANCE_FUTURES, exchanges.venue(Venue.BINANCE_FUTURES)));
+                new BinanceStreamProtocol(Venue.BINANCE_FUTURES, exchanges.stream(depth)));
     }
 
     @Bean

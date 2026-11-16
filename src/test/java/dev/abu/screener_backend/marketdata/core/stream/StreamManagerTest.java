@@ -2,8 +2,9 @@ package dev.abu.screener_backend.marketdata.core.stream;
 
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Instrument;
@@ -12,7 +13,7 @@ import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.stream.ConnectionPool;
 import dev.abu.screener_backend.marketdata.core.stream.StreamManager;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
@@ -45,10 +46,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class StreamManagerTest {
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties PROPS =
-            new VenueProperties(true, "wss://x", REST, 1024, 1, 1, 400, 120, null);
+    private static final VenueProperties VENUE = TestVenueProps.venue().build();
+    private static final StreamProperties STREAM = TestVenueProps.stream().build();
     private static final WebSocketProperties WS = new WebSocketProperties(100, 1000);
     private static final MarketEventPublisher NO_OP_PUBLISHER = new MarketEventPublisher() {
         @Override public void publishFrame(StreamKind stream, int instrumentId, String payload) { }
@@ -71,7 +70,7 @@ class StreamManagerTest {
         boolean shutDown;
 
         RecordingPool(Venue venue, StreamProtocol protocol) {
-            super(venue, PROPS, WS, protocol, NO_OP_PUBLISHER, new PipelineMetrics());
+            super(venue, STREAM, WS, protocol, NO_OP_PUBLISHER, new PipelineMetrics());
             this.venue = venue;
         }
 
@@ -97,7 +96,7 @@ class StreamManagerTest {
 
     private StreamManager manager(Market... enabledMarkets) {
         Map<Market, VenueProperties> venues = new EnumMap<>(Market.class);
-        for (Market m : enabledMarkets) venues.put(m, PROPS);
+        for (Market m : enabledMarkets) venues.put(m, VENUE);
         ExchangesProperties exchanges = new ExchangesProperties(
                 Map.of(Exchange.BINANCE, new ExchangeProperties(true, venues, null)));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(

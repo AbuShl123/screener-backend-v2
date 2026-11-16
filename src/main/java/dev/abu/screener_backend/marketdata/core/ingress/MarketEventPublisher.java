@@ -1,5 +1,7 @@
 package dev.abu.screener_backend.marketdata.core.ingress;
 
+import dev.abu.screener_backend.marketdata.StreamKind;
+
 import java.nio.ByteBuffer;
 
 /**

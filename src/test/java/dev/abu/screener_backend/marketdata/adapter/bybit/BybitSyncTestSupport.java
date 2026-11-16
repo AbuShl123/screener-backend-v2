@@ -8,7 +8,7 @@ import dev.abu.screener_backend.marketdata.core.book.PriceLevelEntry;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
 import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 
 import java.util.Map;

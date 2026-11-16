@@ -5,6 +5,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.adapter.binance.*;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProperties.MarketSnapshot;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProperties.VenueBlock;
@@ -13,7 +14,7 @@ import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
@@ -102,9 +103,8 @@ class BinanceAdapterConfigTest {
     @DisplayName("every Binance venue has a stream binding with its own BinanceStreamProtocol")
     void everyBinanceVenueHasStreamBinding() {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties spot = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
-        VenueProperties futures = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
+        VenueProperties spot = TestVenueProps.venue().build();
+        VenueProperties futures = TestVenueProps.venue().build();
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), null)));
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
@@ -160,8 +160,8 @@ class BinanceAdapterConfigTest {
 
     private SnapshotQueueFactory queues(SnapshotQueueProperties snapshotQueue, Duration responseTimeout) {
         RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), responseTimeout);
-        VenueProperties spot = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
-        VenueProperties futures = new VenueProperties(true, "wss://x", rest, 1024, 1, 1, 400, 120, null);
+        VenueProperties spot = TestVenueProps.venue().rest(rest).build();
+        VenueProperties futures = TestVenueProps.venue().rest(rest).build();
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), snapshotQueue)));
         SnapshotQueueFactory factory = new SnapshotQueueFactory(NO_OP_PUBLISHER, new PipelineMetrics(), exchanges);

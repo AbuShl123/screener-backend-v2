@@ -1,13 +1,13 @@
 package dev.abu.screener_backend.marketdata.core.stream;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.stream.StreamConnection;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
@@ -114,8 +114,7 @@ class StreamConnectionTest {
 
     private static StreamConnection connection(StreamProtocol protocol, MarketEventPublisher publisher,
                                                PipelineMetrics metrics) {
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        VenueProperties props = new VenueProperties(true, "ws://localhost:1", rest, 1024, 1, 1, 400, 120, null);
+        StreamProperties props = TestVenueProps.stream().url("ws://localhost:1").build();
         // The reconnect scheduler is only touched from onOpen/onClose, which these tests never reach.
         return new StreamConnection(URI.create(props.streamUrl()), Venue.BINANCE_SPOT, instruments(3),
                 protocol, publisher, metrics, null, props, new WebSocketProperties(100, 1000));

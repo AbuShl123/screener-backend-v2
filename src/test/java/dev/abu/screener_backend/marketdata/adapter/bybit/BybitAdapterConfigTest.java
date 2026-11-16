@@ -4,7 +4,7 @@ import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Market;
@@ -17,7 +17,7 @@ import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotQueueFactory;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeWebClientFactory;
@@ -61,10 +61,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class BybitAdapterConfigTest {
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-    private static final VenueProperties SPOT = new VenueProperties(true, "wss://x", REST, 300, 2, 8, 10, 20, null);
-    private static final VenueProperties FUTURES = new VenueProperties(true, "wss://x", REST, 300, 2, 8, 200, 20, null);
+    private static final VenueProperties SPOT = venue(10);
+    private static final VenueProperties FUTURES = venue(200);
     private static final SnapshotQueueProperties QUEUE =
             new SnapshotQueueProperties(10, Duration.ofMillis(250), Duration.ofSeconds(20));
     private static final Duration INTERVAL = Duration.ofMillis(100);
@@ -72,6 +70,11 @@ class BybitAdapterConfigTest {
             Market.SPOT, new VenueBlock(new MarketSnapshot(INTERVAL)),
             Market.FUTURES, new VenueBlock(new MarketSnapshot(INTERVAL))),
             new Cooldown(Duration.ofSeconds(10), Duration.ofMinutes(10)));
+
+    private static VenueProperties venue(int chunkSize) {
+        return TestVenueProps.venue().depth(TestVenueProps.stream()
+                .maxStreamsPerConnection(300).connections(2, 8).chunk(chunkSize).heartbeatSeconds(20)).build();
+    }
 
     private static ExchangesProperties exchanges(SnapshotQueueProperties queue) {
         return new ExchangesProperties(Map.of(Exchange.BYBIT,
@@ -119,7 +122,7 @@ class BybitAdapterConfigTest {
     @Test
     @DisplayName("a spot subscribe-chunk-size over Bybit's 10-arg limit fails at startup")
     void oversizedSpotChunkThrows() {
-        VenueProperties spot = new VenueProperties(true, "wss://x", REST, 300, 2, 8, 11, 20, null);
+        VenueProperties spot = venue(11);
         ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BYBIT,
                 new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, FUTURES), null)));
 

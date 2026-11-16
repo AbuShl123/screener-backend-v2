@@ -1,7 +1,7 @@
 package dev.abu.screener_backend.marketdata.adapter.mexc;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesStreamProtocol;
@@ -29,11 +29,9 @@ class MexcFuturesStreamProtocolTest {
     private static final Instrument BTC = Instrument.of(11, Venue.MEXC_FUTURES, "BTC_USDT", "BTC", "USDT", 0.0001);
     private static final Instrument ETH = Instrument.of(12, Venue.MEXC_FUTURES, "ETH_USDT", "ETH", "USDT", 0.01);
 
-    private static final RestProperties REST =
-            new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-
-    private static VenueProperties props(int chunkSize) {
-        return new VenueProperties(true, "wss://x", REST, 300, 1, 8, chunkSize, 15, null);
+    private static StreamProperties props(int chunkSize) {
+        return TestVenueProps.stream()
+                .maxStreamsPerConnection(300).connections(1, 8).chunk(chunkSize).heartbeatSeconds(15).build();
     }
 
     private static final MexcFuturesStreamProtocol PROTOCOL =

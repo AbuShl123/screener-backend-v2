@@ -7,7 +7,7 @@ import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.core.ingress.StreamKind;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.ingress.EventSource;
 import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.spi.SnapshotFetcher;

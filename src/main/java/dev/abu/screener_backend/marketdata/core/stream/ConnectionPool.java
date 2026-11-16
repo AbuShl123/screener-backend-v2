@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.core.stream;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
@@ -25,7 +25,7 @@ import java.util.concurrent.ScheduledExecutorService;
 public class ConnectionPool {
 
     private final Venue venue;
-    private final VenueProperties venueProps;
+    private final StreamProperties streamProps;
     private final WebSocketProperties wsProps;
     private final StreamProtocol protocol;
     private final MarketEventPublisher publisher;
@@ -36,13 +36,13 @@ public class ConnectionPool {
     private boolean started;
 
     public ConnectionPool(Venue venue,
-                          VenueProperties venueProps,
+                          StreamProperties streamProps,
                           WebSocketProperties wsProps,
                           StreamProtocol protocol,
                           MarketEventPublisher publisher,
                           PipelineMetrics metrics) {
         this.venue = venue;
-        this.venueProps = venueProps;
+        this.streamProps = streamProps;
         this.wsProps = wsProps;
         this.protocol = protocol;
         this.publisher = publisher;
@@ -75,13 +75,13 @@ public class ConnectionPool {
             List<Instrument> batch = instruments.subList(from, to);
 
             try {
-                URI uri = new URI(venueProps.streamUrl());
+                URI uri = new URI(streamProps.streamUrl());
                 StreamConnection connection = new StreamConnection(
-                        uri, venue, batch, protocol, publisher, metrics, reconnectScheduler, venueProps, wsProps);
+                        uri, venue, batch, protocol, publisher, metrics, reconnectScheduler, streamProps, wsProps);
                 connection.connect();
                 connections.add(connection);
             } catch (URISyntaxException e) {
-                log.error("[{}] Invalid WebSocket URL: {}", venue, venueProps.streamUrl(), e);
+                log.error("[{}] Invalid WebSocket URL: {}", venue, streamProps.streamUrl(), e);
             }
         }
     }
@@ -98,9 +98,9 @@ public class ConnectionPool {
      * ~30), where a fixed hand-picked count would badly under-provision.
      */
     private int connectionCount(int streamCount) {
-        int perConnection = Math.max(1, venueProps.maxStreamsPerConnection());
+        int perConnection = Math.max(1, streamProps.maxStreamsPerConnection());
         int required = (streamCount + perConnection - 1) / perConnection;
-        return Math.min(Math.max(required, venueProps.minConnections()), venueProps.maxConnections());
+        return Math.min(Math.max(required, streamProps.minConnections()), streamProps.maxConnections());
     }
 
     public void shutdown() {

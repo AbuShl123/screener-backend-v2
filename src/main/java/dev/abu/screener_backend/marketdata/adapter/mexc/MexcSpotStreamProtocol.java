@@ -1,6 +1,6 @@
 package dev.abu.screener_backend.marketdata.adapter.mexc;
 
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
+import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
@@ -42,14 +42,14 @@ public final class MexcSpotStreamProtocol implements StreamProtocol {
     private static final String REJECTED = "Not Subscribed successfully! [";
 
     private final Venue venue;
-    private final VenueProperties props;
+    private final StreamProperties props;
 
     /**
      * @throws IllegalArgumentException unless {@code max-streams-per-connection} and
      *         {@code subscribe-chunk-size} are within the server's 30 subscriptions per connection
      *         (beyond it, subscriptions are rejected with {@code code 0})
      */
-    public MexcSpotStreamProtocol(Venue venue, VenueProperties props) {
+    public MexcSpotStreamProtocol(Venue venue, StreamProperties props) {
         if (props.maxStreamsPerConnection() > MAX_SUBSCRIPTIONS_PER_CONNECTION) {
             throw new IllegalArgumentException(venue + ": max-streams-per-connection must be <= "
                     + MAX_SUBSCRIPTIONS_PER_CONNECTION + ", got " + props.maxStreamsPerConnection());

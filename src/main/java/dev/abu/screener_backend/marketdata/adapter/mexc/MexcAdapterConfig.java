@@ -3,6 +3,8 @@ package dev.abu.screener_backend.marketdata.adapter.mexc;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
+import dev.abu.screener_backend.marketdata.StreamKey;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSnapshotProperties.MarketSnapshot;
@@ -102,14 +104,16 @@ public class MexcAdapterConfig {
 
     @Bean
     VenueStreamBinding mexcSpotStreamBinding(ExchangesProperties exchanges) {
+        StreamKey depth = new StreamKey(Venue.MEXC_SPOT, StreamKind.DEPTH);
         return new VenueStreamBinding(Venue.MEXC_SPOT,
-                new MexcSpotStreamProtocol(Venue.MEXC_SPOT, exchanges.venue(Venue.MEXC_SPOT)));
+                new MexcSpotStreamProtocol(Venue.MEXC_SPOT, exchanges.stream(depth)));
     }
 
     @Bean
     VenueStreamBinding mexcFuturesStreamBinding(ExchangesProperties exchanges) {
+        StreamKey depth = new StreamKey(Venue.MEXC_FUTURES, StreamKind.DEPTH);
         return new VenueStreamBinding(Venue.MEXC_FUTURES,
-                new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, exchanges.venue(Venue.MEXC_FUTURES)));
+                new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, exchanges.stream(depth)));
     }
 
     @Bean

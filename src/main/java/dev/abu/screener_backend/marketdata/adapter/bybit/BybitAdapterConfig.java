@@ -1,6 +1,8 @@
 package dev.abu.screener_backend.marketdata.adapter.bybit;
 
 import dev.abu.screener_backend.config.ExchangesProperties;
+import dev.abu.screener_backend.marketdata.StreamKey;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.Cooldown;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.MarketSnapshot;
@@ -97,15 +99,17 @@ public class BybitAdapterConfig {
     /** @throws IllegalArgumentException if {@code subscribe-chunk-size} could break a server limit */
     @Bean
     VenueStreamBinding bybitSpotStreamBinding(ExchangesProperties exchanges) {
+        StreamKey depth = new StreamKey(Venue.BYBIT_SPOT, StreamKind.DEPTH);
         return new VenueStreamBinding(Venue.BYBIT_SPOT,
-                new BybitStreamProtocol(Venue.BYBIT_SPOT, exchanges.venue(Venue.BYBIT_SPOT)));
+                new BybitStreamProtocol(Venue.BYBIT_SPOT, exchanges.stream(depth)));
     }
 
     /** @throws IllegalArgumentException as {@link #bybitSpotStreamBinding} */
     @Bean
     VenueStreamBinding bybitFuturesStreamBinding(ExchangesProperties exchanges) {
+        StreamKey depth = new StreamKey(Venue.BYBIT_FUTURES, StreamKind.DEPTH);
         return new VenueStreamBinding(Venue.BYBIT_FUTURES,
-                new BybitStreamProtocol(Venue.BYBIT_FUTURES, exchanges.venue(Venue.BYBIT_FUTURES)));
+                new BybitStreamProtocol(Venue.BYBIT_FUTURES, exchanges.stream(depth)));
     }
 
     @Bean

@@ -4,8 +4,8 @@ import dev.abu.screener_backend.config.DiscoveryProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.ExchangeProperties;
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
-import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties.RestProperties;
 import dev.abu.screener_backend.config.OrderbookProperties;
+import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEvent;
@@ -382,8 +382,7 @@ class InstrumentUniverseServiceTest {
     }
 
     private static VenueProperties venueProps(boolean enabled) {
-        RestProperties rest = new RestProperties("https://x", 1, Duration.ofSeconds(5), Duration.ofSeconds(10));
-        return new VenueProperties(enabled, "wss://x", rest, 1024, 1, 1, 100, 120, null);
+        return TestVenueProps.venue().enabled(enabled).build();
     }
 
     private static Map<Venue, List<InstrumentCandidate>> both(List<InstrumentCandidate> spot,
