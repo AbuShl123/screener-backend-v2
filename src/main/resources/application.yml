@@ -193,6 +193,8 @@ screener:
       - USD1USDT
       - XAUTUSDT
       - PAXGUSDT
+      - RLUSDUSDT
+      - USDEUSDT
 
   ticker:
     refresh-interval: PT4H
