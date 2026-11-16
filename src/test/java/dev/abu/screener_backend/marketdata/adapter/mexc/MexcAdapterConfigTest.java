@@ -7,6 +7,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.mexc.*;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
@@ -89,8 +90,8 @@ class MexcAdapterConfigTest {
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
                 config.mexcSpotStreamBinding(exchanges), config.mexcFuturesStreamBinding(exchanges)), exchanges);
 
-        assertInstanceOf(MexcSpotStreamProtocol.class, registry.forVenue(Venue.MEXC_SPOT));
-        assertInstanceOf(MexcFuturesStreamProtocol.class, registry.forVenue(Venue.MEXC_FUTURES));
+        assertInstanceOf(MexcSpotStreamProtocol.class, registry.forStream(depth(Venue.MEXC_SPOT)));
+        assertInstanceOf(MexcFuturesStreamProtocol.class, registry.forStream(depth(Venue.MEXC_FUTURES)));
         // Spot is enabled by the same switch: a futures-only binding set fails at startup.
         assertThrows(IllegalStateException.class, () -> new StreamProtocolRegistry(
                 List.of(config.mexcFuturesStreamBinding(exchanges)), exchanges));
@@ -174,5 +175,9 @@ class MexcAdapterConfigTest {
 
         assertThrows(IllegalStateException.class, () -> queue(queues(tooShort), tooShort, SNAPSHOT));
         assertEquals(Venue.MEXC_FUTURES, queue(queues(enough), enough, SNAPSHOT).venue());
+    }
+
+    private static StreamKey depth(Venue venue) {
+        return new StreamKey(venue, StreamKind.DEPTH);
     }
 }

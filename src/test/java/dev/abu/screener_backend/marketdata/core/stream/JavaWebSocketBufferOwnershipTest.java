@@ -4,6 +4,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
@@ -114,7 +115,7 @@ class JavaWebSocketBufferOwnershipTest {
         StreamProperties props = TestVenueProps.stream().url(url).build();
         scheduler = Executors.newSingleThreadScheduledExecutor();
         CapturingPublisher publisher = new CapturingPublisher();
-        connection = new StreamConnection(URI.create(url), Venue.BINANCE_SPOT,
+        connection = new StreamConnection(URI.create(url), new StreamKey(Venue.BINANCE_SPOT, StreamKind.DEPTH),
                 List.of(Instrument.of(0, Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT")),
                 new BinaryProtocol(), publisher, new PipelineMetrics(), scheduler, props,
                 new WebSocketProperties(100, 1000));

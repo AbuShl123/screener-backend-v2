@@ -3,10 +3,10 @@ package dev.abu.screener_backend.marketdata.core.stream;
 import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
-import dev.abu.screener_backend.marketdata.Venue;
+import dev.abu.screener_backend.marketdata.StreamKey;
+import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
-import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +25,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * One WebSocket connection serving a fixed subset of one venue's instruments.
+ * One WebSocket connection serving a fixed subset of one venue's instruments on one stream kind.
+ * Every routed frame is published with that kind: it is a property of the connection, never parsed
+ * from the frame.
  *
  * <p>Owns lifecycle, reconnect backoff, subscribe chunking and heartbeat scheduling. Everything
  * about the venue's bytes — subscribe frames, frame routing, heartbeat kind — comes from its
@@ -37,7 +39,9 @@ public class StreamConnection extends WebSocketClient {
     private static final long ANOMALY_LOG_INTERVAL_MS = 60_000;
     private static final int UNKNOWN_FRAME_LOG_CHARS = 120;
 
-    private final Venue venue;
+    private final StreamKey stream;
+    private final StreamKind kind;
+    private final String logName;
     private final List<Instrument> instruments;
     private final StreamProtocol protocol;
     private final MarketEventPublisher publisher;
@@ -66,7 +70,7 @@ public class StreamConnection extends WebSocketClient {
 
     public StreamConnection(
             URI serverUri,
-            Venue venue,
+            StreamKey stream,
             List<Instrument> instruments,
             StreamProtocol protocol,
             MarketEventPublisher publisher,
@@ -77,7 +81,9 @@ public class StreamConnection extends WebSocketClient {
     ) {
         super(serverUri);
         setConnectionLostTimeout(0);
-        this.venue = venue;
+        this.stream = stream;
+        this.kind = stream.kind();
+        this.logName = stream.logName();
         this.instruments = List.copyOf(instruments);
         this.protocol = protocol;
         this.publisher = publisher;
@@ -99,7 +105,7 @@ public class StreamConnection extends WebSocketClient {
         }
 
         log.info("[{}] WebSocket opened — subscribing {} streams across {} frames",
-                venue, instruments.size(), frames.size());
+                logName, instruments.size(), frames.size());
     }
 
     /** One frame per chunk of {@code chunkSize} instruments; the request id is the chunk's index. */
@@ -118,9 +124,8 @@ public class StreamConnection extends WebSocketClient {
     public void onMessage(String message) {
         int instrumentId = protocol.route(message, index);
         if (instrumentId >= 0) {
-            // TODO(transport): kind comes from the pool
-            publisher.publishFrame(StreamKind.DEPTH, instrumentId, message);
-            metrics.recordFrame(venue);
+            publisher.publishFrame(kind, instrumentId, message);
+            metrics.recordFrame(stream);
         } else if (instrumentId == StreamProtocol.UNKNOWN) {
             // Venues only push what was subscribed, so this should never fire; a partial
             // resubscribe after a reconnect is the one plausible source. Routing an unresolved
@@ -144,16 +149,15 @@ public class StreamConnection extends WebSocketClient {
     public void onMessage(ByteBuffer bytes) {
         int instrumentId = protocol.route(bytes, index);
         if (instrumentId >= 0) {
-            // TODO(transport): kind comes from the pool
-            publisher.publishFrame(StreamKind.DEPTH, instrumentId, bytes);
-            metrics.recordFrame(venue);
+            publisher.publishFrame(kind, instrumentId, bytes);
+            metrics.recordFrame(stream);
         } else if (instrumentId == StreamProtocol.UNKNOWN) {
             noteUnknownFrame(bytes);
         } else {
             long total = ignoredBinaryFrames.incrementAndGet();
             if (dueForLog(ignoredBinaryFramesLoggedAt)) {
                 log.warn("[{}] Binary frame of {} bytes — dropped, the venue's protocol does not route it ({} total)",
-                        venue, bytes.remaining(), total);
+                        logName, bytes.remaining(), total);
             }
         }
     }
@@ -169,14 +173,14 @@ public class StreamConnection extends WebSocketClient {
         );
 
         log.warn("[{}] Connection closed (code={}, reason='{}', remote={}). Reconnecting in {}ms",
-                venue, code, reason, remote, delay);
+                logName, code, reason, remote, delay);
 
         reconnectScheduler.schedule(this::reconnect, delay, TimeUnit.MILLISECONDS);
     }
 
     @Override
     public void onError(Exception ex) {
-        log.warn("[{}] WebSocket error: {} — {}", venue, ex.getClass().getSimpleName(), ex.getMessage());
+        log.warn("[{}] WebSocket error: {} — {}", logName, ex.getClass().getSimpleName(), ex.getMessage());
     }
 
     public void shutdown() {
@@ -210,7 +214,7 @@ public class StreamConnection extends WebSocketClient {
                     case Heartbeat.TextPing t -> send(t.payload());
                 }
             } catch (Exception e) {
-                log.debug("[{}] Heartbeat failed: {}", venue, e.getMessage());
+                log.debug("[{}] Heartbeat failed: {}", logName, e.getMessage());
             }
         }
     }
@@ -219,7 +223,7 @@ public class StreamConnection extends WebSocketClient {
         long total = unknownFrames.incrementAndGet();
         if (dueForLog(unknownFramesLoggedAt)) {
             log.warn("[{}] Data frame for an unsubscribed routing key — dropped ({} total): {}",
-                    venue, total, message.substring(0, Math.min(message.length(), UNKNOWN_FRAME_LOG_CHARS)));
+                    logName, total, message.substring(0, Math.min(message.length(), UNKNOWN_FRAME_LOG_CHARS)));
         }
     }
 
@@ -234,7 +238,7 @@ public class StreamConnection extends WebSocketClient {
             head.limit(head.position() + Math.min(head.remaining(), UNKNOWN_FRAME_LOG_CHARS));
             String preview = StandardCharsets.UTF_8.decode(head).toString().replaceAll("\\p{Cntrl}", ".");
             log.warn("[{}] Binary data frame of {} bytes for an unsubscribed routing key — dropped ({} total): {}",
-                    venue, frame.remaining(), total, preview);
+                    logName, frame.remaining(), total, preview);
         }
     }
 

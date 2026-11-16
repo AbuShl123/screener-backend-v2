@@ -100,7 +100,7 @@ public class BybitAdapterConfig {
     @Bean
     VenueStreamBinding bybitSpotStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.BYBIT_SPOT, StreamKind.DEPTH);
-        return new VenueStreamBinding(Venue.BYBIT_SPOT,
+        return new VenueStreamBinding(depth,
                 new BybitStreamProtocol(Venue.BYBIT_SPOT, exchanges.stream(depth)));
     }
 
@@ -108,7 +108,7 @@ public class BybitAdapterConfig {
     @Bean
     VenueStreamBinding bybitFuturesStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.BYBIT_FUTURES, StreamKind.DEPTH);
-        return new VenueStreamBinding(Venue.BYBIT_FUTURES,
+        return new VenueStreamBinding(depth,
                 new BybitStreamProtocol(Venue.BYBIT_FUTURES, exchanges.stream(depth)));
     }
 

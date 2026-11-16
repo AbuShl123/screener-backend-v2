@@ -8,6 +8,7 @@ import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitRestCooldown.Kind;
 import dev.abu.screener_backend.marketdata.adapter.bybit.BybitSnapshotProperties.Cooldown;
@@ -111,9 +112,9 @@ class BybitAdapterConfigTest {
         StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
                 config.bybitSpotStreamBinding(exchanges), config.bybitFuturesStreamBinding(exchanges)), exchanges);
 
-        assertInstanceOf(BybitStreamProtocol.class, registry.forVenue(Venue.BYBIT_SPOT));
-        assertInstanceOf(BybitStreamProtocol.class, registry.forVenue(Venue.BYBIT_FUTURES));
-        assertNotSame(registry.forVenue(Venue.BYBIT_SPOT), registry.forVenue(Venue.BYBIT_FUTURES));
+        assertInstanceOf(BybitStreamProtocol.class, registry.forStream(depth(Venue.BYBIT_SPOT)));
+        assertInstanceOf(BybitStreamProtocol.class, registry.forStream(depth(Venue.BYBIT_FUTURES)));
+        assertNotSame(registry.forStream(depth(Venue.BYBIT_SPOT)), registry.forStream(depth(Venue.BYBIT_FUTURES)));
         // Spot is enabled by the same switch: a futures-only binding set fails at startup.
         assertThrows(IllegalStateException.class, () -> new StreamProtocolRegistry(
                 List.of(config.bybitFuturesStreamBinding(exchanges)), exchanges));
@@ -279,7 +280,7 @@ class BybitAdapterConfigTest {
                     StreamProtocolRegistry streams = context.getBean(StreamProtocolRegistry.class);
                     for (Venue venue : List.of(Venue.BYBIT_SPOT, Venue.BYBIT_FUTURES)) {
                         assertInstanceOf(BybitSyncStrategy.class, strategies.forVenue(venue));
-                        assertInstanceOf(BybitStreamProtocol.class, streams.forVenue(venue));
+                        assertInstanceOf(BybitStreamProtocol.class, streams.forStream(depth(venue)));
                     }
 
                     // Each same-typed bean went to the right venue.
@@ -314,5 +315,9 @@ class BybitAdapterConfigTest {
         assertDoesNotThrow(() -> config.bybitFuturesStreamBinding(exchanges));
         assertEquals(Venue.BYBIT_SPOT, spotQueue(queues, exchanges, cooldown, snapshot).venue());
         assertEquals(Venue.BYBIT_FUTURES, futuresQueue(queues, exchanges, cooldown, snapshot).venue());
+    }
+
+    private static StreamKey depth(Venue venue) {
+        return new StreamKey(venue, StreamKind.DEPTH);
     }
 }

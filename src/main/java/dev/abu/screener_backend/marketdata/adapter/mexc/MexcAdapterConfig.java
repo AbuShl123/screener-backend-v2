@@ -105,14 +105,14 @@ public class MexcAdapterConfig {
     @Bean
     VenueStreamBinding mexcSpotStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.MEXC_SPOT, StreamKind.DEPTH);
-        return new VenueStreamBinding(Venue.MEXC_SPOT,
+        return new VenueStreamBinding(depth,
                 new MexcSpotStreamProtocol(Venue.MEXC_SPOT, exchanges.stream(depth)));
     }
 
     @Bean
     VenueStreamBinding mexcFuturesStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.MEXC_FUTURES, StreamKind.DEPTH);
-        return new VenueStreamBinding(Venue.MEXC_FUTURES,
+        return new VenueStreamBinding(depth,
                 new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, exchanges.stream(depth)));
     }
 

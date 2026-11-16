@@ -11,6 +11,7 @@ import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProper
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceSnapshotProperties.VenueBlock;
 import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
@@ -113,10 +114,10 @@ class BinanceAdapterConfigTest {
 
         for (Venue venue : Venue.values()) {
             if (venue.exchange() == Exchange.BINANCE) {
-                assertInstanceOf(BinanceStreamProtocol.class, registry.forVenue(venue), venue + " must stream with Binance's protocol");
+                assertInstanceOf(BinanceStreamProtocol.class, registry.forStream(depth(venue)), venue + " must stream with Binance's protocol");
             }
         }
-        assertNotSame(registry.forVenue(Venue.BINANCE_SPOT), registry.forVenue(Venue.BINANCE_FUTURES));
+        assertNotSame(registry.forStream(depth(Venue.BINANCE_SPOT)), registry.forStream(depth(Venue.BINANCE_FUTURES)));
     }
 
     @Test
@@ -230,5 +231,9 @@ class BinanceAdapterConfigTest {
 
         assertThrows(IllegalStateException.class, () -> config.binanceFuturesSnapshotQueue(queues,
                 restClient(Venue.BINANCE_FUTURES), BINANCE_SNAPSHOT));
+    }
+
+    private static StreamKey depth(Venue venue) {
+        return new StreamKey(venue, StreamKind.DEPTH);
     }
 }

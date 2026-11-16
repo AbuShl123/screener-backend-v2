@@ -4,6 +4,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
@@ -32,6 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * socket is ever opened — the {@code WebSocketClient} constructor does not connect.
  */
 class StreamConnectionTest {
+
+    private static final StreamKey SPOT_DEPTH = new StreamKey(Venue.BINANCE_SPOT, StreamKind.DEPTH);
+    private static final StreamKey FUTURES_DEPTH = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.DEPTH);
 
     /**
      * Frames name their chunk as {@code "<requestId>:<chunkSize>"}; text routing answers a fixed
@@ -116,7 +120,7 @@ class StreamConnectionTest {
                                                PipelineMetrics metrics) {
         StreamProperties props = TestVenueProps.stream().url("ws://localhost:1").build();
         // The reconnect scheduler is only touched from onOpen/onClose, which these tests never reach.
-        return new StreamConnection(URI.create(props.streamUrl()), Venue.BINANCE_SPOT, instruments(3),
+        return new StreamConnection(URI.create(props.streamUrl()), SPOT_DEPTH, instruments(3),
                 protocol, publisher, metrics, null, props, new WebSocketProperties(100, 1000));
     }
 
@@ -134,7 +138,7 @@ class StreamConnectionTest {
     }
 
     @Test
-    @DisplayName("a routed frame is published once, as the same String instance")
+    @DisplayName("a routed frame is published once, with the connection's kind, as the same String instance")
     void routedFramePublished() {
         StubProtocol protocol = new StubProtocol();
         protocol.routeResult = 2;
@@ -164,7 +168,7 @@ class StreamConnectionTest {
     }
 
     @Test
-    @DisplayName("routed frames are counted against the connection's venue; IGNORED and UNKNOWN are not")
+    @DisplayName("routed frames are counted against the connection's stream; IGNORED and UNKNOWN are not")
     void routedFramesCounted() {
         StubProtocol protocol = new StubProtocol();
         PipelineMetrics metrics = new PipelineMetrics();
@@ -178,8 +182,8 @@ class StreamConnectionTest {
         protocol.routeResult = StreamProtocol.UNKNOWN;
         connection.onMessage("{\"e\":\"depthUpdate\",\"s\":\"NOPE\"}");
 
-        assertEquals(2, metrics.frames(Venue.BINANCE_SPOT));
-        assertEquals(0, metrics.frames(Venue.BINANCE_FUTURES));
+        assertEquals(2, metrics.frames(SPOT_DEPTH));
+        assertEquals(0, metrics.frames(FUTURES_DEPTH));
     }
 
     @Test
@@ -193,11 +197,11 @@ class StreamConnectionTest {
         connection.onMessage(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08}));
 
         assertTrue(publisher.ids.isEmpty());
-        assertEquals(0, metrics.frames(Venue.BINANCE_SPOT));
+        assertEquals(0, metrics.frames(SPOT_DEPTH));
     }
 
     @Test
-    @DisplayName("a routed binary frame is published once and counted, as the same buffer with position and limit untouched")
+    @DisplayName("a routed binary frame is published once with the connection's kind and counted, as the same buffer with position and limit untouched")
     void routedBinaryFramePublished() {
         BinaryStubProtocol protocol = new BinaryStubProtocol();
         protocol.binaryRouteResult = 2;
@@ -212,7 +216,7 @@ class StreamConnectionTest {
         assertSame(frame, publisher.binaryPayloads.getFirst());
         assertEquals(1, frame.position());
         assertEquals(5, frame.limit());
-        assertEquals(1, metrics.frames(Venue.BINANCE_SPOT));
+        assertEquals(1, metrics.frames(SPOT_DEPTH));
         assertTrue(publisher.payloads.isEmpty());
     }
 
@@ -230,6 +234,6 @@ class StreamConnectionTest {
         connection.onMessage(ByteBuffer.wrap("\n\bNOPEUSDT".getBytes(StandardCharsets.UTF_8)));
 
         assertTrue(publisher.ids.isEmpty());
-        assertEquals(0, metrics.frames(Venue.BINANCE_SPOT));
+        assertEquals(0, metrics.frames(SPOT_DEPTH));
     }
 }

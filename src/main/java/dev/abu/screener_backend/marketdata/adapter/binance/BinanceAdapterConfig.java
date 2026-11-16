@@ -80,14 +80,14 @@ public class BinanceAdapterConfig {
     @Bean
     VenueStreamBinding binanceSpotStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.BINANCE_SPOT, StreamKind.DEPTH);
-        return new VenueStreamBinding(Venue.BINANCE_SPOT,
+        return new VenueStreamBinding(depth,
                 new BinanceStreamProtocol(Venue.BINANCE_SPOT, exchanges.stream(depth)));
     }
 
     @Bean
     VenueStreamBinding binanceFuturesStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.DEPTH);
-        return new VenueStreamBinding(Venue.BINANCE_FUTURES,
+        return new VenueStreamBinding(depth,
                 new BinanceStreamProtocol(Venue.BINANCE_FUTURES, exchanges.stream(depth)));
     }
 

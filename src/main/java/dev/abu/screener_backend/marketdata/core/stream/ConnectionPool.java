@@ -3,7 +3,7 @@ package dev.abu.screener_backend.marketdata.core.stream;
 import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.WebSocketProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
-import dev.abu.screener_backend.marketdata.Venue;
+import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.ingress.MarketEventPublisher;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
@@ -18,13 +18,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
- * One venue's set of {@link StreamConnection}s, splitting its instruments evenly across them.
+ * One stream's set of {@link StreamConnection}s, splitting the venue's instruments evenly across
+ * them. Every connection subscribes the stream's one channel.
  * Non-{@code final} only so tests can record calls without opening sockets.
  */
 @Slf4j
 public class ConnectionPool {
 
-    private final Venue venue;
+    private final StreamKey stream;
     private final StreamProperties streamProps;
     private final WebSocketProperties wsProps;
     private final StreamProtocol protocol;
@@ -35,21 +36,21 @@ public class ConnectionPool {
     private final ScheduledExecutorService reconnectScheduler;
     private boolean started;
 
-    public ConnectionPool(Venue venue,
+    public ConnectionPool(StreamKey stream,
                           StreamProperties streamProps,
                           WebSocketProperties wsProps,
                           StreamProtocol protocol,
                           MarketEventPublisher publisher,
                           PipelineMetrics metrics) {
-        this.venue = venue;
+        this.stream = stream;
         this.streamProps = streamProps;
         this.wsProps = wsProps;
         this.protocol = protocol;
         this.publisher = publisher;
         this.metrics = metrics;
-        this.reconnectScheduler = Executors.newSingleThreadScheduledExecutor(
-                r -> new Thread(r, "reconnect-" + venue.name().toLowerCase(Locale.ROOT))
-        );
+        String threadName = "reconnect-" + stream.venue().name().toLowerCase(Locale.ROOT)
+                + "-" + stream.kind().name().toLowerCase(Locale.ROOT);
+        this.reconnectScheduler = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, threadName));
     }
 
     /**
@@ -58,16 +59,16 @@ public class ConnectionPool {
      * @throws IllegalStateException on a second call
      */
     public void start(List<Instrument> instruments) {
-        if (started) throw new IllegalStateException("Connection pool for " + venue + " already started");
+        if (started) throw new IllegalStateException("Connection pool for " + stream + " already started");
         started = true;
 
         if (instruments.isEmpty()) {
-            log.warn("[{}] No instruments to subscribe — no connections opened", venue);
+            log.warn("[{}] No instruments to subscribe — no connections opened", stream);
             return;
         }
 
         int connectionCount = connectionCount(instruments.size());
-        log.info("Starting {} connection(s) for {} streams in {}", connectionCount, instruments.size(), venue);
+        log.info("Starting {} connection(s) for {} streams in {}", connectionCount, instruments.size(), stream);
 
         for (int i = 0; i < connectionCount; i++) {
             int from = i * instruments.size() / connectionCount;
@@ -77,18 +78,18 @@ public class ConnectionPool {
             try {
                 URI uri = new URI(streamProps.streamUrl());
                 StreamConnection connection = new StreamConnection(
-                        uri, venue, batch, protocol, publisher, metrics, reconnectScheduler, streamProps, wsProps);
+                        uri, stream, batch, protocol, publisher, metrics, reconnectScheduler, streamProps, wsProps);
                 connection.connect();
                 connections.add(connection);
             } catch (URISyntaxException e) {
-                log.error("[{}] Invalid WebSocket URL: {}", venue, streamProps.streamUrl(), e);
+                log.error("[{}] Invalid WebSocket URL: {}", stream, streamProps.streamUrl(), e);
             }
         }
     }
 
     /**
-     * Derives the connection count from the stream count and the venue's own per-connection cap,
-     * clamped into {@code [min-connections, max-connections]}.
+     * Derives the connection count from the subscription count and the stream's own per-connection
+     * cap, clamped into {@code [min-connections, max-connections]}.
      *
      * <p>The configured minimum is a <b>floor, not the authority</b>. With a venue with a large
      * per-connection cap (Binance: 1024) and a few hundred streams per venue the ceiling term
@@ -106,6 +107,6 @@ public class ConnectionPool {
     public void shutdown() {
         connections.forEach(StreamConnection::shutdown);
         reconnectScheduler.shutdownNow();
-        log.info("[{}] Connection pool shut down", venue);
+        log.info("[{}] Connection pool shut down", stream);
     }
 }
