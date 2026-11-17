@@ -117,8 +117,21 @@ public class ScreenerWebSocketEndpoint {
         log.debug("Unknown message from session {}: {}", session.getId(), trimmed);
     }
 
+    /**
+     * The session's {@link UserWebSocketSession}, or {@code null} if it never had one (rejected in
+     * {@code @OnOpen}) or Tomcat has already fully closed it. Tomcat's {@code getUserProperties()}
+     * throws {@link IllegalStateException} on a closed session, and it can still deliver
+     * {@code @OnError} after that. A session only reaches the closed state after {@code @OnClose}
+     * has run, and {@code @OnClose} already called {@link #release}, so returning {@code null}
+     * there skips nothing.
+     */
     private UserWebSocketSession getSession(Session session) {
-        return (UserWebSocketSession) session.getUserProperties().get("session");
+        try {
+            return (UserWebSocketSession) session.getUserProperties().get("session");
+        } catch (IllegalStateException e) {
+            log.debug("Session {} already closed — cleanup ran in @OnClose", session.getId());
+            return null;
+        }
     }
 
     private void closeUnauthorized(Session session, String reason) {

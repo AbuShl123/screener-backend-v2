@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -83,6 +84,13 @@ public class InstrumentUniverseService {
     /** Ids per venue as of that venue's last successful fetch. Discovery thread only. */
     private Map<Venue, Set<Integer>> activeByVenue = new EnumMap<>(Venue.class);
 
+    /**
+     * Per-venue outcome of the last completed refresh, for cold-path readers such as
+     * {@code /api/exchanges}. Written on the discovery thread as an immutable map, so one volatile
+     * read gives any thread a consistent snapshot. A venue missing from it is {@code PENDING}.
+     */
+    private volatile Map<Venue, VenueDiscovery> discovery = Map.of();
+
     public InstrumentUniverseService(List<InstrumentSource> sources,
                                      InstrumentRegistry registry,
                                      InstrumentSlotTable slots,
@@ -142,6 +150,15 @@ public class InstrumentUniverseService {
             enabled.add(new SourceHandle(source, venues, enabledVenues));
         }
         return List.copyOf(enabled);
+    }
+
+    /**
+     * Discovery metadata for {@code venue} as of the last completed refresh. Thread-safe, cold path.
+     *
+     * @return {@link VenueDiscovery#PENDING} if no refresh has completed for the venue
+     */
+    public VenueDiscovery discovery(Venue venue) {
+        return discovery.getOrDefault(venue, VenueDiscovery.PENDING);
     }
 
     /**
@@ -314,6 +331,7 @@ public class InstrumentUniverseService {
             }
         }
         activeByVenue = current;
+        publishDiscovery(fresh.keySet(), retained, current);
 
         if (succeeded == 0) {
             // Nothing fresh, so nothing can have changed. Firing anyway would also mislead the
@@ -329,6 +347,24 @@ public class InstrumentUniverseService {
         log.info("Instrument universe updated — {} tracked ({} added, {} removed)",
                 currentIds.size(), added.size(), removed.size());
         eventPublisher.publishEvent(new InstrumentUniverseChangedEvent(this, added, removed));
+    }
+
+    /**
+     * Records this refresh's per-venue outcome: {@code OK} for venues fetched fresh, {@code RETAINED}
+     * for venues of failed sources (count 0 if they never had a universe). Venues this refresh did
+     * not attempt keep their previous entry. Counts come from the active universe.
+     */
+    private void publishDiscovery(Set<Venue> ok, Set<Venue> retained, Map<Venue, Set<Integer>> current) {
+        Map<Venue, VenueDiscovery> next = new EnumMap<>(Venue.class);
+        next.putAll(discovery);
+        for (Venue venue : ok) {
+            next.put(venue, new VenueDiscovery(DiscoveryStatus.OK, current.get(venue).size()));
+        }
+        for (Venue venue : retained) {
+            next.put(venue, new VenueDiscovery(DiscoveryStatus.RETAINED,
+                    current.getOrDefault(venue, Set.of()).size()));
+        }
+        discovery = Collections.unmodifiableMap(next);
     }
 
     private static String name(InstrumentSource source) {
