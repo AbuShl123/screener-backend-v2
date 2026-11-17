@@ -100,8 +100,9 @@ threshold and the re-alert rule (Q3) are tunables.
 venue; a trade decoder SPI that reports primitives to a core-owned sink; trade state in
 `InstrumentSlot`; a `TRADE` arm in `MarketEventHandler`; and a `FeedChannel`. The trade arm is a
 stateless threshold check plus the two accumulators. There is no book and no sync state machine.
-Hot-path rules from `CLAUDE.md` apply to the decoder and the arm. Alert emission is rare, so how a
-fired alert is handed to the store and channel without hurting the hot path is decided in Phase 2.
+Hot-path rules from `CLAUDE.md` apply to the decoder and the arm. Alert emission is rare, so the
+shard thread allocates the alert and adds it to `TradeAlertStore` under a lock (Phase 2). How the
+channel reads it from there is a Phase 3 decision.
 
 ### D6. Per-user thresholds are the last step
 
@@ -119,9 +120,9 @@ Each phase is shippable and builds on the one before. The first phases ship behi
 
 | # | Phase | Outcome |
 |---|---|---|
-| 1 | **Transport** | `StreamKind.TRADE`; Binance spot and futures `aggTrade` protocol; per-kind frame counters show trade traffic. An explicit `TRADE` arm in `MarketEventHandler` drops the frames. No decoder, no alerts. Plan: `.claude/plans/trade-streams-transport-plan.md`. |
-| 2 | **Decode and large-trade detection** | Trade decoder SPI. Trade logic in the `TRADE` arm: side, notional, single static threshold, sweep coalescing (D3 layer 1). Fired alerts go to the recent-trades store. Metrics for trade rate and alert rate. Plan: `.claude/plans/trade-detection-plan.md`. |
-| 3 | **Delivery** | `TradeChannel` bean; last-N replay on connect; entitlement gate; contract doc under `.claude/docs/for-frontend/`. First end-to-end release. |
+| 1 | **Transport** | **Done.** `StreamKind.TRADE`; Binance spot and futures `aggTrade` protocol; per-kind frame counters show trade traffic. An explicit `TRADE` arm in `MarketEventHandler` drops the frames. No decoder, no alerts. Plan: `.claude/plans/trade-streams-transport-plan.md`. |
+| 2 | **Decode and large-trade detection** | **Done** (slice 3's live comparison with the capture still open). Trade decoder SPI. Trade logic in the `TRADE` arm: side, notional, single static threshold, sweep coalescing (D3 layer 1). Fired alerts go to the recent-trades store. Metrics for trade rate and alert rate. Plan: `.claude/plans/trade-detection-plan.md`. |
+| 3 | **Delivery** | **Next.** `TradeChannel` bean; last-N replay on connect; entitlement gate; contract doc under `.claude/docs/for-frontend/`. First end-to-end release. |
 | 4 | **Burst detection** | Per-instrument same-side window (D3 layer 2); burst alerts with a re-alert rule; burst tunables. |
 | 5 | **More venues** | Bybit and MEXC trade protocols and decoders, one venue at a time. |
 | 6 | **Per-user thresholds** | Per ticker per exchange user override (D6), with live updates to connected sessions. |

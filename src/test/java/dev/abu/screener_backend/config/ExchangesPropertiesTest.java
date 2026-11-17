@@ -227,7 +227,7 @@ class ExchangesPropertiesTest {
     }
 
     @Test
-    @DisplayName("the shipped application.yml binds: Binance and Bybit on, MEXC configured but off by default")
+    @DisplayName("the shipped application.yml binds: Binance (depth and trades) and Bybit on, MEXC configured but off by default")
     void shippedYamlBinds() throws IOException {
         MutablePropertySources sources = new MutablePropertySources();
         new YamlPropertySourceLoader()
@@ -267,12 +267,12 @@ class ExchangesPropertiesTest {
                     venue + " DEPTH follows its venue's switch");
         }
 
-        // TRADE: both Binance venues ship a block (their bindings read it), off by default.
+        // TRADE: both Binance venues ship a block (their bindings read it), on by default.
         for (Venue venue : List.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES)) {
             StreamKey trade = new StreamKey(venue, StreamKind.TRADE);
             StreamProperties block = props.stream(trade);
-            assertFalse(block.enabled(), venue + " TRADE is off by default");
-            assertFalse(props.isEnabled(trade));
+            assertTrue(block.enabled(), venue + " TRADE is on by default");
+            assertTrue(props.isEnabled(trade));
             assertTrue(block.streamUrl() != null && block.streamUrl().startsWith("wss://"), venue + " TRADE stream-url");
             assertTrue(block.maxConnections() >= block.minConnections() && block.minConnections() > 0,
                     venue + " TRADE connection caps");

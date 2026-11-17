@@ -44,7 +44,7 @@ class TradeAlertPropertiesTest {
         assertEquals(50_000, spot.get("ZECUSDT"));
 
         Map<String, Double> futures = props.minNotional().get(Venue.BINANCE_FUTURES);
-        assertEquals(27, futures.size(), String.valueOf(futures));
+        assertEquals(28, futures.size(), String.valueOf(futures));
         assertEquals(5_000_000, futures.get("BTCUSDT"));
         assertEquals(3_000_000, futures.get("ETHUSDT"));
         // A key starting with a digit binds unchanged.

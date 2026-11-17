@@ -36,7 +36,7 @@ disconnects (local network, see the benchmark doc), and `BINANCE_FUTURES` resync
 |---|---|
 | Identity (`Venue`, `Instrument`, dense ids, `InstrumentSlotTable`) | Done |
 | Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC spot, MEXC futures, Bybit spot + futures) |
-| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames; keyed by stream (`StreamKey` = venue + kind); `DEPTH` bound everywhere, `TRADE` bound for Binance (off by default) |
+| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames; keyed by stream (`StreamKey` = venue + kind); `DEPTH` bound everywhere, `TRADE` bound for Binance (on by default) |
 | Snapshot recovery (core queue + per-venue `SnapshotFetcher`) | Done |
 | Discovery (`InstrumentSource` per exchange, merged by core) | Done; no startup retry (§13) |
 | Config consolidation under `screener.exchanges.*` | Partial: `screener.orderbook.*` and `screener.websocket.*` still sit outside it |
@@ -472,9 +472,10 @@ The ramp is weight-limited, not queue-limited.
   `wss://fstream.binance.com/market/ws`. A stream on the wrong path is acked and then stays silent
   (no error frame), so a wrong URL shows only as 0 frames/s in the health log. Legacy `/ws` serves
   public streams only and is scheduled for retirement; it is no longer used.
-- **TRADE** (`streams.TRADE`, off by default: `BINANCE_SPOT_TRADE_ENABLED`,
-  `BINANCE_FUTURES_TRADE_ENABLED`). Transport only: the consumer's `TRADE` arm drops the frames
-  until the trade decoder lands (`.claude/plans/trade-alerts-plan.md` Phase 2).
+- **TRADE** (`streams.TRADE`, on by default: `BINANCE_SPOT_TRADE_ENABLED`,
+  `BINANCE_FUTURES_TRADE_ENABLED`). The consumer's `TRADE` arm decodes each frame with
+  `BinanceAggTradeDecoder` (one instance for both venues) into core's `TradeDetector`, which
+  coalesces sweeps and raises large-trade alerts (`.claude/plans/trade-detection-plan.md`).
 
 ---
 

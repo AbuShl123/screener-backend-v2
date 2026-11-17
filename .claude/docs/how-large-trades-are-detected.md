@@ -4,9 +4,10 @@ An explainer for anyone joining the trade-alerts work. It covers what we detect 
 the data behind each decision, what the approach cannot do, and the ideas we have parked for later.
 No prior knowledge of trading mechanics or of this codebase is assumed.
 
-**Status (2026-11-18)**: Binance spot and futures only. Detection runs inside the backend and
-alerts are visible on an admin debug endpoint. Users don't receive them yet. Slices 0–2 are done
-and slice 3 (sweep coalescing) is in progress.
+**Status (2026-11-18)**: Binance spot and futures only. Detection runs inside the backend, with
+sweep coalescing, and alerts are visible on an admin debug endpoint. Users don't receive them yet:
+delivery (Phase 3) is next. Phase 2 (slices 0–3) is done; slice 3's comparison against the capture
+on a long live run is still open.
 
 **Detailed sources**: `.claude/plans/trade-alerts-plan.md` (vision, phases, decisions D1–D6),
 `.claude/plans/trade-detection-plan.md` (implementation plan; §10 holds every measured number).
@@ -122,7 +123,7 @@ The trade-alerts feature is split into phases (`trade-alerts-plan.md` §4):
 | phase | what | status |
 |---|---|---|
 | 1 | Transport: subscribe to `aggTrade`, route frames to the right shard | done |
-| 2 | Decode trades and detect large ones (this document) | in progress |
+| 2 | Decode trades and detect large ones (this document) | done |
 | 3 | Delivery to users over the WebSocket, frontend contract | next |
 | 4 | Burst detection | planned |
 | 5 | Bybit and MEXC | planned |
@@ -135,7 +136,7 @@ Phase 2 is split into slices (`trade-detection-plan.md`):
 | 0 | Capture raw trade data offline and analyze it to answer every design question | done |
 | 1 | `BinanceAggTradeDecoder`: parse frames on the shard thread, count them | done |
 | 2 | Judge each frame alone against a threshold; alert store; admin endpoint | done, with the real thresholds in `application.yml` |
-| 3 | Sweep coalescing: judge whole sweeps instead of single frames | in progress |
+| 3 | Sweep coalescing: judge whole sweeps instead of single frames | done; live comparison with the capture open |
 | 4 | Timer that closes idle sweeps | deferred (§6.3) |
 
 ### 3.1 Why we captured data first (slice 0)
@@ -146,9 +147,9 @@ tuning on a live system, we recorded raw frames and analyzed them offline.
 
 - **Capture**: a standalone Python script (`C:\git\trade-capture\capture.py`) recorded every
   `aggTrade` frame for the app's whole Binance universe (351 spot and 519 futures symbols) to
-  gzipped files. The first analyzed window is 2026-11-17 15:35–17:26 UTC: 1.34M spot and 4.96M
-  futures events, including a sell-off (BTC −1.75% on ~5× normal volume) and the quiet hours after
-  it. The capture keeps running, so the analysis can be repeated on more hours.
+  gzipped files. The latest analyzed window is 2026-11-17 15:35–20:44 UTC (about 5.1 h): 2.27M
+  spot and 9.88M futures events, including a sell-off (BTC −1.75% on ~5× normal volume) and the
+  quieter hours after it. The capture keeps running, so the analysis can be repeated on more hours.
 - **Analysis**: scripts in `C:\git\trade-capture\analysis\` (README there). Full tables are in
   `analysis/out/report.md`, per-symbol numbers in `out/per_symbol.csv`.
 - **Ground truth**: for a few symbols the analysis also downloaded Binance's **raw** trades (one
@@ -221,22 +222,26 @@ Coalescing matters **more** on futures, not less (see 4.5).
 
 Each instrument has one minimum notional: `screener.trade-alerts` in `application.yml`, bound to
 `TradeAlertProperties` and looked up by `TradeThresholds`. A $30K default, plus per-symbol overrides
-for busy symbols (7 spot, 27 futures).
+for busy symbols (7 spot, 28 futures).
 
 **How the values were chosen** (`trade-detection-plan.md` §10.2): a flat $30K is unusable. It
-produces ~1,100 spot and **~19,500 futures alerts per hour**, mostly on BTC and ETH. So we set an
+produces ~630 spot and **~10,600 futures alerts per hour**, mostly on BTC and ETH. So we set an
 **alert budget**:
 
 - The floor is $30K for every symbol.
 - If a symbol would fire more than **10 alerts per hour** at $30K, raise it to the next step of a
   fixed ladder (50K, 75K, 100K, 150K, 200K, 300K, 500K, … 5M) until it fires 10/h or less.
-- Result: about **95 spot and 336 futures alerts per hour** overall. Examples: BTC futures $5M,
-  ETH futures $3M, BTC spot $500K, SOL futures $500K.
+- Result: about **55 spot and 223 futures alerts per hour** over 5.1 h of data. Examples: BTC
+  futures $5M, ETH futures $3M, BTC spot $500K, SOL futures $500K.
+- The list was computed from the first 1.8 h and checked against 5.1 h, which added only
+  PENGUUSDT futures. Re-deriving it over all 5.1 h would lower about half the overrides by one
+  step, only because most of that time is quiet. That would add ~40% more alerts in busy hours, so
+  the list was kept.
 
 **Thresholds and coalescing are independent in code.** Coalescing decides what counts as one trade.
 The threshold decides whether it is big enough. The sweep's summed notional is compared with the
 threshold. They are linked in calibration: the budget was computed on **coalesced** alert counts.
-Judging single frames (slice 2) with the same thresholds gives only ~53 spot / ~134 futures alerts
+Judging single frames (slice 2) with the same thresholds gives only ~27 spot / ~93 futures alerts
 per hour.
 
 The thresholds live in YAML, not Java, so changing them needs a restart, not a rebuild.
@@ -247,38 +252,42 @@ Notional per event / per coalesced sweep:
 
 | venue | median | 1 in 100 | 1 in 1,000 | 1 in 10,000 | largest |
 |---|---|---|---|---|---|
-| spot event / sweep | $20 / $31 | $7.2K / $9.1K | $35K / $49K | $133K / $270K | $712K / $1.7M |
-| futures event / sweep | $60 / $67 | $24.5K / $33K | $149K / $237K | $515K / $1.2M | $12.4M / $12.7M |
+| spot event / sweep | $23 / $34 | $6.7K / $8.3K | $36K / $48K | $162K / $320K | $816K / $2.0M |
+| futures event / sweep | $50 / $55 | $17.8K / $24K | $122K / $183K | $443K / $980K | $25.0M / $25.0M |
 
 - Most trades are tiny, and large ones are rare and concentrated: at a flat $30K, BTC + ETH make
-  82–84% of alerts. Only 33 of 351 spot and 106 of 519 futures symbols ever reached $30K.
-- **46% of spot and 62% of futures alerts exist only because of coalescing.** No single frame of
+  84% of alerts. Only 43 of 351 spot and 133 of 519 futures symbols ever reached $30K.
+- **52% of spot and 60% of futures alerts exist only because of coalescing.** No single frame of
   those sweeps crossed the threshold. Most such sweeps have 4 or more fragments, and the largest had
-  176. This is why slice 3 matters and why slice 2 is only a baseline.
-- Alert rates swing with the market: 231 spot / 763 futures per hour in the sell-off hour, 28 / 163
-  in the quietest hour.
+  257. This is why slice 3 matters and why slice 2 is only a baseline.
+- Alert rates swing with the market about 5–8×: 231 spot / 757 futures per hour in the sell-off,
+  26–42 / 126–194 in the quieter hours.
 
 ### 4.6 What an alert contains
 
 `TradeAlert`: instrument, aggressor side, total quantity, total notional, **VWAP** (volume-weighted
 average price, `sumNotional / sumQty`), **first and last price** of the sweep, number of **fills**,
-first and last trade id, trade time `T`, and `detectedAtMs` (local clock when the alert fired).
+the **coalescing-only** flag, first and last trade id, trade time `T`, and `detectedAtMs` (local
+clock when the alert fired).
 
-First and last price are **ours**, not Binance's: each frame has a single price, and only
-coalescing can say how far one order walked. In the example of §2.1 the sweep moved the price
-0.9572 → 0.9574 (about 2 bps).
+- **First and last price** are **ours**, not Binance's: each frame has a single price, and only
+  coalescing can say how far one order walked. In the example of §2.1 the sweep moved the price
+  0.9572 → 0.9574 (about 2 bps).
+- **Coalescing-only flag** (`coalescedOnly`). The sweep state remembers its largest single fill.
+  The flag is true when no single fill reached the threshold by itself, so the alert exists only
+  because the fills were summed. In §2.1 (with a $20K threshold) the three-fill sweep is
+  coalescing-only: its largest fill was $19,994. Frame 4 ($34,246) would have alerted on its own. A
+  one-fill alert is never coalescing-only, because its one fill is the whole sweep. Useful for
+  tuning and possibly for the frontend ("block" vs. "sweep").
+- **Stable id**: `VENUE:SYMBOL:firstTradeId`, e.g. `BINANCE_FUTURES:BTCUSDT:8285985083`. A trade id
+  belongs to one sweep only, so the id is unique and the same across restarts and replays. Clients
+  will key alerts by it (§7.2). A venue without numeric trade ids falls back to
+  `VENUE:SYMBOL:t<T><B|S>`, which is not unique for two same-side orders in one millisecond; Phase 5
+  decides a better identity when such a venue gets a decoder.
 
-Planned additions in slice 3:
-
-- **A "coalescing-only" flag.** The sweep state remembers its largest single fill. When the sweep
-  closes, the alert records whether any one fill crossed the threshold by itself. In §2.1 (with
-  a $20K threshold) the three-fill sweep is coalescing-only: its largest fill was $19,994. Frame 4
-  ($34,246) would have alerted on its own. This is useful for tuning and possibly for the frontend
-  ("block" vs. "sweep").
-- **A slice 2 baseline counter.** Per venue, the count of single fills that crossed the threshold on
-  their own: what slice 2 would have alerted on. It's shown next to slice 3's alert count in the
-  health log, so the "46% / 62% only because of coalescing" check can be repeated on live data at
-  any time.
+The health log's trades table shows, per venue and per 30 s, the alert count, how many of them are
+coalescing-only (`coal`), and the alerts split by fills per sweep (1, 2–3, 4–10, >10). `coal` divided
+by `alerts` is the live counterpart of the "52% / 60% only because of coalescing" figure in §4.5.
 
 ---
 
@@ -297,8 +306,8 @@ data every time. Ours is **one minute of real market data**:
   because of coalescing).
 
 `TradeReplayTest` feeds every frame in order through the real Java code (`BinanceAggTradeDecoder` →
-`TradeDetector` → `TradeAlertStore`) and checks that it finds **exactly** the same alerts: none
-missing, none extra, same side, fills, time, quantity and notional.
+`TradeDetector` → `TradeAlertStore`) and checks that it finds **exactly** the same coalesced alerts:
+none missing, none extra, same side, fills, time, quantity and notional.
 
 Why it is valuable:
 
@@ -311,8 +320,10 @@ Why it is valuable:
   fails the test. The §2.1 XRP example is in the fixture too.
 - Test thresholds are independent of `application.yml`, so retuning production never breaks it.
 
-Slice 2 checks `singleTrade` and passes. Slice 3 adds the `coalesced` check. To regenerate the
-fixture exactly: `python make_fixture.py --at 1794935121208 --length 60` in
+The test checks that the detector raises exactly the `coalesced` alerts, in the same order. The
+`singleTrade` list is the independent check of the coalescing-only flag: an alert is
+coalescing-only exactly when no single-frame alert falls inside its id range. The test also checks
+that alert ids are unique. To regenerate the fixture exactly: `python make_fixture.py --at 1794935121208 --length 60` in
 `C:\git\trade-capture\analysis\`.
 
 ---
@@ -321,14 +332,18 @@ fixture exactly: `python make_fixture.py --at 1794935121208 --length 60` in
 
 ### 6.1 Static thresholds go stale
 
-The thresholds are measured from about 1.8 hours of data on one day and maintained by hand.
+The thresholds are measured from about 5 hours of data from one afternoon (no Asia session, no
+weekend) and maintained by hand.
 Markets change:
 
 - A **new listing** gets the $30K default. A hyped coin trading hundreds of millions on day one
   would flood users with alerts.
 - A coin's volume can rise or fall by an order of magnitude within weeks.
 - **Delisted or renamed** symbols leave dead entries in the list.
-- The capture covered a sell-off and quiet hours but only the last 25 minutes of the US open.
+- A symbol can turn busy in hours: PENGUUSDT futures was quiet in the first 1.8 h of the capture
+  and then alerted up to 47 times an hour at the $30K default.
+- The capture covered a sell-off and quieter US-afternoon hours, but only the last 25 minutes of
+  the US open.
 
 Keeping them current means re-running the analysis and editing YAML. Section 7.3 describes the
 planned fix. Not every change is a problem: the alert rate rising in a volatile market is arguably
@@ -347,10 +362,10 @@ A sweep can only be closed when the instrument's **next** trade arrives, because
 proves the sweep is over. Every alert waits for it, including a single large fill that would have
 alerted at once under slice 2:
 
-- Liquid symbols (≥ 1 trade/s): p90 under 160 ms, p99 under 1.8 s, worst seen 3.8 s.
-- Mid-liquidity spot symbols (0.1–1 trades/s): p90 2 s, p99 9 s, worst 11 s.
-- Thin symbols (< 0.1 trades/s) never alerted at $30K. At $10K, 18% of their sweeps would wait over
-  10 s, sometimes minutes.
+- Liquid symbols (≥ 1 trade/s): p90 under 360 ms, p99 under 2.6 s, worst seen 4.6 s.
+- Mid-liquidity spot symbols (0.1–1 trades/s): p90 0.2 s, p99 6.3 s, worst 11.2 s.
+- Thin symbols (< 0.1 trades/s) alerted 3 times at $30K in 5 hours. At $10K, 6% of their sweeps
+  would wait over 10 s; at $5K 12%, sometimes over a minute.
 
 At the shipped thresholds this is acceptable, so the idle timer (slice 4) is deferred. The real
 delay is measurable live as `detectedAtMs − tradeTimeMs`. On futures there is an additional
@@ -382,8 +397,8 @@ Each sweep alert has a first and last price. The UI can show how far the order m
 make big moves look more urgent. Large-caps will usually show 0–5 bps. Thin coins can show 1% or
 more, and that is where the indicator stands out. Recommended: the backend sends the movement as a
 ready number (e.g. `impactBps`), so every client and any future rule ("only alert if impact > X
-bps") uses one definition. This only becomes meaningful with slice 3. Under single-frame judging,
-first and last price are always equal.
+bps") uses one definition. It is meaningful only because of coalescing: a single frame has one
+price, so a one-fill alert always shows 0.
 
 ### 7.2 Early alerts with updates
 
@@ -402,23 +417,31 @@ Not built now, because:
   unrelated trade. It mostly matters on mid-liquidity symbols, where the idle timer (§7.4) is a
   simpler fix.
 
-**Preparation in Phase 3**: give every alert a **stable id** from day one (for example venue +
-symbol + first trade id), and have the frontend key alerts by it. Adding updates later is then just
-another message with the same id, with no contract change. Decide between this and the idle timer
+**Preparation**: every alert already has a **stable id** (`VENUE:SYMBOL:firstTradeId`, §4.6). Phase 3
+sends it from day one and the frontend keys alerts by it. Adding updates later is then just another
+message with the same id, with no contract change. Decide between this and the idle timer
 once `detectedAtMs − tradeTimeMs` on live data or user feedback says the delay matters.
 
 ### 7.3 Volume-scaled (adaptive) thresholds
 
-The threshold the budget policy picks follows each symbol's trading volume closely:
+Across symbols, the threshold the budget policy picks follows each symbol's trading volume closely:
 
 ```
-threshold ≈ c · V^b     V = hourly notional volume, b ≈ 0.78 (spot), 0.80 (futures)
+threshold ≈ c · V^b     V = hourly notional volume, b ≈ 0.81 (spot), 0.82 (futures)
 ```
 
-The fit explains 94–97% of the variation, with a typical error of ±1.3–1.4×. That is about $8K for
-$1M/h of volume, $300K at $100M/h and $1.9M at $1B/h. Computing each instrument's threshold from
-its rolling volume would reproduce the override list automatically, cover new listings, and drop
-the manual list.
+The fit explains 95–97% of the variation, with a typical error of ±1.3–1.4×. That is about $8–9K
+for $1M/h of volume, $350K at $100M/h and $2.3M at $1B/h. Computing each instrument's threshold
+from its volume could reproduce the override list automatically, cover new listings, and drop the
+manual list.
+
+**But the fit compares symbols, not hours.** Tested on the capture with each symbol's trailing
+15 or 60 min volume (`volume_scaled.py`, plan §10.5), it produced more alerts than the static list
+in almost every hour: 282–459 futures alerts/h in quiet hours against 126–194, and almost no
+relief in the sell-off. A symbol's large orders do not shrink when its volume drops. In one quiet hour BTC
+spot's volume fell to about a third of its average, its scaled threshold fell from $500K to $134K,
+and it alerted 119 times in 44 minutes. A usable version needs a slow baseline, a per-symbol
+correction factor, or both, and has to be tested on the capture first.
 
 Where the volume could come from:
 
@@ -478,10 +501,11 @@ Plan: ship the budget-based thresholds as v1 and use real user feedback to steer
 
 ### 7.7 Remaining roadmap
 
-- **Phase 3, delivery**: a `TradeChannel` on the existing `FeedBroadcaster`, last-N replay on
-  connect, entitlement gate, and a frontend contract under `.claude/docs/for-frontend/`. Planned
-  after slice 3, because the alert fields the UI should show (fills, VWAP, price movement) only
-  exist once sweeps are coalesced. The contract can be drafted while slice 3 is built.
+- **Phase 3, delivery (next)**: a `TradeChannel` on the existing `FeedBroadcaster`, last-N replay on
+  connect, entitlement gate, and a frontend contract under `.claude/docs/for-frontend/`. The alert
+  fields the UI should show (id, fills, VWAP, first and last price) exist now that sweeps are
+  coalesced. Before users see alerts, re-run the threshold analysis on a longer capture that
+  includes a full US open (§6.1).
 - **Phase 5**: Bybit (`publicTrade`) and MEXC decoders.
 - **Phase 6**: per-user thresholds per ticker per exchange, with live updates to connected
   sessions.
@@ -513,10 +537,10 @@ Plan: ship the budget-based thresholds as v1 and use real user feedback to steer
 |---|---|
 | decoder | `marketdata/adapter/binance/BinanceAggTradeDecoder` |
 | SPI | `marketdata/spi/TradeDecoder`, `TradeSink`, `VenueTradeDecoderBinding`, `TradeDecoderRegistry` |
-| detection | `marketdata/core/trade/`: `TradeDetector`, `TradeThresholds`, `TradeAlert`, `TradeAlertStore` |
+| detection | `marketdata/core/trade/`: `TradeDetector`, `TradeState` (the open sweep, held in the instrument's slot), `TradeThresholds`, `TradeAlert`, `TradeAlertStore` |
 | config | `screener.trade-alerts` in `application.yml` → `config/TradeAlertProperties` |
-| admin endpoints | `GET /api/monitoring/trade-alerts?venue=&symbol=&limit=`, `GET /api/monitoring/trade-alerts/summary` |
-| health log | trades table in `PipelineHealthLogger` (decoded/s, failures, alerts per 30 s) |
+| admin endpoints | `GET /api/monitoring/trade-alerts?venue=&symbol=&limit=` (each alert with `id` and `coalescedOnly`), `GET /api/monitoring/trade-alerts/summary` |
+| health log | trades table in `PipelineHealthLogger`: decoded/s, failures, alerts, coalescing-only alerts (`coal`) and alerts by fills per sweep, per 30 s |
 | tests | `TradeReplayTest`, `TradeDetectorTest`, `TradeThresholdsTest`, `TradeAlertStoreTest`, `BinanceAggTradeDecoderTest` |
 | capture and analysis | `C:\git\trade-capture\` (`capture.py`, `analysis\`, `analysis\out\report.md`) |
 | plans | `.claude/plans/trade-alerts-plan.md`, `.claude/plans/trade-detection-plan.md` |

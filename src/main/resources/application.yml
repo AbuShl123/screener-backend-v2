@@ -69,7 +69,7 @@ screener:
               subscribe-chunk-size: 400
               heartbeat-interval-seconds: 120
             TRADE:
-              enabled: ${BINANCE_SPOT_TRADE_ENABLED:false}
+              enabled: ${BINANCE_SPOT_TRADE_ENABLED:true}
               stream-url: wss://stream.binance.com/ws
               max-streams-per-connection: 1024
               min-connections: 1
@@ -267,6 +267,7 @@ screener:
         FILUSDT: 50000
         INJUSDT: 50000
         MMTUSDT: 50000
+        PENGUUSDT: 50000
         PUMPUSDT: 50000
         TRUMPUSDT: 50000
         WLDUSDT: 50000

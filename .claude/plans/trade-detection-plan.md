@@ -278,8 +278,9 @@ A **Capture findings** section appended to this plan with:
 **Goal**: the first alerts, end to end inside the backend. Each aggTrade event is judged alone,
 on purpose: this undercounts sweeps, and the count is the baseline slice 3 is compared against.
 
-**Status**: built. `application.yml` ships the §10.2 thresholds, and `TradeReplayTest` passes on the
-fixture (§10.6). Still open: the Verify step below, on a live run.
+**Status**: built and verified on a live run. `application.yml` ships the §10.2 thresholds, and
+`TradeReplayTest` passed on the fixture (§10.6). Slice 3 then replaced the per-trade check, so
+`singleTrade` now serves only as the check on the coalescing-only flag.
 
 1. `TradeAlertProperties` + YAML block (2.5), with the thresholds from the slice 0 findings.
 2. `TradeThresholds`, `TradeAlert`, `TradeAlertStore` (2.5, 2.6).
@@ -399,21 +400,23 @@ Phase 6 lets users set thresholds low enough to alert on thin symbols.
 
 ## 10. Capture findings (slice 0)
 
-**Data**: 2026-11-17 15:35–17:26 UTC. Spot covers 1.85 h and futures 1.80 h (163 s of futures
-outages excluded). 1.34M spot and 4.96M futures events over the full universe (351 spot, 519
-futures symbols). It includes a sell-off (BTC −1.75% between 15:40 and 15:50, on about 5× normal
-volume) and the quiet hours after it, but only the last 25 minutes of the US open. The capture
-keeps running. Scripts: `C:\git\trade-capture\analysis\` (its README covers re-running).
-`analysis/out/report.md` has every table and `out/per_symbol.csv` the per-symbol numbers. Re-run
-after more hours and update the numbers here.
+**Data**: 2026-11-17 15:35–20:44 UTC. Spot covers 5.15 h and futures 5.11 h (163 s of futures
+outages excluded, all before 15:55). 2.27M spot and 9.88M futures events over the full universe
+(351 spot, 519 futures symbols). It includes a sell-off (BTC −1.75% between 15:40 and 15:50, on
+about 5× normal volume) and the quieter US-afternoon hours after it. It has no Asia session and no
+weekend, so rates and thresholds are still one afternoon's. The capture keeps running. Scripts:
+`C:\git\trade-capture\analysis\` (its README covers re-running). `analysis/out/report.md` has every
+table for the derived policy, `out/configured/report.md` the same tables for the thresholds in
+`application.yml` (`analyze.py --thresholds`), `out/hourly.md` the hour-by-hour view and
+`out/volume_scaled.md` the §10.5 test. Re-run after more hours and update the numbers here.
 
 ### 10.1 Answers
 
 1. **Spot sweeps.** One taker order's fragments share side and `T`, have contiguous ids, and
-   arrive together: 94.8% of multi-fill sweeps sit in one `E`, receive spread p99 4 ms. Raw trades
+   arrive together: 95.0% of multi-fill sweeps sit in one `E`, receive spread p99 3 ms. Raw trades
    (REST, `verify_raw_trades.py`) confirm that one spot aggTrade is one taker order at one price:
    every aggTrade holds a single raw-trade time, and `T` equals it. **Same side + same `T` does not
-   identify one order, though**: 44.5% of such steps print at the *same price* as the previous
+   identify one order, though**: 43.8% of such steps print at the *same price* as the previous
    fragment. By the aggregation rule that is a second order in the same millisecond. Another 0.6%
    reverse the price. Spot ids are always contiguous, so they never separate orders.
 2. **Futures aggregation.** Confirmed with raw trades. A futures aggTrade is a run of consecutive
@@ -423,7 +426,7 @@ after more hours and update the numbers here.
    - The last fragment of a sweep is sent only when its window closes. Multi-fill sweeps span
      p90 150 ms of `E` (only 6.1% sit in one `E`), and `E − T` is p90 150 ms. Futures alerts
      therefore land at least ~150 ms after the trade.
-   - A multi-level sweep shares `T`: 99.4% of same-`T` steps move toward the aggressor, and none
+   - A multi-level sweep shares `T`: 99.2% of same-`T` steps move toward the aggressor, and none
      repeat a price.
    - Ground truth: taker orders rebuilt from raw trades, 4 symbols, about 2 min each, at a $30K
      threshold. Same-`T` coalescing alerts on 97% of large orders (single events: 88%), and 89%
@@ -431,39 +434,59 @@ after more hours and update the numbers here.
      that Binance's own window merged, which aggTrade cannot separate. Allowing `T` to differ by
      up to 100 ms reaches 100% recall but only 74% precision, so the rule keeps exact `T`.
 3. **Order.** `a` rises strictly per symbol within a socket on both venues, with no jumps. Futures
-   `f ≠ prev.l + 1` in 743 of 4.95M pairs, mostly gaps of 1 (ids never published). Reconnects lost
-   435K futures aggTrades over 163 s of local outages.
-4. **`nq` vs `q`.** `nq ≤ q` always. They differ on 0.59% of events (`nq = 0` on 0.18%), worth 0.3%
-   of notional; 89 of 40,610 events at or above $30K would fall below it by `nq`. Use `q`. `st` is
+   `f ≠ prev.l + 1` in 1,595 of 9.88M pairs, mostly gaps of 1 (ids never published). Reconnects
+   lost 435K futures aggTrades over 163 s of local outages.
+4. **`nq` vs `q`.** `nq ≤ q` always. They differ on 0.52% of events (`nq = 0` on 0.15%), worth 0.3%
+   of notional; 114 of 60,740 events at or above $30K would fall below it by `nq`. Use `q`. `st` is
    always 1.
 5. **Notional.** Per event / per coalesced sweep:
 
    | venue | p50 | p99 | p99.9 | p99.99 | max |
    |---|---|---|---|---|---|
-   | spot event / sweep | 20 / 31 | 7.2K / 9.1K | 35K / 49K | 133K / 270K | 712K / 1.7M |
-   | futures event / sweep | 60 / 67 | 24.5K / 33K | 149K / 237K | 515K / 1.2M | 12.4M / 12.7M |
+   | spot event / sweep | 23 / 34 | 6.7K / 8.3K | 36K / 48K | 162K / 320K | 816K / 2.0M |
+   | futures event / sweep | 50 / 55 | 17.8K / 24K | 122K / 183K | 443K / 980K | 25.0M / 25.0M |
 
-   Large trades are concentrated: at a flat $30K, BTC + ETH make 82–84% of alerts, and only
-   33 of 351 spot and 106 of 519 futures symbols reached $30K at all.
-6. **Alert rates** (alerts/hour, coalesced with §10.3's rule): a flat $30K gives spot 1,101 and
-   futures 19,492, so a flat threshold is unusable on futures. The §10.2 policy gives spot 95 and
-   futures 336. Under the same YAML, single-event judging (slice 2) gives 53 and 134: **46% of spot
-   and 62% of futures alerts exist only because of coalescing**, mostly sweeps of 4+ fills (counts
-   by 2–3 / 4–10 / >10 fills: spot 14 / 32 / 34, futures 47 / 162 / 165). Of all alerted sweeps,
-   27–39% are a single fill and 21–28% have more than 10 fills (max 176). The rate swings with the market: 231 /
-   763 per hour in the sell-off hour, 28 / 163 in the quietest.
+   Large trades are concentrated: at a flat $30K, BTC + ETH make 84% of alerts on both venues,
+   and only 43 of 351 spot and 133 of 519 futures symbols reached $30K at all.
+6. **Alert rates** (alerts/hour, coalesced with §10.3's rule): a flat $30K gives spot 627 and
+   futures 10,559, so a flat threshold is unusable on futures. The §10.2 YAML gives spot 55 and
+   futures 223. Under the same YAML, single-event judging (slice 2) gives 27 and 93: **52% of spot
+   and 60% of futures alerts exist only because of coalescing**, mostly sweeps of 4+ fills (counts
+   by 2–3 / 4–10 / >10 fills: spot 24 / 54 / 69, futures 75 / 270 / 339). Of all alerted sweeps,
+   28–34% are a single fill and 26–31% have more than 10 fills (max 257). The rate swings with the
+   market about 5–8×: 231 / 757 per hour in the sell-off, 26–42 / 126–194 in the quieter hours.
 7. **Close delay** (last fill → next trade of the symbol). For alerting sweeps at the §10.2
-   thresholds: liquid symbols (≥ 1 event/s) p90 ≤ 160 ms, p99 ≤ 1.8 s, max 3.8 s. Mid-liquidity
-   spot (0.1–1/s) p90 2 s, p99 9 s, max 11 s, with 1.9% over 10 s. Futures mid-liquidity max
-   1.5 s. Thin symbols (< 0.1 event/s, 194 on spot) never alert at $30K. At $10K, 18% of their
-   sweeps would wait more than 10 s, and up to minutes.
+   thresholds: liquid symbols (≥ 1 event/s) p90 ≤ 360 ms, p99 ≤ 2.6 s, max 4.6 s. Mid-liquidity
+   spot (0.1–1/s) p90 0.2 s, p99 6.3 s, max 11.2 s, with 0.8% over 10 s. Futures mid-liquidity max
+   3.2 s. Thin symbols (< 0.1 event/s, 229 on spot) alerted 3 times at $30K in 5 h. At $10K, 6% of
+   their sweeps would wait more than 10 s (p99 23 s); at $5K 12% (p99 85 s).
 
 ### 10.2 Slice 2 thresholds
 
 The floor is $30K. A symbol whose coalesced alert rate at the floor is above 10/h gets the lowest
 step of a fixed ladder (50K, 75K, 100K, 150K, 200K, 300K, 500K, …, 5M) that brings it to 10/h or
-less. Computed from the quiet hours only, every override stays within one ladder step of the
-value below.
+less. The list below was derived from the first 1.8 h of the capture, where the sell-off was 23%
+of the covered time, plus `PENGUUSDT` futures from the later hours.
+
+**Kept over the re-derived list.** The same rule over all 5.1 h, where the sell-off is 8% of the
+time, lowers about half the overrides by one ladder step (spot ETH 150K, SOL 100K; futures SOL
+300K, HYPE and XRP 150K; 22 futures overrides instead of 28). That reflects how much of the data is
+quiet, not a change in the market. The shipped list already holds every symbol to the cap in every
+full hour, and the lower one only adds alerts, most of them in the busiest hours (`hourly.py`):
+
+| alerts/h (spot / futures) | sell-off 15:35–16:00 | 16:00 | quieter 17:00–20:44 | whole capture |
+|---|---|---|---|---|
+| this list | 231 / 757 | 67 / 252 | 26–42 / 126–194 | 55 / 223 |
+| re-derived over 5.1 h | 333 / 1,095 | 106 / 387 | 38–52 / 156–249 | 77 / 309 |
+
+`PENGUUSDT` futures became active only after the first 1.8 h: at the floor it alerted 21.5/h over
+the capture, and 47 in its worst hour. Derived hour by hour, its threshold would have been 75–100K
+from 18:00 on. At 50K it stays under the cap over the capture and under 25/h in every full hour.
+
+A symbol's own best threshold moves with the market. Derived from each hour alone, it moves 1–2
+ladder steps across the quieter hours. In the sell-off it rises 1–4 steps (spot BNB 30K → 200K,
+futures HYPE 150K → 750K). Any static list therefore swings about 5–8× in alert volume with the
+market. Revisit the list once the capture covers an Asia session and a weekend.
 
 ```yaml
 screener:
@@ -503,14 +526,16 @@ screener:
         FILUSDT: 50000
         INJUSDT: 50000
         MMTUSDT: 50000
+        PENGUUSDT: 50000
         PUMPUSDT: 50000
         TRUMPUSDT: 50000
         WLDUSDT: 50000
 ```
 
-Other policies (alerts/h spot / futures, overrides in brackets): floor 20K → 125 / 477 (11 / 39);
-cap 5/h → 65 / 231 (11 / 36); floor 50K → 56 / 220 (4 / 18). `analyze.py --floor --cap` prints
-any other combination.
+Other policies, derived over all 5.1 h (alerts/h spot / futures, overrides in brackets): floor 30K
+cap 10/h → 77 / 309 (4 / 22); floor 20K → 108 / 433 (7 / 31); cap 5/h → 53 / 191 (8 / 31); floor
+50K → 42 / 197 (3 / 12). `analyze.py --floor --cap` prints any other combination, and
+`analyze.py --thresholds <application.yml>` evaluates a configured list.
 
 ### 10.3 Slice 3 continuation rule
 
@@ -519,8 +544,8 @@ strictly in the aggressor's direction** (buy: `price > lastPrice`, sell: `price 
 and, when both ids are known, `firstTradeId == lastTradeId + 1`.
 
 - The price check separates orders that share a millisecond on spot (an equal price is always a
-  new order). It cuts spot alerts at $30K by 17% and changes nothing on futures.
-- The id check never mattered in the data (1 sweep in 3.2M), but it costs nothing. Keep it as a
+  new order). It cuts spot alerts at $30K by 14% and changes nothing on futures.
+- The id check never mattered in the data (2 sweeps in 7.8M), but it costs nothing. Keep it as a
   guard. Without ids, the rule is side + `T` + price.
 - Trade-off: same-millisecond child orders of one algorithm become separate alerts. The fixture
   has two ~$34.2K XRP spot buys in one millisecond, which this rule reports as two orders and
@@ -530,22 +555,41 @@ and, when both ids are known, `firstTradeId == lastTradeId + 1`.
 ### 10.4 Slice 4: deferred
 
 With the §10.2 thresholds, sweeps close fast enough without a tick: 99% of liquid-symbol alerts
-within 1.8 s, the worst case 11 s on a mid-liquidity spot symbol. Thin symbols do not alert at
-$30K. The tick becomes worth building with Phase 4 (bursts need it anyway) or with Phase 6, once
-users can set thresholds below about $10K on thin coins. Starting values when built: tick
-250 ms, idle close 1000 ms of receive time. The idle must stay well above the futures window,
-because a futures sweep's last fragment arrives about 150 ms after the others (receive spread
-p99 344 ms, spikes to 3.4 s). A shorter idle would split futures sweeps.
+within 2.6 s, the worst case 11.2 s on a mid-liquidity spot symbol. Thin symbols almost never
+alert at $30K (3 alerts in 5 h). The tick becomes worth building with Phase 4 (bursts need it
+anyway) or with Phase 6, once users can set thresholds below about $10K on thin coins. Starting
+values when built: tick 250 ms, idle close 1000 ms of receive time. The idle must stay well above
+the futures window, because a futures sweep's last fragment arrives about 150 ms after the others
+(receive spread p99 290 ms, spikes to 5.8 s). A shorter idle would split futures sweeps.
 
 ### 10.5 Volume-scaled thresholds (later)
 
-The threshold the cap rule picks follows the symbol's hourly notional volume `V` closely:
-`x ≈ 10^a · V^b`, with b = 0.78 (spot) and 0.80 (futures), R² 0.94 / 0.97, typical error ±1.3–1.4×.
-That puts x at about $8K for $1M/h of volume, $300K at $100M/h and $1.9M at $1B/h. A threshold
-computed from each instrument's rolling volume, which the trade arm could keep itself, would
-reproduce the override list without anyone maintaining it, cover new listings, and follow
-volatility. This is the "adaptive thresholds from rolling volume" idea in `trade-alerts-plan.md`
-§4. D2 keeps Phase 2 static.
+Across symbols, the threshold the cap rule picks follows the symbol's hourly notional volume `V`
+closely: `x ≈ 10^a · V^b`, with b = 0.81 (spot) and 0.82 (futures), R² 0.95 / 0.97, typical error
+±1.3–1.4×. That puts x at about $8–9K for $1M/h of volume, $350K at $100M/h and $2.3M at $1B/h. The
+fit held from 1.8 h to 5.1 h of data.
+
+**It does not carry over to changes over time.** Judging each sweep against
+`max(30K, 10^a · V^b)`, with `V` the symbol's own trailing volume (`volume_scaled.py`), alerts more
+than the static list in every hour except spot in the sell-off:
+
+| alerts/h (spot / futures) | sell-off | 16:00 | quieter 17:00–20:44 |
+|---|---|---|---|
+| static list (§10.2) | 231 / 757 | 67 / 252 | 26–42 / 126–194 |
+| trailing 60 min volume | 217 / 806 | 63 / 301 | 48–225 / 282–454 |
+| trailing 15 min volume | 203 / 793 | 106 / 414 | 66–107 / 318–459 |
+
+When a symbol's volume drops, its large orders do not shrink with it. In the 20:00 hour BTCUSDT
+spot traded $28M/h (its capture average is $80M/h), the scaled threshold fell to 134K, and it
+alerted 119 times in 44 minutes against the static 500K. The fit describes how symbols differ,
+not how one symbol changes. 10 futures symbols exceed 10/h under it (BTC, ETH, ADA and AAVE at
+20–28/h).
+
+So the "adaptive thresholds from rolling volume" idea in `trade-alerts-plan.md` §4 needs more than
+the formula. Options to test on the capture before building it: a slow volume baseline (24 h or
+longer) instead of a trailing hour, a per-symbol calibration factor on top of the fit, or the fit
+used only to seed thresholds for symbols without an override (new listings), with the static list
+kept for the rest. D2 keeps Phase 2 static.
 
 ### 10.6 Replay fixture
 
