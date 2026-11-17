@@ -76,7 +76,7 @@ books rely on.
   case-sensitive (`T` vs `E`, `m` vs `M`); a switch on exact strings handles that.
 - Side: `m = true` means the buyer was the maker, so the aggressor **sold**: `aggressorBuy = !m`.
 - Uses `q`, the full executed quantity. Futures `nq` is believed to exclude RPI fills; slice 0
-  checks `nq ≤ q`.
+  found `nq ≤ q` always and a difference on 0.6% of events (§10.1).
 - Tracks which required fields were seen. If one is missing, it returns `false` and makes no sink
   call.
 
@@ -110,8 +110,8 @@ screener:
     recent-capacity: 500                 # alerts kept in TradeAlertStore
 ```
 
-- Bound to a `TradeAlertProperties` record in `config/`. Values above are placeholders; the shipped
-  default and per-symbol entries come from the slice 0 analysis (Q1).
+- Bound to a `TradeAlertProperties` record in `config/`. The values above only show the shape;
+  `application.yml` ships the default and per-symbol entries from the slice 0 analysis (§10.2, Q1).
 - `TradeThresholds.minNotional(Instrument)` does two map lookups (`EnumMap<Venue, Map<String,
   Double>>`, then the default). At under 1K trades/s that costs nothing, and Phase 6's per-user
   overrides layer onto one central lookup rather than a value copied into every slot.
@@ -119,8 +119,10 @@ screener:
 ### 2.6 Alerts and the store (slice 2)
 
 - `TradeAlert` record: `Instrument instrument`, `boolean aggressorBuy`, `double vwap`, `double qty`,
-  `double notional`, `double firstPrice`, `double lastPrice`, `int fills`, `long tradeTimeMs`,
-  `long detectedAtMs`. In slice 2 `fills` is 1 and all three prices are equal.
+  `double notional`, `double firstPrice`, `double lastPrice`, `int fills`, `long firstTradeId`,
+  `long lastTradeId`, `long tradeTimeMs`, `long detectedAtMs`. In slice 2 `fills` is 1 and all three
+  prices are equal. The ids (`-1` when the venue has none) identify the alert in the replay test and
+  make a spot check against the venue's trade list exact.
 - `TradeAlertStore`: a bounded ring of the last `recent-capacity` alerts, written by the shard
   threads and read by the REST thread. Alerts are rare, so a `synchronized` `ArrayDeque` is enough.
   It also keeps a count per `(venue, symbol)` since startup, for tuning (`ConcurrentHashMap.merge`,
@@ -158,7 +160,8 @@ windows) are tested by re-running the analysis, not by another live run.
 
 - A standalone script outside the repo. The data goes in a durable directory, not a temp dir.
   Built: `C:\git\trade-capture\capture.py`, data in `C:\git\trade-capture\data\`. Its README
-  describes the line format, the side files and the caveats.
+  describes the line format, the side files and the caveats. The analysis scripts are in
+  `C:\git\trade-capture\analysis\` (README there: how to re-run after more capture hours).
 - **Universe**: every symbol the app trades on both Binance venues. Take the list from the app's
   `/api/tickers`, or from `exchangeInfo` with the same filters as `BinanceInstrumentSource` and
   `screener.discovery.excluded-symbols`, so the numbers match what the app will see.
@@ -206,6 +209,40 @@ A **Capture findings** section appended to this plan with:
   script finds in it under the test thresholds, single-trade and coalesced. Slices 2 and 3 replay
   it through the Java code and must find the same alerts.
 
+**Fixture format** (read by `TradeReplayTest`, which skips while the files are absent):
+
+- `src/test/resources/trade/binance-aggtrade-replay.jsonl`: capture lines unchanged
+  (`{"r":…,"v":"BINANCE_FUTURES","c":…,"g":…,"d":{…raw frame…}}`), in capture order. The test
+  feeds `d` to `BinanceAggTradeDecoder` for the slot of `(v, d.s)`.
+- `src/test/resources/trade/binance-aggtrade-replay-expected.json`:
+
+  ```json
+  {
+    "thresholds": {
+      "defaultMinNotional": 20000,
+      "minNotional": { "BINANCE_FUTURES": { "BTCUSDT": 200000 } }
+    },
+    "singleTrade": [
+      { "venue": "BINANCE_FUTURES", "symbol": "SOLUSDT", "side": "SELL",
+        "firstTradeId": 3653778376, "lastTradeId": 3653778393, "fills": 1,
+        "tradeTimeMs": 1794931200123, "qty": 150.5, "notional": 21070.0 }
+    ],
+    "coalesced": [ ]
+  }
+  ```
+
+  - `thresholds` are test thresholds chosen for the fixture (enough alerts, some near the
+    boundary), independent of the shipped YAML. `minNotional` keys are venue, then native symbol.
+  - An alert is judged as `notional ≥ minNotional`, with `notional = float(p) × float(q)` (one
+    fill) or the sum over the fills in frame order (a sweep). `side` is `SELL` when `m` is true.
+    `firstTradeId` is the first fill's `f` and `lastTradeId` the last fill's `l`; `tradeTimeMs` is
+    `T`; `qty` is the sum of `q`.
+  - The test matches alerts by `(venue, symbol, firstTradeId, lastTradeId)`; side, fills and
+    trade time must be equal, and qty and notional equal to a relative 1e-9.
+  - `coalesced` holds the alerts under the §10.3 rule, in emission order; slice 3 adds its
+    assertion. `alternativeRules.side_T_ids.coalesced` holds them for the same rule without the
+    price check. Alerts also carry `vwap`, `firstPrice` and `lastPrice`, which the test may ignore.
+
 ---
 
 ## 4. Slice 1 — decoder
@@ -240,6 +277,9 @@ A **Capture findings** section appended to this plan with:
 
 **Goal**: the first alerts, end to end inside the backend. Each aggTrade event is judged alone,
 on purpose: this undercounts sweeps, and the count is the baseline slice 3 is compared against.
+
+**Status**: built. `application.yml` ships the §10.2 thresholds, and `TradeReplayTest` passes on the
+fixture (§10.6). Still open: the Verify step below, on a live run.
 
 1. `TradeAlertProperties` + YAML block (2.5), with the thresholds from the slice 0 findings.
 2. `TradeThresholds`, `TradeAlert`, `TradeAlertStore` (2.5, 2.6).
@@ -278,35 +318,39 @@ the capture was not representative or the code differs from the script.
    - Otherwise **close** the open sweep (judge `sumNotional` against the threshold, alert with
      `fills`, `vwap = sumNotional / sumQty`, first and last price), then open a new sweep with
      this trade.
-3. **Continuation rule**: as chosen in the slice 0 findings. The working assumption is same side,
-   same `tradeTimeMs`, and, when both ids are known, `firstTradeId == lastTradeId + 1`. Without ids
-   (future venues), side and time alone.
+3. **Continuation rule** (§10.3): same side, same `tradeTimeMs`, the price moves strictly in the
+   aggressor's direction (buy: `price > lastPrice`, sell: `price < lastPrice`), and, when both ids
+   are known, `firstTradeId == lastTradeId + 1`. Without ids (future venues), side, time and price.
 4. Metric, for alerted sweeps only: fills per sweep (`1, 2–3, 4–10, >10`).
 
 **Known gap**: a sweep closes only when the instrument's next trade arrives. On an illiquid symbol
-that can be seconds or minutes. Slice 0 measures this delay (question 7) and decides whether
-slice 4 is needed.
+that can be seconds or minutes. At the shipped thresholds this stays rare and short (§10.4), so
+slice 4 is deferred.
 
 **Tests** (`TradeDetectorTest`, synthetic sequences): one large trade alerts when the next trade
 closes it; ten contiguous fills, each below the threshold, summing above it → one alert, `fills = 10`,
 correct VWAP and first/last price; the same fills summing below → no alert; a side change, a time
-change and an id gap each close the sweep; ids `-1` fall back to side + time. `TradeReplayTest`:
-the fixture finds exactly the coalesced alerts the analysis found.
+change, an id gap, an equal price and a price reversal each close the sweep; ids `-1` fall back to
+side + time + price. `TradeReplayTest`: the fixture finds exactly the `coalesced` alerts in the
+expected file (§10.6).
 
 **Verify**: compare alerts/hour with the slice 2 live baseline and with the slice 0 coalesced
 simulation; inspect a few multi-fill alerts against the Binance trade list.
 
 ---
 
-## 7. Slice 4 — shard tick and stale-sweep flush (only if slice 0 says go)
+## 7. Slice 4 — shard tick and stale-sweep flush (deferred, §10.4)
+
+Not part of Phase 2. Build it with Phase 4, whose burst windows need the same tick, or earlier if
+Phase 6 lets users set thresholds low enough to alert on thin symbols.
 
 - A scheduler publishes one `TICK` event per shard every `tick-interval` (starting idea 250 ms).
   `MarketEventHandler` handles it before the slot lookup (no instrument).
 - On a tick, the handler scans its shard's slots (`id & mask == shard`, about a thousand checks)
   and closes sweeps whose `lastFillAtMs` is older than `sweep-idle-close-ms`.
-- Both values are tunables; the slice 0 close-delay distribution gives their starting values. This
-  is a core edit to the publisher and handler; Phase 4's burst windows reuse the same tick for
-  expiry and cooldown.
+- Both values are tunables; starting values tick 250 ms, idle 1000 ms (§10.4). This is a core edit
+  to the publisher and handler; Phase 4's burst windows reuse the same tick for expiry and
+  cooldown.
 - Detailed when started.
 
 ---
@@ -333,3 +377,166 @@ simulation; inspect a few multi-fill alerts against the Binance trade list.
 - Per-user thresholds (Phase 6).
 - Allocation of the Jackson parser per frame: the depth path does the same today; revisit for
   both together if it shows up in a profile.
+
+---
+
+## 10. Capture findings (slice 0)
+
+**Data**: 2026-11-17 15:35–17:26 UTC. Spot covers 1.85 h and futures 1.80 h (163 s of futures
+outages excluded). 1.34M spot and 4.96M futures events over the full universe (351 spot, 519
+futures symbols). It includes a sell-off (BTC −1.75% between 15:40 and 15:50, on about 5× normal
+volume) and the quiet hours after it, but only the last 25 minutes of the US open. The capture
+keeps running. Scripts: `C:\git\trade-capture\analysis\` (its README covers re-running).
+`analysis/out/report.md` has every table and `out/per_symbol.csv` the per-symbol numbers. Re-run
+after more hours and update the numbers here.
+
+### 10.1 Answers
+
+1. **Spot sweeps.** One taker order's fragments share side and `T`, have contiguous ids, and
+   arrive together: 94.8% of multi-fill sweeps sit in one `E`, receive spread p99 4 ms. Raw trades
+   (REST, `verify_raw_trades.py`) confirm that one spot aggTrade is one taker order at one price:
+   every aggTrade holds a single raw-trade time, and `T` equals it. **Same side + same `T` does not
+   identify one order, though**: 44.5% of such steps print at the *same price* as the previous
+   fragment. By the aggregation rule that is a second order in the same millisecond. Another 0.6%
+   reverse the price. Spot ids are always contiguous, so they never separate orders.
+2. **Futures aggregation.** Confirmed with raw trades. A futures aggTrade is a run of consecutive
+   raw trades with one price and side, closed by a price or side change or after about 100 ms.
+   9–26% of futures aggTrades hold fills from several moments, so they merge several taker
+   orders; `T` is the first fill's time. Consequences:
+   - The last fragment of a sweep is sent only when its window closes. Multi-fill sweeps span
+     p90 150 ms of `E` (only 6.1% sit in one `E`), and `E − T` is p90 150 ms. Futures alerts
+     therefore land at least ~150 ms after the trade.
+   - A multi-level sweep shares `T`: 99.4% of same-`T` steps move toward the aggressor, and none
+     repeat a price.
+   - Ground truth: taker orders rebuilt from raw trades, 4 symbols, about 2 min each, at a $30K
+     threshold. Same-`T` coalescing alerts on 97% of large orders (single events: 88%), and 89%
+     of its alerts contain one order at or above the threshold. The other 11% are several orders
+     that Binance's own window merged, which aggTrade cannot separate. Allowing `T` to differ by
+     up to 100 ms reaches 100% recall but only 74% precision, so the rule keeps exact `T`.
+3. **Order.** `a` rises strictly per symbol within a socket on both venues, with no jumps. Futures
+   `f ≠ prev.l + 1` in 743 of 4.95M pairs, mostly gaps of 1 (ids never published). Reconnects lost
+   435K futures aggTrades over 163 s of local outages.
+4. **`nq` vs `q`.** `nq ≤ q` always. They differ on 0.59% of events (`nq = 0` on 0.18%), worth 0.3%
+   of notional; 89 of 40,610 events at or above $30K would fall below it by `nq`. Use `q`. `st` is
+   always 1.
+5. **Notional.** Per event / per coalesced sweep:
+
+   | venue | p50 | p99 | p99.9 | p99.99 | max |
+   |---|---|---|---|---|---|
+   | spot event / sweep | 20 / 31 | 7.2K / 9.1K | 35K / 49K | 133K / 270K | 712K / 1.7M |
+   | futures event / sweep | 60 / 67 | 24.5K / 33K | 149K / 237K | 515K / 1.2M | 12.4M / 12.7M |
+
+   Large trades are concentrated: at a flat $30K, BTC + ETH make 82–84% of alerts, and only
+   33 of 351 spot and 106 of 519 futures symbols reached $30K at all.
+6. **Alert rates** (alerts/hour, coalesced with §10.3's rule): a flat $30K gives spot 1,101 and
+   futures 19,492, so a flat threshold is unusable on futures. The §10.2 policy gives spot 95 and
+   futures 336. Under the same YAML, single-event judging (slice 2) gives 53 and 134: **46% of spot
+   and 62% of futures alerts exist only because of coalescing**, mostly sweeps of 4+ fills (counts
+   by 2–3 / 4–10 / >10 fills: spot 14 / 32 / 34, futures 47 / 162 / 165). Of all alerted sweeps,
+   27–39% are a single fill and 21–28% have more than 10 fills (max 176). The rate swings with the market: 231 /
+   763 per hour in the sell-off hour, 28 / 163 in the quietest.
+7. **Close delay** (last fill → next trade of the symbol). For alerting sweeps at the §10.2
+   thresholds: liquid symbols (≥ 1 event/s) p90 ≤ 160 ms, p99 ≤ 1.8 s, max 3.8 s. Mid-liquidity
+   spot (0.1–1/s) p90 2 s, p99 9 s, max 11 s, with 1.9% over 10 s. Futures mid-liquidity max
+   1.5 s. Thin symbols (< 0.1 event/s, 194 on spot) never alert at $30K. At $10K, 18% of their
+   sweeps would wait more than 10 s, and up to minutes.
+
+### 10.2 Slice 2 thresholds
+
+The floor is $30K. A symbol whose coalesced alert rate at the floor is above 10/h gets the lowest
+step of a fixed ladder (50K, 75K, 100K, 150K, 200K, 300K, 500K, …, 5M) that brings it to 10/h or
+less. Computed from the quiet hours only, every override stays within one ladder step of the
+value below.
+
+```yaml
+screener:
+  trade-alerts:
+    default-min-notional: 30000
+    min-notional:
+      BINANCE_SPOT:
+        BTCUSDT: 500000
+        ETHUSDT: 200000
+        SOLUSDT: 150000
+        BNBUSDT: 75000
+        NEARUSDT: 50000
+        XRPUSDT: 50000
+        ZECUSDT: 50000
+      BINANCE_FUTURES:
+        BTCUSDT: 5000000
+        ETHUSDT: 3000000
+        SOLUSDT: 500000
+        ZECUSDT: 300000
+        HYPEUSDT: 200000
+        XRPUSDT: 200000
+        1000PEPEUSDT: 150000
+        AAVEUSDT: 150000
+        BNBUSDT: 150000
+        NEARUSDT: 150000
+        DOGEUSDT: 100000
+        ADAUSDT: 75000
+        AVAXUSDT: 75000
+        ENAUSDT: 75000
+        GRAMUSDT: 75000
+        LINKUSDT: 75000
+        SUIUSDT: 75000
+        UNIUSDT: 75000
+        ASTERUSDT: 50000
+        BCHUSDT: 50000
+        BREVUSDT: 50000
+        FILUSDT: 50000
+        INJUSDT: 50000
+        MMTUSDT: 50000
+        PUMPUSDT: 50000
+        TRUMPUSDT: 50000
+        WLDUSDT: 50000
+```
+
+Other policies (alerts/h spot / futures, overrides in brackets): floor 20K → 125 / 477 (11 / 39);
+cap 5/h → 65 / 231 (11 / 36); floor 50K → 56 / 220 (4 / 18). `analyze.py --floor --cap` prints
+any other combination.
+
+### 10.3 Slice 3 continuation rule
+
+A trade continues the open sweep when it has the **same side and the same `T`**, its **price moves
+strictly in the aggressor's direction** (buy: `price > lastPrice`, sell: `price < lastPrice`),
+and, when both ids are known, `firstTradeId == lastTradeId + 1`.
+
+- The price check separates orders that share a millisecond on spot (an equal price is always a
+  new order). It cuts spot alerts at $30K by 17% and changes nothing on futures.
+- The id check never mattered in the data (1 sweep in 3.2M), but it costs nothing. Keep it as a
+  guard. Without ids, the rule is side + `T` + price.
+- Trade-off: same-millisecond child orders of one algorithm become separate alerts. The fixture
+  has two ~$34.2K XRP spot buys in one millisecond, which this rule reports as two orders and
+  `side_T_ids` as one $78.8K sweep. Summing several orders over time is the Phase 4 burst
+  window's job.
+
+### 10.4 Slice 4: deferred
+
+With the §10.2 thresholds, sweeps close fast enough without a tick: 99% of liquid-symbol alerts
+within 1.8 s, the worst case 11 s on a mid-liquidity spot symbol. Thin symbols do not alert at
+$30K. The tick becomes worth building with Phase 4 (bursts need it anyway) or with Phase 6, once
+users can set thresholds below about $10K on thin coins. Starting values when built: tick
+250 ms, idle close 1000 ms of receive time. The idle must stay well above the futures window,
+because a futures sweep's last fragment arrives about 150 ms after the others (receive spread
+p99 344 ms, spikes to 3.4 s). A shorter idle would split futures sweeps.
+
+### 10.5 Volume-scaled thresholds (later)
+
+The threshold the cap rule picks follows the symbol's hourly notional volume `V` closely:
+`x ≈ 10^a · V^b`, with b = 0.78 (spot) and 0.80 (futures), R² 0.94 / 0.97, typical error ±1.3–1.4×.
+That puts x at about $8K for $1M/h of volume, $300K at $100M/h and $1.9M at $1B/h. A threshold
+computed from each instrument's rolling volume, which the trade arm could keep itself, would
+reproduce the override list without anyone maintaining it, cover new listings, and follow
+volatility. This is the "adaptive thresholds from rolling volume" idea in `trade-alerts-plan.md`
+§4. D2 keeps Phase 2 static.
+
+### 10.6 Replay fixture
+
+`src/test/resources/trade/binance-aggtrade-replay.jsonl` holds 3,450 capture lines (770 KB) from
+2026-11-17 17:05:21–17:06:21 UTC, a burst after the sell-off: SOLUSDT and XRPUSDT on both
+venues, plus NEARUSDT, JASMYUSDT, THEUSDT and DYMUSDT futures. Test thresholds: floor 20K, and
+100K for `BINANCE_FUTURES` `SOLUSDT` only (SOLUSDT spot alerts at 20K, so a leaking override would
+show). Expected alerts: 97 `singleTrade`; 91 `coalesced` (32 multi-fill, 14 only because of
+coalescing, up to 13 fills, 23 sells); 90 under `side_T_ids`, and the two rules differ on 5 spot
+alerts. No sweep is still open at the end. `TradeReplayTest` passes against slice 2. To regenerate
+exactly: `python make_fixture.py --at 1794935121208 --length 60`.

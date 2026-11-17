@@ -4,8 +4,12 @@ import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.analysis.UserFeedRegistry.UserPresence;
 import dev.abu.screener_backend.marketdata.InstrumentRegistry;
 import dev.abu.screener_backend.marketdata.Market;
+import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
+import dev.abu.screener_backend.marketdata.core.trade.TradeAlert;
+import dev.abu.screener_backend.marketdata.core.trade.TradeAlertStore;
+import dev.abu.screener_backend.marketdata.core.trade.TradeAlertStore.SymbolCount;
 import dev.abu.screener_backend.monitoring.dto.UsageReportResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -15,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
@@ -28,6 +33,8 @@ import java.util.List;
  *   <li>{@code GET /api/monitoring/presence} — live WebSocket presence (who is connected right now)</li>
  *   <li>{@code GET /api/monitoring/orderbook} — the current state of a single local orderbook</li>
  *   <li>{@code GET /api/monitoring/usage} — persisted connection activity aggregated into time-slices</li>
+ *   <li>{@code GET /api/monitoring/trade-alerts} and {@code /trade-alerts/summary} — recent
+ *       large-trade alerts and the alert count per symbol since startup, for threshold tuning</li>
  * </ul>
  *
  * <p>{@code /presence} and {@code /orderbook} are instantaneous, in-memory reads with no persistence
@@ -48,6 +55,7 @@ public class MonitoringController {
     private final InstrumentRegistry instrumentRegistry;
     private final InstrumentSlotTable slots;
     private final ConnectionUsageService connectionUsageService;
+    private final TradeAlertStore tradeAlertStore;
 
     /**
      * Returns the set of currently-connected users with their open session counts.
@@ -111,6 +119,66 @@ public class MonitoringController {
             @RequestParam String symbol,
             @RequestParam Market market) {
         return ResponseEntity.ok("Endpoint abandoned for now");
+    }
+
+    /**
+     * The most recent large-trade alerts, newest first. In memory only: the store keeps the last
+     * {@code screener.trade-alerts.recent-capacity} alerts since startup.
+     *
+     * <p>Example: {@code GET /api/monitoring/trade-alerts?venue=BINANCE_FUTURES&symbol=ETHUSDT&limit=20}
+     *
+     * @param venue  only this venue; omitted → every venue
+     * @param symbol only this native symbol, case-insensitive; omitted → every symbol
+     * @param limit  at most this many alerts, clamped to {@code [1, recent-capacity]}
+     */
+    @GetMapping("/trade-alerts")
+    public List<TradeAlertView> getTradeAlerts(
+            @RequestParam(required = false) Venue venue,
+            @RequestParam(required = false) String symbol,
+            @RequestParam(defaultValue = "100") int limit) {
+        int clamped = Math.clamp(limit, 1, tradeAlertStore.capacity());
+        String filter = symbol == null || symbol.isBlank() ? null : symbol.trim();
+        return tradeAlertStore.recent(venue, filter, clamped).stream().map(TradeAlertView::of).toList();
+    }
+
+    /**
+     * Alert count per venue and native symbol since startup, most alerts first: which symbols fire
+     * too often at the current thresholds and need a {@code min-notional} override.
+     */
+    @GetMapping("/trade-alerts/summary")
+    public List<SymbolCount> getTradeAlertSummary() {
+        return tradeAlertStore.counts();
+    }
+
+    /**
+     * One alert as {@code /trade-alerts} shows it: the instrument reduced to venue and native symbol
+     * (its dense id stays in the process), the side spelled out, and both times readable.
+     *
+     * @param side       {@code BUY} if the taker bought, {@code SELL} if the taker sold
+     * @param tradeTime  venue trade time
+     * @param detectedAt local time the alert was raised; minus {@code tradeTime} is the detection lag
+     */
+    public record TradeAlertView(
+            Venue venue,
+            String symbol,
+            String side,
+            double notional,
+            double qty,
+            double vwap,
+            double firstPrice,
+            double lastPrice,
+            int fills,
+            long firstTradeId,
+            long lastTradeId,
+            Instant tradeTime,
+            Instant detectedAt
+    ) {
+        static TradeAlertView of(TradeAlert a) {
+            return new TradeAlertView(a.instrument().venue(), a.instrument().nativeSymbol(),
+                    a.aggressorBuy() ? "BUY" : "SELL", a.notional(), a.qty(), a.vwap(),
+                    a.firstPrice(), a.lastPrice(), a.fills(), a.firstTradeId(), a.lastTradeId(),
+                    Instant.ofEpochMilli(a.tradeTimeMs()), Instant.ofEpochMilli(a.detectedAtMs()));
+        }
     }
 
     /**

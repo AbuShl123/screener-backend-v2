@@ -227,6 +227,51 @@ screener:
       - RLUSDUSDT
       - USDEUSDT
 
+  # Large-trade detection (.claude/plans/trade-detection-plan.md §2.5). Notional in quote currency
+  # (USDT on Binance). Values from the slice 0 capture (§10.2): a $30K floor; a symbol whose alert
+  # rate at the floor is above ~10/h gets the lowest step of 50K, 75K, 100K, 150K, 200K, 300K,
+  # 500K, ..., 5M that brings it to 10/h or less.
+  trade-alerts:
+    default-min-notional: 30000
+    min-notional:                        # per venue, per native symbol; optional
+      BINANCE_SPOT:
+        BTCUSDT: 500000
+        ETHUSDT: 200000
+        SOLUSDT: 150000
+        BNBUSDT: 75000
+        NEARUSDT: 50000
+        XRPUSDT: 50000
+        ZECUSDT: 50000
+      BINANCE_FUTURES:
+        BTCUSDT: 5000000
+        ETHUSDT: 3000000
+        SOLUSDT: 500000
+        ZECUSDT: 300000
+        HYPEUSDT: 200000
+        XRPUSDT: 200000
+        1000PEPEUSDT: 150000
+        AAVEUSDT: 150000
+        BNBUSDT: 150000
+        NEARUSDT: 150000
+        DOGEUSDT: 100000
+        ADAUSDT: 75000
+        AVAXUSDT: 75000
+        ENAUSDT: 75000
+        GRAMUSDT: 75000
+        LINKUSDT: 75000
+        SUIUSDT: 75000
+        UNIUSDT: 75000
+        ASTERUSDT: 50000
+        BCHUSDT: 50000
+        BREVUSDT: 50000
+        FILUSDT: 50000
+        INJUSDT: 50000
+        MMTUSDT: 50000
+        PUMPUSDT: 50000
+        TRUMPUSDT: 50000
+        WLDUSDT: 50000
+    recent-capacity: 500                 # alerts kept in memory for /api/monitoring/trade-alerts
+
   ticker:
     refresh-interval: PT4H
 

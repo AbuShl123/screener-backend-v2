@@ -39,8 +39,9 @@ cannot say whether it was cancelled or eaten. The trade stream can.
   trade has no "current state"; a client sees things that happened.
 - **aggTrade is fragmented.** Binance aggregates fills of one taker order per price level. A large
   market order sweeping ten levels arrives as about ten events. Checking each event alone would
-  miss the biggest trades. *(Verify the exact aggregation rule against Binance docs for spot and
-  futures before implementing the decoder.)*
+  miss the biggest trades. Verified against raw trades (`trade-detection-plan.md` §10.1): a spot
+  aggTrade is one taker order at one price. A futures aggTrade is a run of same-price, same-side
+  fills over up to ~100 ms, so it can merge several orders.
 - Large sizes mean different things per coin: $30K is routine on BTC and big on a small altcoin. See
   open question Q1.
 
@@ -136,6 +137,9 @@ streams as a related signal.
 - **Q1. Is one threshold enough for noisy tickers?** $30K will fire very often on BTC, ETH and
   SOL. The per-symbol override map in D2 (or a multiplier for the high-liquidity set) is the likely
   answer. The default value and which symbols get overrides are decided from live data in Phase 2.
+  *Starting values*: a $30K default plus overrides that cap each symbol at ~10 alerts/h (7 spot,
+  27 futures symbols; BTC futures $5M). See `trade-detection-plan.md` §10.2. A threshold scaled from
+  each symbol's rolling volume fits those overrides closely (§10.5).
 - **Q2. Is the burst threshold the same as the single-trade threshold?** Probably higher, since a
   busy ticker accumulates $30K in seconds. Decide in Phase 4 from data.
 - **Q3. Burst alert behavior.** Sliding or tumbling window? Alert once when the threshold is
@@ -143,6 +147,8 @@ streams as a related signal.
 - **Q4. Recent-trades store scope.** One global last-N, or per venue / per symbol? Does a user's
   filter apply on replay?
 - **Q5. Sweep coalescing rule.** Which events count as one sweep (same timestamp, same side, within
-  a few ms)? Depends on the Binance aggregation behavior verified in Phase 1.
+  a few ms)? Depends on the Binance aggregation behavior verified in Phase 1. *Answered*: same
+  side, same trade time, price moving in the aggressor's direction, and contiguous ids when known
+  (`trade-detection-plan.md` §10.3).
 - **Q6. Connection limits.** Trade pools add sockets per venue. Check Binance's per-IP limits before
   enabling on all symbols.

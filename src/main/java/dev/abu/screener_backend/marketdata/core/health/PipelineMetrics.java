@@ -35,6 +35,7 @@ public class PipelineMetrics {
     /** Per venue: a venue has at most one trade stream, so per venue is per trade stream. */
     private final LongAdder[] tradesDecoded = adders(Venue.values().length);
     private final LongAdder[] tradeParseFailures = adders(Venue.values().length);
+    private final LongAdder[] tradeAlerts = adders(Venue.values().length);
 
     private static LongAdder[] adders(int count) {
         LongAdder[] adders = new LongAdder[count];
@@ -116,5 +117,15 @@ public class PipelineMetrics {
     /** Monotonic total since startup. Subtract two samples for a rate. */
     public long tradeParseFailures(Venue venue) {
         return tradeParseFailures[venue.ordinal()].sum();
+    }
+
+    /** One large-trade alert raised. Rare path: far fewer than decoded trades. */
+    public void recordTradeAlert(Venue venue) {
+        tradeAlerts[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total since startup. Subtract two samples for a count over an interval. */
+    public long tradeAlerts(Venue venue) {
+        return tradeAlerts[venue.ordinal()].sum();
     }
 }
