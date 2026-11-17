@@ -37,6 +37,9 @@ import java.util.Locale;
  *       of the venue's streams delivers, before sync state is known. A stream at zero is dead or
  *       never subscribed; depth is also the only rate that moves for a venue whose books cannot
  *       sync yet. A new {@link StreamKind} gets its column without an edit here.</li>
+ *   <li><b>trades</b> — a second table, only for venues that decoded trades: decoded trades/s and
+ *       parse failures. A decode rate below the {@code trade/s} frame rate means the decoder is
+ *       rejecting frames.</li>
  *   <li><b>msgs/s per shard</b> — throughput, and shard balance. The two shards should track each
  *       other closely; a skew would undermine the {@code id & mask} routing assumption.</li>
  *   <li><b>ring free</b> — whether consumers keep up with producers. A persistent dip is the signal
@@ -61,6 +64,8 @@ public class PipelineHealthLogger {
     /** One frames/s column per {@link StreamKind}, appended to {@link #ROW}. */
     private static final String RATE = " %9s";
     private static final StreamKind[] KINDS = StreamKind.values();
+    /** venue | decoded trades/s | parse failures over the interval. */
+    private static final String TRADE_ROW = "  %-16s %6s %5s";
 
     private final InstrumentSlotTable slots;
     private final DisruptorShardManager shardManager;
@@ -70,6 +75,8 @@ public class PipelineHealthLogger {
     private final long[] lastResyncs = new long[Venue.values().length];
     private final long[] lastSnapshotFailures = new long[Venue.values().length];
     private final long[] lastFrames = new long[StreamKey.COUNT];
+    private final long[] lastTradesDecoded = new long[Venue.values().length];
+    private final long[] lastTradeParseFailures = new long[Venue.values().length];
     private long[] lastProcessed;
     private long lastSampleNanos;
 
@@ -82,6 +89,7 @@ public class PipelineHealthLogger {
         StringBuilder out = new StringBuilder(512);
         out.append("pipeline health:");
         appendVenueTable(out, elapsedSec);
+        appendTradeTable(out, elapsedSec);
         out.append(System.lineSeparator()).append("  shards  ");
         appendThroughput(out, elapsedSec);
         appendRingFree(out);
@@ -129,6 +137,31 @@ public class PipelineHealthLogger {
             for (long f : frames) {
                 out.append(String.format(RATE, elapsedSec <= 0 ? "-" : Math.round(f / elapsedSec)));
             }
+        }
+    }
+
+    /**
+     * One row per venue that decoded or failed to decode a trade in the interval; the whole table
+     * is omitted when no venue did, so a run without trade streams logs nothing extra.
+     * {@code dec/s} is a rate; {@code fail} is a count over the interval. On Binance {@code dec/s}
+     * should equal the venue's {@code trade/s} (one trade per frame): a gap means frames are failing
+     * to decode.
+     */
+    private void appendTradeTable(StringBuilder out, double elapsedSec) {
+        boolean header = false;
+        for (Venue venue : Venue.values()) {
+            int v = venue.ordinal();
+            long decoded = delta(metrics.tradesDecoded(venue), lastTradesDecoded, v);
+            long failures = delta(metrics.tradeParseFailures(venue), lastTradeParseFailures, v);
+            if (decoded == 0 && failures == 0) continue;
+            if (!header) {
+                out.append(System.lineSeparator()).append(String.format(TRADE_ROW, "trades", "dec/s", "fail"));
+                header = true;
+            }
+            out.append(System.lineSeparator()).append(String.format(TRADE_ROW,
+                    shortName(venue),
+                    elapsedSec <= 0 ? "-" : Math.round(decoded / elapsedSec),
+                    failures));
         }
     }
 

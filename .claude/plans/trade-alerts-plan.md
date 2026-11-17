@@ -119,7 +119,7 @@ Each phase is shippable and builds on the one before. The first phases ship behi
 | # | Phase | Outcome |
 |---|---|---|
 | 1 | **Transport** | `StreamKind.TRADE`; Binance spot and futures `aggTrade` protocol; per-kind frame counters show trade traffic. An explicit `TRADE` arm in `MarketEventHandler` drops the frames. No decoder, no alerts. Plan: `.claude/plans/trade-streams-transport-plan.md`. |
-| 2 | **Decode and large-trade detection** | Trade decoder SPI. Trade logic in the `TRADE` arm: side, notional, single static threshold, sweep coalescing (D3 layer 1). Fired alerts go to the recent-trades store. Metrics for trade rate and alert rate. |
+| 2 | **Decode and large-trade detection** | Trade decoder SPI. Trade logic in the `TRADE` arm: side, notional, single static threshold, sweep coalescing (D3 layer 1). Fired alerts go to the recent-trades store. Metrics for trade rate and alert rate. Plan: `.claude/plans/trade-detection-plan.md`. |
 | 3 | **Delivery** | `TradeChannel` bean; last-N replay on connect; entitlement gate; contract doc under `.claude/docs/for-frontend/`. First end-to-end release. |
 | 4 | **Burst detection** | Per-instrument same-side window (D3 layer 2); burst alerts with a re-alert rule; burst tunables. |
 | 5 | **More venues** | Bybit and MEXC trade protocols and decoders, one venue at a time. |

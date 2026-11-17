@@ -32,6 +32,9 @@ public class PipelineMetrics {
     /** Per venue: resyncs and snapshot failures are depth-sync concepts, not per stream. */
     private final LongAdder[] resyncs = adders(Venue.values().length);
     private final LongAdder[] snapshotFailures = adders(Venue.values().length);
+    /** Per venue: a venue has at most one trade stream, so per venue is per trade stream. */
+    private final LongAdder[] tradesDecoded = adders(Venue.values().length);
+    private final LongAdder[] tradeParseFailures = adders(Venue.values().length);
 
     private static LongAdder[] adders(int count) {
         LongAdder[] adders = new LongAdder[count];
@@ -86,5 +89,32 @@ public class PipelineMetrics {
     /** Monotonic total since startup. Subtract two samples for a rate. */
     public long snapshotFailures(Venue venue) {
         return snapshotFailures[venue.ordinal()].sum();
+    }
+
+    /**
+     * One trade decoded from a {@code TRADE} frame. On Binance this tracks the stream's frame
+     * count one for one (one trade per frame); a gap between the two means frames are failing to
+     * decode. Venues that batch trades decode more trades than frames.
+     *
+     * <p><b>Hot path</b> — called on a Disruptor consumer thread for every trade. Striped, because
+     * every shard decodes trades of every venue.
+     */
+    public void recordTradeDecoded(Venue venue) {
+        tradesDecoded[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total since startup. Subtract two samples for a rate. */
+    public long tradesDecoded(Venue venue) {
+        return tradesDecoded[venue.ordinal()].sum();
+    }
+
+    /** One {@code TRADE} frame the venue's decoder could not parse. Zero in steady state. */
+    public void recordTradeParseFailure(Venue venue) {
+        tradeParseFailures[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total since startup. Subtract two samples for a rate. */
+    public long tradeParseFailures(Venue venue) {
+        return tradeParseFailures[venue.ordinal()].sum();
     }
 }

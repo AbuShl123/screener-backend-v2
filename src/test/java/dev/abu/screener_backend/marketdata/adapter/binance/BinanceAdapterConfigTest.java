@@ -22,6 +22,7 @@ import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocolRegistry;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
+import dev.abu.screener_backend.marketdata.spi.TradeDecoderRegistry;
 import dev.abu.screener_backend.marketdata.spi.VenueStrategyBinding;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,6 +38,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -145,6 +147,22 @@ class BinanceAdapterConfigTest {
         }
         assertNotSame(registry.forStream(new StreamKey(Venue.BINANCE_SPOT, StreamKind.TRADE)),
                 registry.forStream(new StreamKey(Venue.BINANCE_FUTURES, StreamKind.TRADE)));
+    }
+
+    @Test
+    @DisplayName("every Binance venue has a trade decoder binding, both sharing one BinanceAggTradeDecoder")
+    void everyBinanceVenueHasTradeDecoder() {
+        BinanceAdapterConfig config = new BinanceAdapterConfig();
+        BinanceAggTradeDecoder decoder = config.binanceAggTradeDecoder();
+        TradeDecoderRegistry registry = new TradeDecoderRegistry(List.of(
+                config.binanceSpotTradeDecoderBinding(decoder),
+                config.binanceFuturesTradeDecoderBinding(decoder)));
+
+        for (Venue venue : Venue.values()) {
+            if (venue.exchange() == Exchange.BINANCE) {
+                assertSame(decoder, registry.forVenue(venue), venue + " must decode with the shared Binance decoder");
+            }
+        }
     }
 
     @Test

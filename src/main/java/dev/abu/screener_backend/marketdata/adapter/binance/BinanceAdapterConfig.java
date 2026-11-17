@@ -12,6 +12,7 @@ import dev.abu.screener_backend.marketdata.spi.InstrumentSource;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
 import dev.abu.screener_backend.marketdata.spi.VenueStrategyBinding;
 import dev.abu.screener_backend.marketdata.spi.VenueStreamBinding;
+import dev.abu.screener_backend.marketdata.spi.VenueTradeDecoderBinding;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -23,9 +24,10 @@ import org.springframework.web.reactive.function.client.WebClient;
  * strategy serves which Binance venue, how Binance venues are streamed, and where Binance's
  * universe comes from.
  *
- * <p>The strategies and protocols are constructed here rather than component-scanned so that
- * core's {@code SyncStrategyRegistry} and {@code StreamProtocolRegistry} depend on the
- * {@link VenueStrategyBinding} / {@link VenueStreamBinding} abstractions alone. Do not also annotate
+ * <p>The strategies, protocols and decoder are constructed here rather than component-scanned so
+ * that core's {@code SyncStrategyRegistry}, {@code StreamProtocolRegistry} and
+ * {@code TradeDecoderRegistry} depend on the {@link VenueStrategyBinding} /
+ * {@link VenueStreamBinding} / {@link VenueTradeDecoderBinding} abstractions alone. Do not also annotate
  * those classes {@code @Component}: that yields two instances of each and a duplicate-binding
  * failure at startup. The same holds for {@link BinanceInstrumentSource}, which core's
  * {@code InstrumentUniverseService} would reject as a second claim on the Binance venues.
@@ -38,7 +40,9 @@ import org.springframework.web.reactive.function.client.WebClient;
  * <p>Each venue binds two streams, each with its own {@link BinanceStreamProtocol}: {@code DEPTH}
  * ({@code @depth}) and {@code TRADE} ({@code @aggTrade}). Both venues ship a {@code streams.TRADE}
  * block, since {@code ExchangesProperties.stream} throws on a missing one; the binding exists even
- * while that block is {@code enabled: false}.
+ * while that block is {@code enabled: false}. Each venue also binds a {@link VenueTradeDecoderBinding}
+ * for its {@code TRADE} frames. Both bindings share one stateless {@link BinanceAggTradeDecoder}:
+ * the two venues' aggTrade frames differ only in field order and extra fields the decoder skips.
  *
  * <p>Each venue recovers through its own core {@link SnapshotRequestQueue}, fed by its own
  * {@link BinanceSnapshotFetcher} — which alone tracks that venue's request weight. The queue's shape
@@ -108,6 +112,22 @@ public class BinanceAdapterConfig {
         StreamKey trade = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.TRADE);
         return new VenueStreamBinding(trade,
                 BinanceStreamProtocol.aggTrade(Venue.BINANCE_FUTURES, exchanges.stream(trade)));
+    }
+
+    /** Stateless, so one instance decodes both venues' aggTrade frames. */
+    @Bean
+    BinanceAggTradeDecoder binanceAggTradeDecoder() {
+        return new BinanceAggTradeDecoder();
+    }
+
+    @Bean
+    VenueTradeDecoderBinding binanceSpotTradeDecoderBinding(BinanceAggTradeDecoder decoder) {
+        return new VenueTradeDecoderBinding(Venue.BINANCE_SPOT, decoder);
+    }
+
+    @Bean
+    VenueTradeDecoderBinding binanceFuturesTradeDecoderBinding(BinanceAggTradeDecoder decoder) {
+        return new VenueTradeDecoderBinding(Venue.BINANCE_FUTURES, decoder);
     }
 
     @Bean
