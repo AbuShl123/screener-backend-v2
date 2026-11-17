@@ -310,9 +310,13 @@ the capture was not representative or the code differs from the script.
 
 **Goal**: one taker order that walks several price levels is judged as one trade.
 
-1. `TradeState` in the slot, allocated in `InstrumentSlotTable.allocate`. Fields: `open`,
-   `aggressorBuy`, `tradeTimeMs`, `lastTradeId`, `sumQty`, `sumNotional`, `firstPrice`,
-   `lastPrice`, `fills`, plus `lastFillAtMs` (local clock) if slice 4 is a go.
+**Status**: built. `TradeReplayTest` finds exactly the fixture's `coalesced` alerts, in emission
+order. Slice 2's live check was run before this slice landed; slice 3's own Verify is still open.
+
+1. `TradeState` (`core/trade/`) in the slot, created with the slot whenever the venue has a trade
+   decoder (`null` otherwise). Fields: `open`, `aggressorBuy`, `tradeTimeMs`, `firstTradeId`,
+   `lastTradeId`, `sumQty`, `sumNotional`, `maxFillNotional`, `firstPrice`, `lastPrice`, `fills`.
+   Add `lastFillAtMs` (local clock) with slice 4.
 2. `TradeDetector.onTrade` replaces the slice 2 per-trade check:
    - If a sweep is open and the trade **continues** it, accumulate.
    - Otherwise **close** the open sweep (judge `sumNotional` against the threshold, alert with
@@ -321,21 +325,34 @@ the capture was not representative or the code differs from the script.
 3. **Continuation rule** (§10.3): same side, same `tradeTimeMs`, the price moves strictly in the
    aggressor's direction (buy: `price > lastPrice`, sell: `price < lastPrice`), and, when both ids
    are known, `firstTradeId == lastTradeId + 1`. Without ids (future venues), side, time and price.
-4. Metric, for alerted sweeps only: fills per sweep (`1, 2–3, 4–10, >10`).
+   After a reconnect the ids jump, so the id check closes the old sweep, as the analysis's break did.
+4. **Coalescing-only flag**: `TradeAlert.coalescedOnly` is `maxFillNotional < minNotional`, true
+   when no single fill would have alerted. Always false for one fill.
+5. **Stable id**: `TradeAlert.id()` is `VENUE:SYMBOL:firstTradeId`
+   (`BINANCE_FUTURES:BTCUSDT:8285985083`), the same across restarts and replays. Clients key alerts
+   by it. A venue without numeric ids falls back to `VENUE:SYMBOL:t<tradeTimeMs><B|S>`, which is not
+   unique for two same-side orders in one millisecond; Phase 5 decides its identity.
+6. Metrics, for alerted sweeps only: fills per sweep (`1, 2–3, 4–10, >10`) and the coalescing-only
+   count, both per venue. The health log's trades table gains `coal` and `fills 1/2-3/4-10/>10`
+   columns. `/api/monitoring/trade-alerts` shows `id` and `coalescedOnly`.
 
 **Known gap**: a sweep closes only when the instrument's next trade arrives. On an illiquid symbol
-that can be seconds or minutes. At the shipped thresholds this stays rare and short (§10.4), so
-slice 4 is deferred.
+that can be seconds or minutes, and `detectedAtMs` includes the wait. At the shipped thresholds this
+stays rare and short (§10.4), so slice 4 is deferred. A sweep still open when its instrument leaves
+the universe is never judged.
 
 **Tests** (`TradeDetectorTest`, synthetic sequences): one large trade alerts when the next trade
-closes it; ten contiguous fills, each below the threshold, summing above it → one alert, `fills = 10`,
-correct VWAP and first/last price; the same fills summing below → no alert; a side change, a time
-change, an id gap, an equal price and a price reversal each close the sweep; ids `-1` fall back to
-side + time + price. `TradeReplayTest`: the fixture finds exactly the `coalesced` alerts in the
-expected file (§10.6).
+closes it, not before, and not when another instrument trades; ten contiguous fills, each below the
+threshold, summing above it → one alert, `fills = 10`, correct VWAP, first/last price and ids,
+coalescing-only; the same fills summing below → no alert; a side change, a time change, an id gap,
+an equal price and a price reversal each close the sweep; ids `-1` fall back to side + time + price;
+the fill and coalescing-only metrics. `TradeReplayTest`: the fixture finds exactly the `coalesced`
+alerts in the expected file, in emission order (§10.6); each alert's coalescing-only flag agrees with
+the `singleTrade` list (no single-trade alert inside its id range); ids are unique.
 
-**Verify**: compare alerts/hour with the slice 2 live baseline and with the slice 0 coalesced
-simulation; inspect a few multi-fill alerts against the Binance trade list.
+**Verify**: compare alerts/hour with the slice 0 coalesced simulation (§10.1 Q6: spot 95, futures
+336 per hour on average) and the `coal` share with Q6's 46% spot / 62% futures; inspect a few
+multi-fill alerts against the Binance trade list.
 
 ---
 

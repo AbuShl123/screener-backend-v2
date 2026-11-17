@@ -36,6 +36,12 @@ public class PipelineMetrics {
     private final LongAdder[] tradesDecoded = adders(Venue.values().length);
     private final LongAdder[] tradeParseFailures = adders(Venue.values().length);
     private final LongAdder[] tradeAlerts = adders(Venue.values().length);
+    private final LongAdder[] tradeAlertsCoalescedOnly = adders(Venue.values().length);
+
+    /** Labels of the fills-per-alerted-sweep buckets: 1, 2–3, 4–10, more than 10. */
+    public static final String[] FILL_BUCKETS = {"1", "2-3", "4-10", ">10"};
+    /** Per venue and bucket, at {@code venue.ordinal() * FILL_BUCKETS.length + bucket}. */
+    private final LongAdder[] tradeAlertFills = adders(Venue.values().length * FILL_BUCKETS.length);
 
     private static LongAdder[] adders(int count) {
         LongAdder[] adders = new LongAdder[count];
@@ -119,13 +125,39 @@ public class PipelineMetrics {
         return tradeParseFailures[venue.ordinal()].sum();
     }
 
-    /** One large-trade alert raised. Rare path: far fewer than decoded trades. */
-    public void recordTradeAlert(Venue venue) {
-        tradeAlerts[venue.ordinal()].increment();
+    /**
+     * One large-trade alert raised for a sweep of {@code fills} fills; {@code coalescedOnly} when no
+     * single fill reached the threshold on its own. Rare path: far fewer than decoded trades.
+     */
+    public void recordTradeAlert(Venue venue, int fills, boolean coalescedOnly) {
+        int v = venue.ordinal();
+        tradeAlerts[v].increment();
+        tradeAlertFills[v * FILL_BUCKETS.length + fillBucket(fills)].increment();
+        if (coalescedOnly) tradeAlertsCoalescedOnly[v].increment();
     }
 
     /** Monotonic total since startup. Subtract two samples for a count over an interval. */
     public long tradeAlerts(Venue venue) {
         return tradeAlerts[venue.ordinal()].sum();
+    }
+
+    /** Alerts that exist only because their fills were summed. Monotonic total since startup. */
+    public long tradeAlertsCoalescedOnly(Venue venue) {
+        return tradeAlertsCoalescedOnly[venue.ordinal()].sum();
+    }
+
+    /**
+     * Alerts whose sweep had a fill count in {@link #FILL_BUCKETS}{@code [bucket]}. Monotonic total
+     * since startup.
+     */
+    public long tradeAlertFills(Venue venue, int bucket) {
+        return tradeAlertFills[venue.ordinal() * FILL_BUCKETS.length + bucket].sum();
+    }
+
+    private static int fillBucket(int fills) {
+        if (fills <= 1) return 0;
+        if (fills <= 3) return 1;
+        if (fills <= 10) return 2;
+        return 3;
     }
 }

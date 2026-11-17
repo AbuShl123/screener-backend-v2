@@ -79,7 +79,7 @@ class TradeAlertStoreTest {
     }
 
     private static TradeAlert alert(Instrument instrument, long id) {
-        return new TradeAlert(instrument, true, 100, 1000, 100_000, 100, 100, 1, id, id, id, id);
+        return new TradeAlert(instrument, true, 100, 1000, 100_000, 100, 100, 1, false, id, id, id, id);
     }
 
     private static Instrument instrument(int id, Venue venue, String symbol) {

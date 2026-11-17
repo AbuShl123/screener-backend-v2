@@ -154,11 +154,16 @@ public class MonitoringController {
      * One alert as {@code /trade-alerts} shows it: the instrument reduced to venue and native symbol
      * (its dense id stays in the process), the side spelled out, and both times readable.
      *
-     * @param side       {@code BUY} if the taker bought, {@code SELL} if the taker sold
-     * @param tradeTime  venue trade time
-     * @param detectedAt local time the alert was raised; minus {@code tradeTime} is the detection lag
+     * @param id            {@link TradeAlert#id()}: stable across restarts, the key to dedupe by
+     * @param side          {@code BUY} if the taker bought, {@code SELL} if the taker sold
+     * @param coalescedOnly no single fill reached the threshold; the alert exists because the sweep's
+     *                      fills were summed
+     * @param tradeTime     venue trade time
+     * @param detectedAt    local time the alert was raised; minus {@code tradeTime} is the detection
+     *                      lag, including the wait for the next trade that closes the sweep
      */
     public record TradeAlertView(
+            String id,
             Venue venue,
             String symbol,
             String side,
@@ -168,16 +173,17 @@ public class MonitoringController {
             double firstPrice,
             double lastPrice,
             int fills,
+            boolean coalescedOnly,
             long firstTradeId,
             long lastTradeId,
             Instant tradeTime,
             Instant detectedAt
     ) {
         static TradeAlertView of(TradeAlert a) {
-            return new TradeAlertView(a.instrument().venue(), a.instrument().nativeSymbol(),
+            return new TradeAlertView(a.id(), a.instrument().venue(), a.instrument().nativeSymbol(),
                     a.aggressorBuy() ? "BUY" : "SELL", a.notional(), a.qty(), a.vwap(),
-                    a.firstPrice(), a.lastPrice(), a.fills(), a.firstTradeId(), a.lastTradeId(),
-                    Instant.ofEpochMilli(a.tradeTimeMs()), Instant.ofEpochMilli(a.detectedAtMs()));
+                    a.firstPrice(), a.lastPrice(), a.fills(), a.coalescedOnly(), a.firstTradeId(),
+                    a.lastTradeId(), Instant.ofEpochMilli(a.tradeTimeMs()), Instant.ofEpochMilli(a.detectedAtMs()));
         }
     }
 

@@ -45,7 +45,8 @@ public class InstrumentSlotTable {
 
     /**
      * Creates the slot and its {@link OrderBook} for a newly registered instrument, and pins the
-     * venue's sync strategy and trade decoder (if any) into it. Not visible to readers until
+     * venue's sync strategy and trade decoder (if any, with the trade detection state it needs)
+     * into it. Not visible to readers until
      * {@link #publish()}. Discovery thread only.
      */
     public void allocate(Instrument instrument) {

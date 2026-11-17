@@ -65,13 +65,55 @@ class TradeReplayTest {
     }
 
     @Test
-    @DisplayName("judged one aggTrade at a time, the fixture raises exactly the analysis's single-trade alerts")
-    void singleTradeAlerts() {
+    @DisplayName("coalescing sweeps, the fixture raises exactly the analysis's coalesced alerts")
+    void coalescedAlerts() {
         assumeFixture();
         List<Alert> actual = replay();
 
         assertEquals(0, failures, "every fixture frame decodes");
-        assertMatches(alerts(expected.required("singleTrade")), actual);
+        assertTrue(expected.required("coalescedOpenAtEnd").isEmpty(),
+                "the fixture is meant to close every sweep it opens");
+        List<Alert> want = alerts(expected.required("coalesced"));
+        assertMatches(want, actual);
+        assertEquals(want.stream().map(Alert::key).toList(), actual.stream().map(Alert::key).toList(),
+                "a sweep is judged when the instrument's next trade arrives, so emission order matches too");
+    }
+
+    /**
+     * Under the same thresholds, an alert is coalescing-only exactly when no single-trade alert falls
+     * inside its id range: the expected {@code singleTrade} list is the independent check of the flag.
+     */
+    @Test
+    @DisplayName("an alert is coalescing-only exactly when none of its fills alerts on its own")
+    void coalescedOnlyFlag() {
+        assumeFixture();
+        List<Alert> single = alerts(expected.required("singleTrade"));
+        replay();
+
+        int coalescedOnly = 0;
+        for (TradeAlert a : alerted) {
+            String venue = a.instrument().venue().name();
+            String symbol = a.instrument().nativeSymbol();
+            boolean fillAlone = single.stream().anyMatch(s -> s.venue().name().equals(venue)
+                    && s.symbol().equals(symbol)
+                    && s.firstTradeId() >= a.firstTradeId() && s.lastTradeId() <= a.lastTradeId());
+            assertEquals(!fillAlone, a.coalescedOnly(), a.id());
+            if (a.coalescedOnly()) coalescedOnly++;
+        }
+        assertTrue(coalescedOnly > 0, "the fixture is meant to hold alerts that exist only because of coalescing");
+    }
+
+    @Test
+    @DisplayName("alert ids are unique and follow VENUE:SYMBOL:firstTradeId")
+    void stableIds() {
+        assumeFixture();
+        replay();
+
+        assertEquals(alerted.size(), alerted.stream().map(TradeAlert::id).distinct().count());
+        for (TradeAlert a : alerted) {
+            assertEquals(a.instrument().venue().name() + ":" + a.instrument().nativeSymbol() + ":"
+                    + a.firstTradeId(), a.id());
+        }
     }
 
     /** Skips, visibly, until the analysis delivers the fixture. */
@@ -83,6 +125,8 @@ class TradeReplayTest {
     // ---- replay ----
 
     private int failures;
+    /** The alerts as raised, oldest first; set by {@link #replay()}. */
+    private List<TradeAlert> alerted;
 
     private List<Alert> replay() {
         TradeAlertProperties props = thresholds(expected.required("thresholds"), lines.size() + 1);
@@ -98,12 +142,13 @@ class TradeReplayTest {
             String symbol = frame.required("s").asString();
             InstrumentSlot slot = slots.computeIfAbsent(venue + "/" + symbol,
                     k -> new InstrumentSlot(Instrument.of(slots.size(), venue, symbol,
-                            symbol.substring(0, symbol.length() - 4), "USDT"), null, null, null));
+                            symbol.substring(0, symbol.length() - 4), "USDT"), null, null, null, decoder));
             if (!decoder.decode(slot, frame.toString(), detector)) failures++;
         }
 
+        alerted = store.recent(null, null, Integer.MAX_VALUE).reversed();
         List<Alert> out = new ArrayList<>();
-        for (TradeAlert a : store.recent(null, null, Integer.MAX_VALUE)) {
+        for (TradeAlert a : alerted) {
             out.add(new Alert(a.instrument().venue(), a.instrument().nativeSymbol(),
                     a.aggressorBuy() ? "BUY" : "SELL", a.firstTradeId(), a.lastTradeId(), a.fills(),
                     a.tradeTimeMs(), a.qty(), a.notional()));
