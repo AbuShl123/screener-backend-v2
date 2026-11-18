@@ -16,12 +16,15 @@ import java.util.Map;
  *                           {@code BINANCE_FUTURES}); optional. An override for one venue does not
  *                           apply to the same symbol on another
  * @param recentCapacity     how many of the most recent alerts {@code TradeAlertStore} keeps
+ * @param replaySize         how many of the most recent alerts every {@code /ws} {@code SNAPSHOT}
+ *                           replays ({@code TradeChannel}); independent of {@code recentCapacity}
  */
 @ConfigurationProperties(prefix = "screener.trade-alerts")
 public record TradeAlertProperties(
         double defaultMinNotional,
         Map<Venue, Map<String, Double>> minNotional,
-        int recentCapacity
+        int recentCapacity,
+        int replaySize
 ) {
 
     public TradeAlertProperties {
@@ -32,6 +35,10 @@ public record TradeAlertProperties(
         if (recentCapacity <= 0) {
             throw new IllegalArgumentException(
                     "screener.trade-alerts.recent-capacity must be > 0, got " + recentCapacity);
+        }
+        if (replaySize <= 0) {
+            throw new IllegalArgumentException(
+                    "screener.trade-alerts.replay-size must be > 0, got " + replaySize);
         }
         Map<Venue, Map<String, Double>> copy = new EnumMap<>(Venue.class);
         if (minNotional != null) {

@@ -25,7 +25,7 @@ class TradeDetectorTest {
 
     private final PipelineMetrics metrics = new PipelineMetrics();
     private final TradeAlertProperties props = new TradeAlertProperties(MIN,
-            Map.of(Venue.BINANCE_FUTURES, Map.of("ETHUSDT", 50_000.0)), 100);
+            Map.of(Venue.BINANCE_FUTURES, Map.of("ETHUSDT", 50_000.0)), 100, 100);
     private final TradeAlertStore store = new TradeAlertStore(props);
     private final TradeDetector detector = new TradeDetector(metrics, new TradeThresholds(props), store);
 
@@ -103,6 +103,7 @@ class TradeDetectorTest {
         assertEquals(65_000, a.lastPrice());
         assertEquals(0.5, a.qty());
         assertEquals(32_500, a.notional());
+        assertEquals(MIN, a.minNotional(), "the default threshold it was judged against");
         assertEquals(1, a.fills());
         assertFalse(a.coalescedOnly(), "one fill can never be coalescing-only");
         assertEquals(8_285_985_083L, a.firstTradeId());
@@ -128,6 +129,13 @@ class TradeDetectorTest {
         List<TradeAlert> alerts = store.recent(null, null, 10);
         assertEquals(1, alerts.size());
         assertSame(ethSpot.instrument(), alerts.getFirst().instrument());
+        assertEquals(MIN, alerts.getFirst().minNotional());
+
+        detector.onTrade(ethFutures, 3_000, 20, true, T, 2, 2);   // 60K ≥ 50K override
+        closeWith(ethFutures);
+        TradeAlert overridden = store.recent(null, null, 1).getFirst();
+        assertSame(ethFutures.instrument(), overridden.instrument());
+        assertEquals(50_000, overridden.minNotional(), "carries the override it was judged against");
     }
 
     // ---- sweeps ----

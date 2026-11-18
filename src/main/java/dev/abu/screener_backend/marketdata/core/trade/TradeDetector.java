@@ -74,7 +74,7 @@ public class TradeDetector implements TradeSink {
         if (sweep.sumNotional < min) return;
 
         alert(new TradeAlert(instrument, sweep.aggressorBuy, sweep.sumNotional / sweep.sumQty,
-                sweep.sumQty, sweep.sumNotional, sweep.firstPrice, sweep.lastPrice, sweep.fills,
+                sweep.sumQty, sweep.sumNotional, min, sweep.firstPrice, sweep.lastPrice, sweep.fills,
                 sweep.maxFillNotional < min, sweep.firstTradeId, sweep.lastTradeId, sweep.tradeTimeMs,
                 System.currentTimeMillis()));
     }

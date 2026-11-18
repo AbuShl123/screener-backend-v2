@@ -14,7 +14,9 @@ import dev.abu.screener_backend.marketdata.Instrument;
  * @param vwap           volume-weighted average price, {@code notional / qty}
  * @param qty            executed base quantity
  * @param notional       executed quote amount, the sum of {@code price × qty} over the fills
- * @param firstPrice     price of the first fill
+ * @param minNotional    the threshold the sweep was judged against ({@link TradeThresholds#minNotional});
+ *                       {@code notional ≥ minNotional} always
+ * @param firstPrice    price of the first fill
  * @param lastPrice      price of the last fill
  * @param fills          number of {@code TradeSink.onTrade} calls folded in; {@code 1} for a single
  *                       trade
@@ -32,6 +34,7 @@ public record TradeAlert(
         double vwap,
         double qty,
         double notional,
+        double minNotional,
         double firstPrice,
         double lastPrice,
         int fills,

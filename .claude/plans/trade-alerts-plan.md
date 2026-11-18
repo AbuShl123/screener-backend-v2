@@ -122,7 +122,7 @@ Each phase is shippable and builds on the one before. The first phases ship behi
 |---|---|---|
 | 1 | **Transport** | **Done.** `StreamKind.TRADE`; Binance spot and futures `aggTrade` protocol; per-kind frame counters show trade traffic. An explicit `TRADE` arm in `MarketEventHandler` drops the frames. No decoder, no alerts. Plan: `.claude/plans/trade-streams-transport-plan.md`. |
 | 2 | **Decode and large-trade detection** | **Done** (slice 3's live comparison with the capture still open). Trade decoder SPI. Trade logic in the `TRADE` arm: side, notional, single static threshold, sweep coalescing (D3 layer 1). Fired alerts go to the recent-trades store. Metrics for trade rate and alert rate. Plan: `.claude/plans/trade-detection-plan.md`. |
-| 3 | **Delivery** | **Next.** `TradeChannel` bean; last-N replay on connect; entitlement gate; contract doc under `.claude/docs/for-frontend/`. First end-to-end release. |
+| 3 | **Delivery** | **Done.** `TradeChannel` bean; last-N replay on connect; entitlement gate; contract doc under `.claude/docs/for-frontend/`. First end-to-end release. Plan: `.claude/plans/trade-delivery-plan.md`; contract: `websocket-feed-api.md` §3.8. |
 | 4 | **Burst detection** | Per-instrument same-side window (D3 layer 2); burst alerts with a re-alert rule; burst tunables. |
 | 5 | **More venues** | Bybit and MEXC trade protocols and decoders, one venue at a time. |
 | 6 | **Per-user thresholds** | Per ticker per exchange user override (D6), with live updates to connected sessions. |
@@ -146,7 +146,9 @@ streams as a related signal.
 - **Q3. Burst alert behavior.** Sliding or tumbling window? Alert once when the threshold is
   crossed, or update while it keeps growing? What cooldown stops one long run from spamming?
 - **Q4. Recent-trades store scope.** One global last-N, or per venue / per symbol? Does a user's
-  filter apply on replay?
+  filter apply on replay? *Answered*: one global list of the last 100, replayed in every `SNAPSHOT`
+  and merged by id on the client (a snapshot does not clear trades); no server-side filter until
+  Phase 6 (`trade-delivery-plan.md` §1).
 - **Q5. Sweep coalescing rule.** Which events count as one sweep (same timestamp, same side, within
   a few ms)? Depends on the Binance aggregation behavior verified in Phase 1. *Answered*: same
   side, same trade time, price moving in the aggressor's direction, and contiguous ids when known

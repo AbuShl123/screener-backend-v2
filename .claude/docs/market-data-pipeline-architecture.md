@@ -407,6 +407,7 @@ each exchange's book is still classified and delivered separately. Full detail:
  shard threads ──► OrderBookFeedStore.add(update)        (global store + one per user context)
                        pending map  (coalesces per feedKey, swapped atomically on drain)
                        snapshot map (current state, for new clients)
+               ──► TradeAlertStore.add(alert)            (ring of recent alerts + running count)
                                       │
  FeedBroadcaster @Scheduled(100 ms) ──┤  one thread; for each FeedChannel: drain() once
                                       │  for each session: snapshot (new) or updates (ready)
@@ -421,8 +422,14 @@ each exchange's book is still classified and delivered separately. Full detail:
   window become one message.
 - **`FeedBroadcaster`** is a fixed-delay loop over a list of **`FeedChannel`** beans. Each channel
   drains its own stores and builds the tick's bodies once; the broadcaster owns only the per-session
-  loop. `DepthChannel` is the one channel today and merges the global feed with each custom-rules
-  user's personal feed (a session gets exactly one authoritative update per instrument per tick).
+  loop. Two channels today, in `@Order`:
+  - `DepthChannel` merges the global feed with each custom-rules user's personal feed (a session
+    gets exactly one authoritative update per instrument per tick).
+  - `TradeChannel` takes the alerts added since its last drain from `TradeAlertStore`
+    (`drainSince`, non-destructive, so `/api/monitoring/trade-alerts` reads the same ring), sends
+    each to every session once as a `TRADE` message, and replays the last `replay-size` (100) in
+    every `SNAPSHOT`. One global stream: rules do not affect trades.
+
   A new signal type adds a channel bean; the broadcaster does not change.
 - **Per-session backpressure.** A session has a bounded queue and a virtual-thread sender. A batch
   that cannot be enqueued **evicts** the session (it is disconnected, never skipped), because gap-free
@@ -449,7 +456,7 @@ each exchange's book is still classified and delivered separately. Full detail:
 
 Three cross-thread seams are the only places state is shared, each by an explicit mechanism: the ring
 buffer (producers → shard), the volatile-published slot array and user-context array (cold → hot),
-and the feed stores' coalescing maps (shard → broadcaster).
+and the feed stores' coalescing maps and `TradeAlertStore`'s lock (shard → broadcaster).
 
 ---
 
@@ -499,7 +506,7 @@ no dynamic subscribe, no startup retry for discovery.
 ## 12. Planned (not built)
 
 The diagram and the Requirements Document show the pipeline with additional stream kinds and signals.
-Today `DEPTH` is fully built and `TRADE` is streamed, decoded and coalesced into sweeps that are judged against per-symbol thresholds. The seams for the rest
+Today `DEPTH` is fully built and `TRADE` is streamed, decoded and coalesced into sweeps that are judged against per-symbol thresholds and delivered over `/ws` as `TRADE` messages. The seams for the rest
 are already in place:
 
 | Planned | Seam already built | Where it is designed |
@@ -508,7 +515,7 @@ are already in place:
 | **Trade streams**: Bybit and MEXC trade protocols and decoders; a shard tick to flush sweeps on quiet symbols | **transport, decoding and sweep detection done**: `StreamKind.TRADE`, Binance spot and futures `@aggTrade` bindings (`BinanceStreamProtocol.aggTrade`, futures on `/market/ws`), `streams.TRADE` blocks (on by default); the `TradeDecoder` SPI with `BinanceAggTradeDecoder` pinned in the slot; the `TRADE` arm decodes into `TradeDetector`, which counts decoded trades, folds the fills of one taker order into a sweep held in the slot's `TradeState` (same side and trade time, price moving toward the aggressor, contiguous ids), and judges each sweep, once the instrument's next trade closes it, against `screener.trade-alerts` (a $30K floor plus per-symbol overrides from the slice 0 capture), into the in-memory `TradeAlertStore` behind `/api/monitoring/trade-alerts` | `.claude/plans/trade-alerts-plan.md`; Phase 1: `.claude/plans/trade-streams-transport-plan.md`; Phase 2: `.claude/plans/trade-detection-plan.md` (slices 0–3 done; slice 4, the tick, deferred) |
 | **`SpikeDetector`** (price and volume spikes from candles) | `FeedChannel` interface for delivery | `spike-alerts-plan.md` |
 | **`OrderClusterDetector`** (split-order walls across adjacent levels) | depth arm of the handler; `FeedChannel` | `.claude/plans/team-plans/order-cluster-plan.md` |
-| **Trade alerts** (large trades): delivery to users | detection and `TradeAlertStore` (trade streams row above); `FeedChannel` | `.claude/plans/trade-alerts-plan.md` (Phase 2 detection done; Phase 3 delivery next) |
+| **Trade alerts**: same-side bursts (Phase 4), per-user thresholds (Phase 6) | **delivery done**: `TradeChannel` sends every alert to every session and replays the last 100 in each `SNAPSHOT` (`websocket-feed-api.md` §3.8); `TradeAlert` carries the threshold it was judged against | `.claude/plans/trade-alerts-plan.md`; Phase 3: `.claude/plans/trade-delivery-plan.md` |
 | Non-blocking ingress with reset lane | `DisruptorMarketEventPublisher` is the single place for the change | `multi-exchange-progress.md` §13 |
 | Primitive-array book store replacing `TreeMap<Double,…>` | none (the classifier reads `getBids()` / `getAsks()` directly) | `CLAUDE.md` Future Work |
 

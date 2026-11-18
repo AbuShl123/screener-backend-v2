@@ -5,9 +5,10 @@ the data behind each decision, what the approach cannot do, and the ideas we hav
 No prior knowledge of trading mechanics or of this codebase is assumed.
 
 **Status (2026-11-18)**: Binance spot and futures only. Detection runs inside the backend, with
-sweep coalescing, and alerts are visible on an admin debug endpoint. Users don't receive them yet:
-delivery (Phase 3) is next. Phase 2 (slices 0–3) is done; slice 3's comparison against the capture
-on a long live run is still open.
+sweep coalescing. Every `/ws` session receives each alert as a `TRADE` message, plus the last 100
+in every `SNAPSHOT` (Phase 3, `websocket-feed-api.md` §3.8); an admin debug endpoint shows them too.
+Phase 2 (slices 0–3) is done; slice 3's comparison against the capture on a long live run is still
+open.
 
 **Detailed sources**: `.claude/plans/trade-alerts-plan.md` (vision, phases, decisions D1–D6),
 `.claude/plans/trade-detection-plan.md` (implementation plan; §10 holds every measured number).
@@ -124,7 +125,7 @@ The trade-alerts feature is split into phases (`trade-alerts-plan.md` §4):
 |---|---|---|
 | 1 | Transport: subscribe to `aggTrade`, route frames to the right shard | done |
 | 2 | Decode trades and detect large ones (this document) | done |
-| 3 | Delivery to users over the WebSocket, frontend contract | next |
+| 3 | Delivery to users over the WebSocket, frontend contract | done |
 | 4 | Burst detection | planned |
 | 5 | Bybit and MEXC | planned |
 | 6 | Per-user thresholds | planned |
@@ -173,6 +174,8 @@ Binance aggTrade frame
        → per-instrument sweep state: continue the open sweep, or close it and open a new one
        → on close: sum of notional ≥ threshold for this instrument?  → alert
   → TradeAlertStore (last N alerts in memory) + admin endpoint /api/monitoring/trade-alerts
+  → TradeChannel (broadcaster thread, every 100 ms): new alerts → TRADE to every /ws session;
+    last 100 replayed in every SNAPSHOT
 ```
 
 Every trade of one instrument is processed by one thread, in order, so the per-instrument state
@@ -391,14 +394,15 @@ unavoidable ~150 ms, because Binance sends a sweep's last fragment only when its
 
 ## 7. Future improvements and ideas
 
-### 7.1 Show price movement in the UI (with delivery, Phase 3)
+### 7.1 Show price movement in the UI
 
 Each sweep alert has a first and last price. The UI can show how far the order moved the price and
 make big moves look more urgent. Large-caps will usually show 0–5 bps. Thin coins can show 1% or
-more, and that is where the indicator stands out. Recommended: the backend sends the movement as a
-ready number (e.g. `impactBps`), so every client and any future rule ("only alert if impact > X
-bps") uses one definition. It is meaningful only because of coalescing: a single frame has one
-price, so a one-fill alert always shows 0.
+more, and that is where the indicator stands out. It is meaningful only because of coalescing: a
+single frame has one price, so a one-fill alert always shows 0. The Phase 3 contract sends
+`firstPrice` and `lastPrice` and the client computes the impact (`websocket-feed-api.md` §3.8.2).
+A ready server-side number (e.g. `impactBps`) is worth adding as a new `data` field once a server
+rule needs it ("only alert if impact > X bps"), so both use one definition.
 
 ### 7.2 Early alerts with updates
 
@@ -501,11 +505,11 @@ Plan: ship the budget-based thresholds as v1 and use real user feedback to steer
 
 ### 7.7 Remaining roadmap
 
-- **Phase 3, delivery (next)**: a `TradeChannel` on the existing `FeedBroadcaster`, last-N replay on
-  connect, entitlement gate, and a frontend contract under `.claude/docs/for-frontend/`. The alert
-  fields the UI should show (id, fills, VWAP, first and last price) exist now that sweeps are
-  coalesced. Before users see alerts, re-run the threshold analysis on a longer capture that
-  includes a full US open (§6.1).
+- **Phase 3, delivery (done)**: `TradeChannel` on the existing `FeedBroadcaster`, last-100 replay in
+  every `SNAPSHOT`, behind the socket's existing entitlement gate; contract in
+  `websocket-feed-api.md` §3.8. Still to do: re-run the threshold analysis on a longer capture
+  that includes a full US open (§6.1).
+- **Phase 4**: burst detection (§7.5), as its own `BURST` message type.
 - **Phase 5**: Bybit (`publicTrade`) and MEXC decoders.
 - **Phase 6**: per-user thresholds per ticker per exchange, with live updates to connected
   sessions.
@@ -539,8 +543,9 @@ Plan: ship the budget-based thresholds as v1 and use real user feedback to steer
 | SPI | `marketdata/spi/TradeDecoder`, `TradeSink`, `VenueTradeDecoderBinding`, `TradeDecoderRegistry` |
 | detection | `marketdata/core/trade/`: `TradeDetector`, `TradeState` (the open sweep, held in the instrument's slot), `TradeThresholds`, `TradeAlert`, `TradeAlertStore` |
 | config | `screener.trade-alerts` in `application.yml` → `config/TradeAlertProperties` |
-| admin endpoints | `GET /api/monitoring/trade-alerts?venue=&symbol=&limit=` (each alert with `id` and `coalescedOnly`), `GET /api/monitoring/trade-alerts/summary` |
+| delivery | `feed/trade/TradeChannel` (`TRADE` messages, replay of `screener.trade-alerts.replay-size`); contract `.claude/docs/for-frontend/websocket-feed-api.md` §3.8 |
+| admin endpoints | `GET /api/monitoring/trade-alerts?venue=&symbol=&limit=` (each alert with `id`, `threshold` and `coalescedOnly`), `GET /api/monitoring/trade-alerts/summary` |
 | health log | trades table in `PipelineHealthLogger`: decoded/s, failures, alerts, coalescing-only alerts (`coal`) and alerts by fills per sweep, per 30 s |
-| tests | `TradeReplayTest`, `TradeDetectorTest`, `TradeThresholdsTest`, `TradeAlertStoreTest`, `BinanceAggTradeDecoderTest` |
+| tests | `TradeReplayTest`, `TradeDetectorTest`, `TradeThresholdsTest`, `TradeAlertStoreTest`, `BinanceAggTradeDecoderTest`, `TradeChannelTest`, `FeedBroadcasterTest` |
 | capture and analysis | `C:\git\trade-capture\` (`capture.py`, `analysis\`, `analysis\out\report.md`) |
 | plans | `.claude/plans/trade-alerts-plan.md`, `.claude/plans/trade-detection-plan.md` |

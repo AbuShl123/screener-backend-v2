@@ -35,6 +35,7 @@ class TradeAlertPropertiesTest {
 
         assertEquals(30_000, props.defaultMinNotional());
         assertEquals(500, props.recentCapacity());
+        assertEquals(100, props.replaySize());
         assertEquals(Set.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES), props.minNotional().keySet());
 
         // Symbol keys keep their case: overrides are matched against Instrument.nativeSymbol.
@@ -61,22 +62,31 @@ class TradeAlertPropertiesTest {
     void noOverrides() {
         TradeAlertProperties props = bind(Map.of(
                 "screener.trade-alerts.default-min-notional", "30000",
-                "screener.trade-alerts.recent-capacity", "10"));
+                "screener.trade-alerts.recent-capacity", "10",
+                "screener.trade-alerts.replay-size", "5"));
 
         assertEquals(30_000, props.defaultMinNotional());
+        assertEquals(5, props.replaySize());
         assertEquals(Map.of(), props.minNotional());
     }
 
     @Test
-    @DisplayName("a missing or non-positive default, capacity or override fails startup")
+    @DisplayName("a missing or non-positive default, capacity, replay size or override fails startup")
     void invalidValuesFail() {
-        assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(0, null, 10));
-        assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(Double.NaN, null, 10));
-        assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(30_000, null, 0));
+        assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(0, null, 10, 10));
+        assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(Double.NaN, null, 10, 10));
+        assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(30_000, null, 0, 10));
+        assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(30_000, null, 10, 0));
         assertThrows(IllegalArgumentException.class, () -> new TradeAlertProperties(30_000,
-                Map.of(Venue.BINANCE_SPOT, Map.of("BTCUSDT", -1.0)), 10));
+                Map.of(Venue.BINANCE_SPOT, Map.of("BTCUSDT", -1.0)), 10, 10));
         // The block left out entirely binds 0 and fails rather than alerting on every trade.
-        assertThrows(Exception.class, () -> bind(Map.of("screener.trade-alerts.recent-capacity", "10")));
+        assertThrows(Exception.class, () -> bind(Map.of(
+                "screener.trade-alerts.recent-capacity", "10",
+                "screener.trade-alerts.replay-size", "10")));
+        // A missing replay-size binds 0 and fails too.
+        assertThrows(Exception.class, () -> bind(Map.of(
+                "screener.trade-alerts.default-min-notional", "30000",
+                "screener.trade-alerts.recent-capacity", "10")));
     }
 
     private static TradeAlertProperties bind(Map<String, String> yaml) {

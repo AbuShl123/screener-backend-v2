@@ -156,6 +156,7 @@ public class MonitoringController {
      *
      * @param id            {@link TradeAlert#id()}: stable across restarts, the key to dedupe by
      * @param side          {@code BUY} if the taker bought, {@code SELL} if the taker sold
+     * @param threshold     the minimum notional the alert was judged against
      * @param coalescedOnly no single fill reached the threshold; the alert exists because the sweep's
      *                      fills were summed
      * @param tradeTime     venue trade time
@@ -168,6 +169,7 @@ public class MonitoringController {
             String symbol,
             String side,
             double notional,
+            double threshold,
             double qty,
             double vwap,
             double firstPrice,
@@ -181,7 +183,7 @@ public class MonitoringController {
     ) {
         static TradeAlertView of(TradeAlert a) {
             return new TradeAlertView(a.id(), a.instrument().venue(), a.instrument().nativeSymbol(),
-                    a.aggressorBuy() ? "BUY" : "SELL", a.notional(), a.qty(), a.vwap(),
+                    a.aggressorBuy() ? "BUY" : "SELL", a.notional(), a.minNotional(), a.qty(), a.vwap(),
                     a.firstPrice(), a.lastPrice(), a.fills(), a.coalescedOnly(), a.firstTradeId(),
                     a.lastTradeId(), Instant.ofEpochMilli(a.tradeTimeMs()), Instant.ofEpochMilli(a.detectedAtMs()));
         }

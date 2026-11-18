@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class TradeThresholdsTest {
 
     private final TradeThresholds thresholds = new TradeThresholds(new TradeAlertProperties(30_000,
-            Map.of(Venue.BINANCE_FUTURES, Map.of("BTCUSDT", 1_000_000.0, "ETHUSDT", 400_000.0)), 10));
+            Map.of(Venue.BINANCE_FUTURES, Map.of("BTCUSDT", 1_000_000.0, "ETHUSDT", 400_000.0)), 10, 10));
 
     @Test
     @DisplayName("an instrument without an override gets the default")
@@ -38,7 +38,7 @@ class TradeThresholdsTest {
     @Test
     @DisplayName("no overrides at all: every instrument gets the default")
     void noOverrides() {
-        TradeThresholds plain = new TradeThresholds(new TradeAlertProperties(5_000, null, 10));
+        TradeThresholds plain = new TradeThresholds(new TradeAlertProperties(5_000, null, 10, 10));
 
         assertEquals(5_000, plain.minNotional(instrument(Venue.BINANCE_FUTURES, "BTCUSDT")));
     }

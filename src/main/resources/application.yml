@@ -272,6 +272,7 @@ screener:
         TRUMPUSDT: 50000
         WLDUSDT: 50000
     recent-capacity: 500                 # alerts kept in memory for /api/monitoring/trade-alerts
+    replay-size: 100                     # alerts replayed in every /ws SNAPSHOT
 
   ticker:
     refresh-interval: PT4H
