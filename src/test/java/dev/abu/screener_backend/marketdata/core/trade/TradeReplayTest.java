@@ -4,6 +4,7 @@ import dev.abu.screener_backend.config.TradeAlertProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceAggTradeDecoder;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesDealDecoder;
 import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotDealsDecoder;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -43,9 +45,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>Each fixture and its expected alerts come from the analysis scripts in
  * {@code C:\git\trade-capture\analysis\} ({@code make_fixture.py} for Binance,
- * {@code make_mexc_fixture.py} for MEXC spot). A test skips itself while its fixture is absent. The
- * thresholds come from the expected-alerts file, never from the shipped YAML, so retuning
- * production thresholds does not break the replay.
+ * {@code make_mexc_fixture.py} for MEXC spot, {@code make_mexc_futures_fixture.py} for MEXC futures).
+ * A test skips itself while its fixture is absent. The thresholds and the idle close come from the
+ * expected-alerts file, never from the shipped YAML, so retuning production values does not break the
+ * replay.
  */
 class TradeReplayTest {
 
@@ -231,6 +234,99 @@ class TradeReplayTest {
         }
     }
 
+    /**
+     * MEXC futures deals: self-trades ({@code M=1}) filtered, rule A (same side and {@code t}, next
+     * {@code i}, price equal or toward the aggressor), and the idle close on the records' receive time
+     * ({@code .claude/plans/trade-mexc-plan.md} §6). The detector's clock is each record's {@code r},
+     * and before each record {@code closeIfIdle} runs on every slot, as a shard tick would.
+     */
+    @Nested
+    class MexcFutures {
+
+        private static Fixture fixture;
+
+        @BeforeAll
+        static void load() throws IOException {
+            fixture = Fixture.load("trade/mexc-futures-deal-replay.jsonl", "trade/mexc-futures-deal-replay-expected.json");
+        }
+
+        @Test
+        @DisplayName("the fixture raises exactly the analysis's alerts, in order, each at the same local time")
+        void expectedAlerts() {
+            Replay replay = replay();
+
+            assertEquals(0, replay.failures(), "every fixture frame decodes");
+            JsonNode coalesced = fixture.expected().required("coalesced");
+            List<Alert> want = alerts(coalesced);
+            assertMatches(want, replay.view());
+            assertEquals(want.stream().map(Alert::key).toList(), replay.view().stream().map(Alert::key).toList(),
+                    "emission order matches: idle closes run in the slots' order before each record");
+            for (int i = 0; i < coalesced.size(); i++) {
+                assertEquals(coalesced.get(i).required("detectedAtMs").asLong(), replay.alerts().get(i).detectedAtMs(),
+                        replay.alerts().get(i).id() + " closed by " + coalesced.get(i).required("closedBy").asString());
+            }
+            assertTrue(want.stream().anyMatch(a -> a.levels() < a.fills()), "the fixture holds equal-price fills");
+            assertTrue(fixture.expected().required("multiDealFrames").asInt() > 0, "the fixture holds multi-deal frames");
+            assertTrue(fixture.expected().required("oneMsSteps").asInt() > 0, "the fixture holds 1 ms steps that close a sweep");
+        }
+
+        @Test
+        @DisplayName("the idle close emits alerts a next-deal close would not reach within the window, and counts its splits")
+        void idleClose() {
+            Replay replay = replay();
+
+            JsonNode idleOnly = fixture.expected().required("idleOnly");
+            assertFalse(idleOnly.isEmpty(), "the fixture holds alerts only the idle close emits");
+            for (JsonNode id : idleOnly) {
+                assertTrue(replay.alerts().stream().anyMatch(a -> a.firstTradeId() == id.asLong()), "alert " + id);
+            }
+            long idleClosedAlerts = 0;
+            for (JsonNode a : fixture.expected().required("coalesced")) {
+                if (a.required("closedBy").asString().equals("idle")) idleClosedAlerts++;
+            }
+            assertTrue(replay.metrics().tradeIdleCloses(Venue.MEXC_FUTURES) >= idleClosedAlerts,
+                    "every idle-closed alert was counted as an idle close");
+            assertEquals(fixture.expected().required("idleSplits").asLong(),
+                    replay.metrics().tradeIdleSplits(Venue.MEXC_FUTURES));
+            for (JsonNode open : fixture.expected().required("coalescedOpenAtEnd")) {
+                long first = open.required("firstTradeId").asLong();
+                assertTrue(replay.alerts().stream().noneMatch(a -> a.firstTradeId() == first), "still open: " + first);
+            }
+        }
+
+        @Test
+        @DisplayName("self-trades are filtered: counted, never alerting, though one would")
+        void filtered() {
+            Replay replay = replay();
+
+            assertEquals(fixture.expected().required("filteredDeals").asLong(),
+                    replay.metrics().tradesFiltered(Venue.MEXC_FUTURES));
+            assertTrue(fixture.expected().required("m1DealsThatWouldAlert").asLong() > 0,
+                    "the fixture holds a self-trade at or above its threshold");
+        }
+
+        @Test
+        @DisplayName("alert ids are unique and follow VENUE:SYMBOL:firstTradeId")
+        void stableIds() {
+            assertStableIds(replay().alerts());
+        }
+
+        private Replay replay() {
+            assumeTrue(fixture != null, "MEXC futures replay fixture not present");
+            MexcFuturesDealDecoder decoder = new MexcFuturesDealDecoder();
+            JsonNode sizes = fixture.expected().required("contractSize");
+            return Replay.run(fixture, (rec, slots) -> {
+                slots.now = rec.required("r").asLong();
+                for (InstrumentSlot s : slots.all()) slots.detector().closeIfIdle(s);
+                JsonNode frame = rec.required("d");
+                String symbol = frame.required("symbol").asString();
+                InstrumentSlot slot = slots.slot(Venue.MEXC_FUTURES, symbol, decoder,
+                        sizes.required(symbol).asDouble());
+                return decoder.decode(slot, frame.toString(), slots.detector());
+            });
+        }
+    }
+
     // ---- replay ----
 
     private record Fixture(List<String> lines, JsonNode expected) {
@@ -250,22 +346,34 @@ class TradeReplayTest {
         }
     }
 
-    /** Slots by {@code (venue, symbol)}, created on first sight, and the detector they report into. */
+    /**
+     * Slots by {@code (venue, symbol)}, created on first sight and kept in that order, the detector
+     * they report into, and the detector's clock.
+     */
     private static final class Slots {
-        private final Map<String, InstrumentSlot> byKey = new HashMap<>();
-        private final TradeDetector detector;
-
-        Slots(TradeDetector detector) {
-            this.detector = detector;
-        }
+        private final Map<String, InstrumentSlot> byKey = new LinkedHashMap<>();
+        private TradeDetector detector;
+        /** The detector's local clock, ms; the futures replay sets it to each record's {@code r}. */
+        long now;
 
         TradeDetector detector() {
             return detector;
         }
 
+        /** In creation order, like the shard tick's walk over ascending ids. */
+        Iterable<InstrumentSlot> all() {
+            return byKey.values();
+        }
+
         InstrumentSlot slot(Venue venue, String symbol, TradeDecoder decoder) {
+            return slot(venue, symbol, decoder, 1);
+        }
+
+        InstrumentSlot slot(Venue venue, String symbol, TradeDecoder decoder, double quantityMultiplier) {
+            String pair = symbol.replace("_", "");
             return byKey.computeIfAbsent(venue + "/" + symbol, k -> new InstrumentSlot(
-                    Instrument.of(byKey.size(), venue, symbol, symbol.substring(0, symbol.length() - 4), "USDT"),
+                    Instrument.of(byKey.size(), venue, symbol, pair.substring(0, pair.length() - 4), "USDT",
+                            quantityMultiplier),
                     null, null, null, decoder));
         }
     }
@@ -282,10 +390,11 @@ class TradeReplayTest {
     private record Replay(int failures, List<TradeAlert> alerts, PipelineMetrics metrics) {
 
         static Replay run(Fixture fixture, LineReplayer replayer) {
-            TradeAlertProperties props = thresholds(fixture.expected().required("thresholds"), fixture.lines().size() + 1);
+            TradeAlertProperties props = properties(fixture.expected(), fixture.lines().size() + 1);
             TradeAlertStore store = new TradeAlertStore(props);
             PipelineMetrics metrics = new PipelineMetrics();
-            Slots slots = new Slots(new TradeDetector(metrics, new TradeThresholds(props), store));
+            Slots slots = new Slots();
+            slots.detector = new TradeDetector(metrics, props, new TradeThresholds(props), store, () -> slots.now);
             int failures = 0;
             for (String line : fixture.lines()) {
                 if (!replayer.replay(JSON.readTree(line), slots)) failures++;
@@ -304,7 +413,12 @@ class TradeReplayTest {
         }
     }
 
-    private static TradeAlertProperties thresholds(JsonNode node, int capacity) {
+    /** Thresholds from {@code thresholds}, and the MEXC futures idle close from {@code sweepIdleCloseMs} if present. */
+    private static TradeAlertProperties properties(JsonNode expected, int capacity) {
+        JsonNode node = expected.required("thresholds");
+        Map<Venue, Long> idle = expected.has("sweepIdleCloseMs")
+                ? Map.of(Venue.MEXC_FUTURES, expected.get("sweepIdleCloseMs").asLong())
+                : null;
         Map<Venue, Map<String, Double>> overrides = new HashMap<>();
         JsonNode perVenue = node.path("minNotional");
         for (String venue : perVenue.propertyNames()) {
@@ -315,7 +429,8 @@ class TradeReplayTest {
             }
             overrides.put(Venue.valueOf(venue), symbols);
         }
-        return new TradeAlertProperties(node.required("defaultMinNotional").asDouble(), overrides, capacity, capacity);
+        return new TradeAlertProperties(node.required("defaultMinNotional").asDouble(), overrides, capacity, capacity,
+                idle, 250);
     }
 
     // ---- comparison ----

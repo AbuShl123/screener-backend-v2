@@ -1,6 +1,8 @@
 package dev.abu.screener_backend.marketdata.core.trade;
 
+import dev.abu.screener_backend.config.TradeAlertProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.spi.TradeSink;
@@ -46,7 +48,10 @@ import java.util.function.LongSupplier;
  * By default only the next trade can show that a sweep is over, so a sweep is judged when the
  * instrument trades again. On a quiet symbol that can take seconds (plan §10.4). A venue whose
  * taker orders always arrive within one frame ({@link TradeState#closeAtFrameEnd}) has its sweep
- * judged by {@link #onFrameEnd} instead, right after the frame that carried it.
+ * judged by {@link #onFrameEnd} instead, right after the frame that carried it. A venue with a
+ * {@code sweep-idle-close-ms} also has its sweep judged by {@link #closeIfIdle} once no fill has
+ * arrived for that long; the shard tick calls it ({@code .claude/plans/trade-mexc-plan.md} §2.6). A
+ * fill that would have continued an idle-closed sweep is counted as an <b>idle split</b>.
  *
  * <p>Filtered trades ({@link #onFiltered}) are only counted. They never touch the sweep.
  */
@@ -59,18 +64,22 @@ public class TradeDetector implements TradeSink {
     private final TradeAlertStore store;
     /** Local wall clock, epoch millis: {@code System::currentTimeMillis} except in replay tests. */
     private final LongSupplier clock;
+    /** {@code sweep-idle-close-ms} by {@code Venue.ordinal()}; {@code 0} for a venue without an idle close. */
+    private final long[] idleCloseMs = new long[Venue.values().length];
 
     @Autowired
-    public TradeDetector(PipelineMetrics metrics, TradeThresholds thresholds, TradeAlertStore store) {
-        this(metrics, thresholds, store, System::currentTimeMillis);
+    public TradeDetector(PipelineMetrics metrics, TradeAlertProperties props, TradeThresholds thresholds,
+                         TradeAlertStore store) {
+        this(metrics, props, thresholds, store, System::currentTimeMillis);
     }
 
-    public TradeDetector(PipelineMetrics metrics, TradeThresholds thresholds, TradeAlertStore store,
-                         LongSupplier clock) {
+    public TradeDetector(PipelineMetrics metrics, TradeAlertProperties props, TradeThresholds thresholds,
+                         TradeAlertStore store, LongSupplier clock) {
         this.metrics = metrics;
         this.thresholds = thresholds;
         this.store = store;
         this.clock = clock;
+        props.sweepIdleCloseMs().forEach((venue, ms) -> idleCloseMs[venue.ordinal()] = ms);
     }
 
     /** <b>Hot path</b>, allocation-free unless the trade closes a sweep that alerts. */
@@ -79,13 +88,19 @@ public class TradeDetector implements TradeSink {
                         long tradeTimeMs, long firstTradeId, long lastTradeId, long takerOrderId) {
         metrics.recordTradeDecoded(slot.instrument().venue());
 
+        long now = clock.getAsLong();
         TradeState sweep = slot.trade();
-        if (sweep.open && continues(sweep, price, aggressorBuy, tradeTimeMs, firstTradeId, takerOrderId)) {
-            sweep.add(price, qty, lastTradeId);
-            return;
+        if (sweep.open) {
+            if (continues(sweep, price, aggressorBuy, tradeTimeMs, firstTradeId, takerOrderId)) {
+                sweep.add(price, qty, lastTradeId, now);
+                return;
+            }
+            close(slot.instrument(), sweep);
+        } else if (sweep.closedByIdle && continues(sweep, price, aggressorBuy, tradeTimeMs, firstTradeId, takerOrderId)) {
+            // The closed sweep's fields are still in place: this fill belonged to it.
+            metrics.recordTradeIdleSplit(slot.instrument().venue());
         }
-        if (sweep.open) close(slot.instrument(), sweep);
-        sweep.open(price, qty, aggressorBuy, tradeTimeMs, firstTradeId, lastTradeId, takerOrderId);
+        sweep.open(price, qty, aggressorBuy, tradeTimeMs, firstTradeId, lastTradeId, takerOrderId, now);
     }
 
     /** <b>Hot path</b>: a trade the decoder dropped by venue policy. Counted, never judged. */
@@ -102,6 +117,27 @@ public class TradeDetector implements TradeSink {
     public void onFrameEnd(InstrumentSlot slot) {
         TradeState sweep = slot.trade();
         if (sweep != null && sweep.closeAtFrameEnd && sweep.open) close(slot.instrument(), sweep);
+    }
+
+    /**
+     * <b>Hot path</b>, on the shard tick: judges the open sweep if the instrument's venue has an idle
+     * close and no fill has arrived for at least that long. Does nothing for a slot without trade
+     * state, a closed sweep or a venue without an idle close. Must run on the instrument's shard
+     * thread, like every other access to the sweep: the tick only tells that thread to look.
+     *
+     * <p>It checks the sweep that is open when the tick is handled, against that sweep's own last
+     * fill. A frame handled just before the tick has already opened or extended it, so its fresh
+     * {@code lastFillAtMs} keeps it open.
+     */
+    public void closeIfIdle(InstrumentSlot slot) {
+        TradeState sweep = slot.trade();
+        if (sweep == null || !sweep.open) return;
+        Instrument instrument = slot.instrument();
+        long idle = idleCloseMs[instrument.venue().ordinal()];
+        if (idle == 0 || clock.getAsLong() - sweep.lastFillAtMs < idle) return;
+        sweep.closedByIdle = true;
+        metrics.recordTradeIdleClose(instrument.venue());
+        close(instrument, sweep);
     }
 
     private static boolean continues(TradeState sweep, double price, boolean aggressorBuy,

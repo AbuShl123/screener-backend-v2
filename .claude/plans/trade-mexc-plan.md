@@ -20,8 +20,8 @@ Each app slice implements decisions already taken from that data and checks itse
 | 0 | Capture and analysis (offline) | done |
 | 1 | Transport: both `TRADE` streams connect, subscribe and route | done |
 | 2 | Decode and detect; spot closes sweeps at frame end; spot replay fixture | done |
-| 3 | Idle close: shard tick for MEXC futures; futures replay fixture | next |
-| 4 | Thresholds (per-venue floor) and live check; streams on by default | |
+| 3 | Idle close: shard tick for MEXC futures; futures replay fixture | done |
+| 4 | Thresholds (per-venue floor) and live check; streams on by default | next |
 
 ---
 
@@ -348,6 +348,18 @@ near 35/s spot and 50/s futures. Binance alert rates are unchanged.
 
 **Goal**: a MEXC futures sweep is judged about 1.5 s after its last fill, not when the next real deal
 arrives. Replaces slice 4 of `trade-detection-plan.md`.
+
+Built as below. The tick lives in `ShardTicker`, owned by `DisruptorShardManager`, on a fixed delay
+(not a fixed rate, so a pause is not followed by a burst of ticks); `tick-interval-ms` stays under
+`screener.trade-alerts`. The health log gains `idle` (sweeps the idle close judged) and `isplit`
+columns, and a `ticks skipped=` note on the shards line when a full ring dropped ticks. The futures
+fixture is 09:18–09:33 UTC of the capture on ZEC_USDT plus five thin contracts (WLFI, HBAR, SPX,
+STRK, ALGO; 1,465 frames, 391 KB), at test thresholds $5K and ZEC_USDT $30K: 121 alerts (56
+multi-fill, 31 split across frames, 27 closed by the idle close, 3 that only the idle close emits
+within the window), 405 filtered self-trades of which one would alert, 33 1 ms steps, and one idle
+split. Built with `make_mexc_futures_fixture.py` in `C:\git\trade-capture\analysis\`; the expected
+alerts carry `closedBy` and `detectedAtMs`, and the replay checks both. The local verify below is
+still open.
 
 1. **Futures replay fixture** (Python, as in slice 2): `mexc-futures-deal-replay.jsonl` and its
    `-expected.json`.

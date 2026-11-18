@@ -253,7 +253,7 @@ that).
 
 | Field | Meaning |
 |---|---|
-| `source` (`EventSource`) | **Provenance**: `WS_MSG`, `REST_MSG`, `REST_FAILED`. Drives the strategy's parse path and backpressure: REST events are never dropped, because each is the single outcome of a request |
+| `source` (`EventSource`) | **Provenance**: `WS_MSG`, `REST_MSG`, `REST_FAILED`, or `TICK` (core's shard tick, no venue behind it). Drives the strategy's parse path and backpressure: REST events are never dropped, because each is the single outcome of a request; a tick may be |
 | `stream` (`StreamKind`) | **What the payload is**, taken from the publishing connection; the consumer dispatches on it. `DEPTH` and `TRADE` today (`TRADE` bound for Binance and MEXC, decoded in its arm by the slot's `TradeDecoder`, which then calls `TradeDetector.onFrameEnd`), `KLINE` planned |
 | `instrumentId` | Dense id |
 | `rawJson` / `rawBytes` | At most one payload; fixed per venue by its wire protocol |
@@ -278,6 +278,17 @@ what they mean, and whether a payload is a snapshot is the strategy's call. Bybi
 
 Both kinds of producer publish through the same expression: the WebSocket reader threads (`WS_MSG`)
 and the HTTP I/O threads that deliver snapshots (`REST_MSG` / `REST_FAILED`).
+
+A third producer has no instrument: the **shard tick** (`ShardTicker`, owned by
+`DisruptorShardManager`, thread `shard-tick`). It runs only when some venue has a
+`screener.trade-alerts.sweep-idle-close-ms`, and every `tick-interval-ms` (250) puts one `TICK` event
+(`instrumentId = -1`, no stream kind, no payload) into **every** shard's ring, claimed with
+`tryNext()`: a full ring skips the tick and counts it. It only publishes. The handler sees `TICK`
+before the slot lookup, walks its own ids (`id = shardIndex; id += shardCount`, the ids
+`id & (N - 1)` routes to it) and calls `TradeDetector.closeIfIdle` on each slot. So the idle close
+runs on the shard thread, in ring order with the shard's frames, and the sweep state keeps its single
+owner. The detector compares its clock with the open sweep's own last-fill time, so a frame handled
+just before a tick keeps its sweep open.
 
 ### 5.4 Backpressure
 
@@ -449,6 +460,7 @@ each exchange's book is still classified and delivered separately. Full detail:
 | `reconnect-<venue>-<kind>` (lower case, e.g. `reconnect-binance_futures-depth`) | `ConnectionPool`, one per stream | reconnect backoff, heartbeats |
 | `disruptor-shard-N` | `DisruptorShardManager` | **the only writer** of its instruments' books, sync contexts and classification state; strategy + classifier |
 | `snapshot-queue` (daemon) | `SnapshotQueueFactory` | ticks every venue's queue; dedicated so a blocked discovery refresh cannot stall it |
+| `shard-tick` (daemon) | `DisruptorShardManager` via `ShardTicker`, only when a venue has an idle close | publishes one `TICK` per shard every `tick-interval-ms`, non-blocking; touches no slot or sweep |
 | Reactor / Netty | REST clients, fetchers | HTTP I/O; fixed-interval pacing on `Schedulers.parallel()`; publishes outcomes into the ring |
 | Spring `@Scheduled` | Spring | discovery refresh, `FeedBroadcaster` 100 ms drain, `PipelineHealthLogger` 30 s |
 | virtual threads | `InstrumentUniverseService`, `UserWebSocketSession` | one per source fetch; one per client send loop |
@@ -512,7 +524,7 @@ are already in place:
 | Planned | Seam already built | Where it is designed |
 |---|---|---|
 | **Kline streams**: `KLINE` stream kind, `CandleDecoder` SPI, `CandleStore` in `InstrumentSlot`, `KLINE` arm in `MarketEventHandler`, Binance futures `/market` endpoint | `StreamKind`, the dispatch `switch`, `MarketEvent.stream`, generic `MarketEventPublisher`, **transport keyed by `StreamKey`** (per-stream pools, protocol bindings, `streams.<KIND>` config, per-kind frame counters) | `.claude/plans/team-plans/spike-alerts-plan.md`; the generalization steps, already done, are `.claude/plans/market-event-generalization-plan.md` and `.claude/plans/multi-stream-transport-plan.md` |
-| **Trade streams**: Bybit trade protocol and decoder; a shard tick to close MEXC futures sweeps on quiet contracts | **transport, decoding and sweep detection done**: `StreamKind.TRADE`, Binance spot and futures `@aggTrade` bindings (`BinanceStreamProtocol.aggTrade`, futures on `/market/ws`), `streams.TRADE` blocks (on by default); the `TradeDecoder` SPI with `BinanceAggTradeDecoder` pinned in the slot; the `TRADE` arm decodes into `TradeDetector`, which counts decoded trades, folds the fills of one taker order into a sweep held in the slot's `TradeState` (same side and trade time, price moving toward the aggressor, contiguous ids), and judges each sweep, once the instrument's next trade closes it, against `screener.trade-alerts` (a $30K floor plus per-symbol overrides from the slice 0 capture), into the in-memory `TradeAlertStore` behind `/api/monitoring/trade-alerts`. **MEXC** spot and futures deal streams are bound (off by default) with their decoders: spot is binary Protobuf, drops synthetic `X0_X0` deals, groups fills by the taker-order id and closes each sweep at the end of its frame; futures drops self-trades and lets an equal price continue a sweep (one deal is one maker fill) | `.claude/plans/trade-alerts-plan.md`; Phase 1: `.claude/plans/trade-streams-transport-plan.md`; Phase 2: `.claude/plans/trade-detection-plan.md`; MEXC: `.claude/plans/trade-mexc-plan.md` (slices 1–2 done; slice 3, the tick, next) |
+| **Trade streams**: Bybit trade protocol and decoder | **transport, decoding and sweep detection done**: `StreamKind.TRADE`, Binance spot and futures `@aggTrade` bindings (`BinanceStreamProtocol.aggTrade`, futures on `/market/ws`), `streams.TRADE` blocks (on by default); the `TradeDecoder` SPI with `BinanceAggTradeDecoder` pinned in the slot; the `TRADE` arm decodes into `TradeDetector`, which counts decoded trades, folds the fills of one taker order into a sweep held in the slot's `TradeState` (same side and trade time, price moving toward the aggressor, contiguous ids), and judges each sweep, once the instrument's next trade closes it, against `screener.trade-alerts` (a $30K floor plus per-symbol overrides from the slice 0 capture), into the in-memory `TradeAlertStore` behind `/api/monitoring/trade-alerts`. **MEXC** spot and futures deal streams are bound (off by default) with their decoders: spot is binary Protobuf, drops synthetic `X0_X0` deals, groups fills by the taker-order id and closes each sweep at the end of its frame; futures drops self-trades, lets an equal price continue a sweep (one deal is one maker fill) and has its sweeps closed after 1.5 s without a fill by the shard tick (§5.3), configured per venue | `.claude/plans/trade-alerts-plan.md`; Phase 1: `.claude/plans/trade-streams-transport-plan.md`; Phase 2: `.claude/plans/trade-detection-plan.md`; MEXC: `.claude/plans/trade-mexc-plan.md` (slices 1–3 done; slice 4, thresholds and the live check, next) |
 | **`SpikeDetector`** (price and volume spikes from candles) | `FeedChannel` interface for delivery | `spike-alerts-plan.md` |
 | **`OrderClusterDetector`** (split-order walls across adjacent levels) | depth arm of the handler; `FeedChannel` | `.claude/plans/team-plans/order-cluster-plan.md` |
 | **Trade alerts**: same-side bursts (Phase 4), per-user thresholds (Phase 6) | **delivery done**: `TradeChannel` sends every alert to every session and replays the last 100 in each `SNAPSHOT` (`websocket-feed-api.md` §3.8); `TradeAlert` carries the threshold it was judged against | `.claude/plans/trade-alerts-plan.md`; Phase 3: `.claude/plans/trade-delivery-plan.md` |

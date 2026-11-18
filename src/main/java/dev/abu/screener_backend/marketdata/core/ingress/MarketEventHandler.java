@@ -27,6 +27,8 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
 
     @Getter
     private final int shardIndex;
+    /** Step between this shard's instrument ids: {@code id & (shardCount - 1) == shardIndex}. */
+    private final int shardCount;
     private final InstrumentSlotTable slots;
     private final OrderBookClassifier classificationModule;
     private final TradeDetector tradeDetector;
@@ -44,20 +46,24 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     private long processed;
 
     /**
+     * @param shardCount    the number of shards, a power of two; with {@code shardIndex}, it says which
+     *                      instrument ids this shard owns, for the tick's walk
      * @param tradeDetector the shared core detector; one instance serves every shard. The decoder
      *                      reports into it as a {@code TradeSink}, and the handler calls its
-     *                      frame-end close, which is core's, not part of the decoder SPI.
+     *                      frame-end and idle closes, which are core's, not part of the decoder SPI.
      */
-    public MarketEventHandler(int shardIndex, InstrumentSlotTable slots, OrderBookClassifier classificationModule,
-                              TradeDetector tradeDetector, PipelineMetrics metrics) {
+    public MarketEventHandler(int shardIndex, int shardCount, InstrumentSlotTable slots,
+                              OrderBookClassifier classificationModule, TradeDetector tradeDetector,
+                              PipelineMetrics metrics) {
         this.shardIndex = shardIndex;
+        this.shardCount = shardCount;
         this.slots = slots;
         this.classificationModule = classificationModule;
         this.tradeDetector = tradeDetector;
         this.metrics = metrics;
     }
 
-    /** Monotonic total. Subtract two samples for a rate. */
+    /** Monotonic total of instrument events; shard ticks are not counted. Subtract two samples for a rate. */
     public long processed() {
         return processed;
     }
@@ -69,6 +75,12 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
 
     @Override
     public void onEvent(MarketEvent event, long sequence, boolean endOfBatch) {
+        // A tick has no instrument and no stream kind: handled before the slot lookup and the switch.
+        if (event.source == EventSource.TICK) {
+            onTick();
+            event.clear();
+            return;
+        }
         processed++;
         InstrumentSlot slot = slots.get(event.instrumentId);
 
@@ -121,6 +133,20 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
             metrics.recordTradeParseFailure(slot.instrument().venue());
         }
         tradeDetector.onFrameEnd(slot);
+    }
+
+    /**
+     * The shard tick: visits every instrument this shard owns (ids {@code shardIndex},
+     * {@code shardIndex + shardCount}, …, the same ids {@code id & (shardCount - 1)} routes here) and
+     * lets the detector close an idle sweep. A few thousand checks per tick at most, nearly all of
+     * them a null or a closed sweep.
+     */
+    private void onTick() {
+        InstrumentSlot[] all = slots.snapshot();
+        for (int id = shardIndex; id < all.length; id += shardCount) {
+            InstrumentSlot slot = all[id];
+            if (slot != null) tradeDetector.closeIfIdle(slot);
+        }
     }
 
     private void noteMissingSlot(int instrumentId) {

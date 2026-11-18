@@ -36,7 +36,7 @@ class TradeChannelTest {
     private static final int CAPACITY = 5;
     private static final int REPLAY = 3;
 
-    private final TradeAlertProperties props = new TradeAlertProperties(1, null, CAPACITY, REPLAY);
+    private final TradeAlertProperties props = new TradeAlertProperties(1, null, CAPACITY, REPLAY, null, 250);
     private final TradeAlertStore store = new TradeAlertStore(props);
     private final TradeChannel channel = new TradeChannel(store, props);
 

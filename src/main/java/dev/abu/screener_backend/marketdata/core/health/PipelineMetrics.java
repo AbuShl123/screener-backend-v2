@@ -38,6 +38,9 @@ public class PipelineMetrics {
     private final LongAdder[] tradeParseFailures = adders(Venue.values().length);
     private final LongAdder[] tradeAlerts = adders(Venue.values().length);
     private final LongAdder[] tradeAlertsCoalescedOnly = adders(Venue.values().length);
+    private final LongAdder[] tradeIdleCloses = adders(Venue.values().length);
+    private final LongAdder[] tradeIdleSplits = adders(Venue.values().length);
+    private final LongAdder ticksSkipped = new LongAdder();
 
     /** Labels of the fills-per-alerted-sweep buckets: 1, 2–3, 4–10, more than 10. */
     public static final String[] FILL_BUCKETS = {"1", "2-3", "4-10", ">10"};
@@ -159,6 +162,46 @@ public class PipelineMetrics {
     /** Alerts that exist only because their fills were summed. Monotonic total since startup. */
     public long tradeAlertsCoalescedOnly(Venue venue) {
         return tradeAlertsCoalescedOnly[venue.ordinal()].sum();
+    }
+
+    /**
+     * One sweep closed by the idle close (judged, whether or not it alerted). At most once per sweep,
+     * on the shard thread.
+     */
+    public void recordTradeIdleClose(Venue venue) {
+        tradeIdleCloses[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total for {@code venue}. */
+    public long tradeIdleCloses(Venue venue) {
+        return tradeIdleCloses[venue.ordinal()].sum();
+    }
+
+    /**
+     * One fill that would have continued a sweep the idle close had already closed: the sweep was
+     * split in two. The live measure of whether the venue's {@code sweep-idle-close-ms} is too short;
+     * it should stay near zero.
+     */
+    public void recordTradeIdleSplit(Venue venue) {
+        tradeIdleSplits[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total for {@code venue}. */
+    public long tradeIdleSplits(Venue venue) {
+        return tradeIdleSplits[venue.ordinal()].sum();
+    }
+
+    /**
+     * One shard tick not published because the shard's ring was full. The next tick follows, so a
+     * skip only delays idle closes; a steady count means the shard is not keeping up.
+     */
+    public void recordTickSkipped() {
+        ticksSkipped.increment();
+    }
+
+    /** Monotonic total over all shards. */
+    public long ticksSkipped() {
+        return ticksSkipped.sum();
     }
 
     /**

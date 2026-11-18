@@ -49,6 +49,18 @@ public final class TradeState {
     int fills;
     /** Price levels taken: 1 plus the number of fills whose price differs from the previous fill's. */
     int levels;
+    /**
+     * Local processing time of the latest fill, epoch ms (the detector's clock): what the idle close
+     * measures against. It is the shard's time, not the venue's, so ring lag delays fills and ticks
+     * alike.
+     */
+    long lastFillAtMs;
+    /**
+     * The sweep was closed by the idle close rather than by a trade. Kept with the closed sweep's
+     * fields until the next {@code open}, so that a fill which would have continued it is counted as
+     * an idle split.
+     */
+    boolean closedByIdle;
 
     public TradeState(boolean makerFills, boolean closeAtFrameEnd) {
         this.makerFills = makerFills;
@@ -57,9 +69,11 @@ public final class TradeState {
 
     /** Starts a new sweep with this fill, discarding the previous one. */
     void open(double price, double qty, boolean aggressorBuy, long tradeTimeMs,
-              long firstTradeId, long lastTradeId, long takerOrderId) {
+              long firstTradeId, long lastTradeId, long takerOrderId, long nowMs) {
         double notional = price * qty;
         this.open = true;
+        this.closedByIdle = false;
+        this.lastFillAtMs = nowMs;
         this.aggressorBuy = aggressorBuy;
         this.tradeTimeMs = tradeTimeMs;
         this.firstTradeId = firstTradeId;
@@ -76,8 +90,9 @@ public final class TradeState {
     }
 
     /** Folds one more fill into the open sweep. */
-    void add(double price, double qty, long lastTradeId) {
+    void add(double price, double qty, long lastTradeId, long nowMs) {
         double notional = price * qty;
+        this.lastFillAtMs = nowMs;
         if (price != lastPrice) {
             levels++;
             levelNotional = notional;

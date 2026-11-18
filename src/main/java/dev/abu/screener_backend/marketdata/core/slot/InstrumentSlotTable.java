@@ -75,7 +75,10 @@ public class InstrumentSlotTable {
         return (id >= 0 && id < snapshot.length) ? snapshot[id] : null;
     }
 
-    /** Cold path — monitoring and the sync-count log. The array must not be modified. */
+    /**
+     * The whole array, indexed by instrument id: monitoring, the health log, and each shard tick's walk
+     * over its own ids. The array must not be modified.
+     */
     public InstrumentSlot[] snapshot() {
         return slots;
     }

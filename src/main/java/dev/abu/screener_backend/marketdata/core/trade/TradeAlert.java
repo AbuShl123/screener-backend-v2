@@ -30,8 +30,8 @@ import dev.abu.screener_backend.marketdata.Instrument;
  * @param lastTradeId    last venue trade id, or {@code -1}
  * @param tradeTimeMs    venue trade time, epoch millis
  * @param detectedAtMs   local time the alert was raised, epoch millis. It includes the wait for the
- *                       sweep to close: the instrument's next trade, or the end of the frame on a
- *                       venue that closes sweeps there.
+ *                       sweep to close: the instrument's next trade, the end of the frame on a venue
+ *                       that closes sweeps there, or the idle close on a venue that has one.
  */
 public record TradeAlert(
         Instrument instrument,

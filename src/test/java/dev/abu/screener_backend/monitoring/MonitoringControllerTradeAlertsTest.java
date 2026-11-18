@@ -21,7 +21,7 @@ class MonitoringControllerTradeAlertsTest {
     private static final Instrument BTC_FUT = Instrument.of(7, Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT");
     private static final Instrument ETH_SPOT = Instrument.of(8, Venue.BINANCE_SPOT, "ETHUSDT", "ETH", "USDT");
 
-    private final TradeAlertStore store = new TradeAlertStore(new TradeAlertProperties(1, null, 5, 100));
+    private final TradeAlertStore store = new TradeAlertStore(new TradeAlertProperties(1, null, 5, 100, null, 250));
     private final MonitoringController controller = new MonitoringController(null, null, null, null, store);
 
     @Test

@@ -28,11 +28,18 @@ class TradeDetectorTest {
     /** MEXC futures' flags: one fill per resting order, sweeps close on the next trade. */
     private static final TradeDecoder FUTURES_LIKE = new FlagDecoder(true, false);
 
+    /** MEXC futures' idle close; no other venue has one. */
+    private static final long IDLE = 1_500;
+
     private final PipelineMetrics metrics = new PipelineMetrics();
     private final TradeAlertProperties props = new TradeAlertProperties(MIN,
-            Map.of(Venue.BINANCE_FUTURES, Map.of("ETHUSDT", 50_000.0)), 100, 100);
+            Map.of(Venue.BINANCE_FUTURES, Map.of("ETHUSDT", 50_000.0)), 100, 100,
+            Map.of(Venue.MEXC_FUTURES, IDLE), 250);
     private final TradeAlertStore store = new TradeAlertStore(props);
-    private final TradeDetector detector = new TradeDetector(metrics, new TradeThresholds(props), store);
+    /** The detector's local clock, ms: set by the idle-close tests, constant otherwise. */
+    private long now = 1_000;
+    private final TradeDetector detector = new TradeDetector(metrics, props, new TradeThresholds(props), store,
+            () -> now);
 
     private final InstrumentSlot spot = slot(0, Venue.BINANCE_SPOT, "BTCUSDT");
     private final InstrumentSlot futures = slot(1, Venue.BINANCE_FUTURES, "BTCUSDT");
@@ -97,10 +104,8 @@ class TradeDetectorTest {
     @Test
     @DisplayName("a one-fill alert carries the trade: side, price, qty, notional, ids, times, id")
     void oneFillCarriesTrade() {
-        long before = System.currentTimeMillis();
         detector.onTrade(futures, 65_000, 0.5, false, T, 8_285_985_083L, 8_285_985_090L, -1);
         closeWith(futures);
-        long after = System.currentTimeMillis();
 
         TradeAlert a = only();
         assertSame(futures.instrument(), a.instrument());
@@ -116,7 +121,7 @@ class TradeDetectorTest {
         assertEquals(8_285_985_083L, a.firstTradeId());
         assertEquals(8_285_985_090L, a.lastTradeId());
         assertEquals(T, a.tradeTimeMs());
-        assertTrue(a.detectedAtMs() >= before && a.detectedAtMs() <= after);
+        assertEquals(now, a.detectedAtMs(), "the detector's clock");
         assertEquals("BINANCE_FUTURES:BTCUSDT:8285985083", a.id());
         assertEquals(1, metrics.tradeAlerts(Venue.BINANCE_FUTURES));
         assertEquals(0, metrics.tradeAlerts(Venue.BINANCE_SPOT));
@@ -501,6 +506,120 @@ class TradeDetectorTest {
         assertTrue(store.recent(null, null, 10).isEmpty());
     }
 
+    // ---- idle close ----
+
+    @Test
+    @DisplayName("closeIfIdle judges a sweep idle for at least the venue's limit, and not before")
+    void idleCloseAtLimit() {
+        now = 10_000;
+        detector.onTrade(mexcFutures, 100, 200, true, T, 1, 1, -1);
+
+        now = 10_000 + IDLE - 1;
+        detector.closeIfIdle(mexcFutures);
+        assertTrue(store.recent(null, null, 10).isEmpty(), "1 ms short of the limit");
+
+        now = 10_000 + IDLE;
+        detector.closeIfIdle(mexcFutures);
+        TradeAlert alert = only();
+        assertEquals(1, alert.fills());
+        assertEquals(10_000 + IDLE, alert.detectedAtMs());
+        assertEquals(1, metrics.tradeIdleCloses(Venue.MEXC_FUTURES));
+
+        detector.closeIfIdle(mexcFutures);
+        assertEquals(1, store.recent(null, null, 10).size(), "a closed sweep is not judged twice");
+    }
+
+    @Test
+    @DisplayName("every fill that continues the sweep restarts its idle time")
+    void continuingFillRestartsIdle() {
+        now = 0;
+        detector.onTrade(mexcFutures, 100, 60, true, T, 1, 1, -1);
+        now = 1_000;
+        detector.onTrade(mexcFutures, 100, 60, true, T, 2, 2, -1);
+
+        now = 1_000 + IDLE - 1;
+        detector.closeIfIdle(mexcFutures);
+        assertTrue(store.recent(null, null, 10).isEmpty(), "idle counts from the last fill, not the first");
+
+        now = 1_000 + IDLE;
+        detector.closeIfIdle(mexcFutures);
+        assertEquals(2, only().fills());
+    }
+
+    @Test
+    @DisplayName("a venue without an idle close is never closed by closeIfIdle")
+    void noIdleCloseForOtherVenues() {
+        now = 0;
+        detector.onTrade(futures, 100, 200, true, T, 1, 1, -1);
+        detector.onTrade(mexcSpot, 100, 200, true, T, 1, 1, 500);
+
+        now = 3_600_000;
+        detector.closeIfIdle(futures);
+        detector.closeIfIdle(mexcSpot);
+        detector.closeIfIdle(new InstrumentSlot(Instrument.of(20, Venue.MEXC_FUTURES, "ETH_USDT", "ETH", "USDT"),
+                null, null, null));
+
+        assertTrue(store.recent(null, null, 10).isEmpty());
+        assertEquals(0, metrics.tradeIdleCloses(Venue.BINANCE_FUTURES));
+        assertEquals(0, metrics.tradeIdleCloses(Venue.MEXC_SPOT));
+    }
+
+    /**
+     * The tick races a frame: the frame is handled first, closes sweep A by trade and opens B. The
+     * tick right after sees B's fresh last fill and leaves it open.
+     */
+    @Test
+    @DisplayName("a tick right after a frame that closed one sweep and opened the next leaves the new one open")
+    void tickAfterFrameKeepsNewSweep() {
+        now = 0;
+        detector.onTrade(mexcFutures, 100, 200, true, T, 1, 1, -1);
+
+        now = IDLE;
+        detector.onTrade(mexcFutures, 100, 300, true, T + 5, 2, 2, -1);   // new t: closes A, opens B
+        detector.closeIfIdle(mexcFutures);
+
+        TradeAlert a = only();
+        assertEquals(1, a.firstTradeId(), "A was judged by the frame");
+        assertEquals(IDLE, a.detectedAtMs());
+        assertEquals(0, metrics.tradeIdleCloses(Venue.MEXC_FUTURES), "the tick closed nothing");
+
+        now = 2 * IDLE;
+        detector.closeIfIdle(mexcFutures);
+        assertEquals(2, store.recent(null, null, 10).size(), "B is judged once it has been idle itself");
+        assertEquals(0, metrics.tradeIdleSplits(Venue.MEXC_FUTURES));
+    }
+
+    @Test
+    @DisplayName("a fill that would have continued an idle-closed sweep counts one idle split and opens a new sweep")
+    void idleSplit() {
+        now = 0;
+        detector.onTrade(mexcFutures, 100, 60, true, T, 1, 1, -1);
+        now = IDLE;
+        detector.closeIfIdle(mexcFutures);
+        now = IDLE + 100;
+        detector.onTrade(mexcFutures, 100, 60, true, T, 2, 2, -1);
+
+        assertEquals(1, metrics.tradeIdleSplits(Venue.MEXC_FUTURES));
+        assertSplit();
+    }
+
+    @Test
+    @DisplayName("a fill of another order after an idle close, or of the same order after a frame-end close, is no idle split")
+    void noIdleSplit() {
+        now = 0;
+        detector.onTrade(mexcFutures, 100, 60, true, T, 1, 1, -1);
+        now = IDLE;
+        detector.closeIfIdle(mexcFutures);
+        detector.onTrade(mexcFutures, 100, 60, false, T, 2, 2, -1);      // other side: another order
+
+        detector.onTrade(mexcSpot, 100, 60, true, T, 1, 1, 500);
+        detector.onFrameEnd(mexcSpot);
+        detector.onTrade(mexcSpot, 100, 60, true, T, 2, 2, 500);         // same order, next frame
+
+        assertEquals(0, metrics.tradeIdleSplits(Venue.MEXC_FUTURES));
+        assertEquals(0, metrics.tradeIdleSplits(Venue.MEXC_SPOT));
+    }
+
     // ---- filtered ----
 
     @Test
@@ -523,7 +642,7 @@ class TradeDetectorTest {
     @Test
     @DisplayName("detectedAtMs comes from the detector's clock")
     void clock() {
-        TradeDetector clocked = new TradeDetector(metrics, new TradeThresholds(props), store, () -> 42L);
+        TradeDetector clocked = new TradeDetector(metrics, props, new TradeThresholds(props), store, () -> 42L);
         clocked.onTrade(mexcSpot, 100, 200, true, T, 1, 1, 500);
         clocked.onFrameEnd(mexcSpot);
 

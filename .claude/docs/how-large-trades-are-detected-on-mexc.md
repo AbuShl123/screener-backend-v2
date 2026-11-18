@@ -11,10 +11,10 @@ design, thresholds, the replay fixture, future ideas). Read its §1–2 first if
 *notional* or *sweep* are new; this document repeats only what MEXC needs.
 
 **Status (2026-11-18)**: Phase 5 of the trade-alerts work, MEXC first. Slice 0 (capture and
-analysis), slice 1 (transport: both `TRADE` streams connect and route) and slice 2 (decoding,
-filtering, sweep grouping, the spot frame-end close, `levels`) are done; both streams are still off
-by default. Next: the futures idle close (slice 3), thresholds and the live check (slice 4). Until
-slice 3, a futures sweep is judged when the contract's next real deal arrives.
+analysis), slice 1 (transport: both `TRADE` streams connect and route), slice 2 (decoding,
+filtering, sweep grouping, the spot frame-end close, `levels`) and slice 3 (the futures idle close
+on a shard tick) are done; both streams are still off by default. Next: thresholds and the live
+check (slice 4).
 
 **Detailed sources**: `external-docs/mexc/mexc-trades-empirical.md` (the wire contract and every
 measured number), `.claude/plans/trade-mexc-plan.md` (implementation plan; "Capture findings" holds
@@ -409,8 +409,12 @@ still separates orders: a deal with a different id closes the previous order. Th
 spot becomes zero. The rare order split across two frames becomes two smaller sweeps.
 
 **Futures: an idle timer.** Fills of one sweep are at most 213 ms apart by `ts`, so **about 1 s of
-silence** means the order has ended. This is slice 4 of `trade-detection-plan.md` (a per-shard tick
-that closes sweeps idle for longer than a tunable), which now comes with MEXC.
+silence** means the order has ended. A shard tick checks every open sweep every 250 ms and judges the
+ones with no new fill for `sweep-idle-close-ms` (1500 ms for `MEXC_FUTURES`), so the worst close
+delay is about 1.75 s. The tick is a timer thread that only puts a `TICK` event into each shard's
+ring; the close itself runs on the shard thread, in order with that shard's frames, so it never
+races a fill. A frame handled just before a tick has already refreshed its sweep's last-fill time,
+so the tick leaves that sweep open.
 
 **The timer's catch: our own clock.** `ts` is MEXC's send time; the timer runs on our receive time.
 Network lag spikes in the capture stretched receive gaps inside one sweep to **3.8 s** (p99.9 1.2 s).
@@ -524,7 +528,7 @@ Alert ids keep the Binance form `VENUE:NATIVESYMBOL:firstTradeId`, e.g.
 | filtered deal | a deal a decoder drops by venue policy; counted, never judged |
 | rule A | futures continuation: side, `t`, next id, price equal or toward the aggressor |
 | close delay | time from a sweep's last fill until something proves it ended |
-| idle timer | closes a sweep after a period with no new fills (shard tick, slice 4) |
+| idle timer | closes a sweep after `sweep-idle-close-ms` with no new fills (shard tick; MEXC futures) |
 | `contractSize` | base quantity of one futures contract (`Instrument.quantityMultiplier()`) |
 
 ## 11. Where things are

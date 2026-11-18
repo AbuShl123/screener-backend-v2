@@ -293,6 +293,13 @@ screener:
         WLDUSDT: 50000
     recent-capacity: 100                 # alerts kept in memory for /api/monitoring/trade-alerts
     replay-size: 100                     # alerts replayed in every /ws SNAPSHOT
+    # Per venue: a sweep with no new fill for this long (ms, local time) is closed and judged by the
+    # shard tick. Venues left out close sweeps on their next trade (MEXC spot: at the end of the frame).
+    # Must stay well above the gap between one sweep's frames (MEXC futures: <= 213 ms, lag spikes to
+    # 3.8 s); the health log's isplit column shows sweeps split by a too-short value.
+    sweep-idle-close-ms:
+      MEXC_FUTURES: 1500
+    tick-interval-ms: 250                # shard tick period; runs only when sweep-idle-close-ms names a venue
 
   ticker:
     refresh-interval: PT4H

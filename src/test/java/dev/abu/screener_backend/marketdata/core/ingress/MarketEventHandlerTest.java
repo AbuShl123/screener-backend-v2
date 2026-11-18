@@ -66,7 +66,7 @@ class MarketEventHandlerTest {
         slots.allocate(Instrument.of(ID, Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT"));
         slots.allocate(Instrument.of(NO_DECODER_ID, Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT"));
         slots.publish();
-        handler = new MarketEventHandler(0, slots, classifier, detector, metrics);
+        handler = new MarketEventHandler(0, 1, slots, classifier, detector, metrics);
     }
 
     @Test
@@ -182,6 +182,27 @@ class MarketEventHandlerTest {
         assertEquals(-1, event.instrumentId);
     }
 
+    @Test
+    @DisplayName("a TICK visits exactly this shard's slots, without the slot lookup, and is not counted as processed")
+    void tickVisitsOwnShard() {
+        slots.allocate(Instrument.of(2, Venue.BINANCE_SPOT, "ETHUSDT", "ETH", "USDT"));
+        slots.allocate(Instrument.of(3, Venue.BINANCE_SPOT, "SOLUSDT", "SOL", "USDT"));
+        slots.publish();
+        MarketEventHandler shard1 = new MarketEventHandler(1, 2, slots, classifier, detector, metrics);
+        event.source = EventSource.TICK;
+        event.instrumentId = -1;
+
+        shard1.onEvent(event, 0, true);
+
+        assertEquals(List.of("idle 1", "idle 3"), trace, "ids 1 and 3 belong to shard 1 of 2");
+        assertTrue(strategy.calls.isEmpty());
+        assertTrue(decoder.calls.isEmpty());
+        assertTrue(classifier.instruments.isEmpty());
+        assertEquals(0, shard1.processed());
+        assertEquals(0, shard1.unhandledKinds(), "no stream kind, and none expected");
+        assertCleared();
+    }
+
     private void tradeEvent(int instrumentId, String rawJson) {
         event.source = EventSource.WS_MSG;
         event.stream = StreamKind.TRADE;
@@ -244,11 +265,11 @@ class MarketEventHandlerTest {
         final List<String> trace;
 
         RecordingDetector(PipelineMetrics metrics, List<String> trace) {
-            this(metrics, new TradeAlertProperties(1, null, 10, 10), trace);
+            this(metrics, new TradeAlertProperties(1, null, 10, 10, null, 250), trace);
         }
 
         private RecordingDetector(PipelineMetrics metrics, TradeAlertProperties props, List<String> trace) {
-            super(metrics, new TradeThresholds(props), new TradeAlertStore(props));
+            super(metrics, props, new TradeThresholds(props), new TradeAlertStore(props));
             this.trace = trace;
         }
 
@@ -256,6 +277,12 @@ class MarketEventHandlerTest {
         public void onFrameEnd(InstrumentSlot slot) {
             trace.add("frame end");
             super.onFrameEnd(slot);
+        }
+
+        @Override
+        public void closeIfIdle(InstrumentSlot slot) {
+            trace.add("idle " + slot.instrument().id());
+            super.closeIfIdle(slot);
         }
     }
 
