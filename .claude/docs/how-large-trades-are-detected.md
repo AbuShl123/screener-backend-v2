@@ -225,9 +225,12 @@ Coalescing matters **more** on futures, not less (see 4.5).
 
 ### 4.4 Thresholds
 
-Each instrument has one minimum notional: `screener.trade-alerts` in `application.yml`, bound to
-`TradeAlertProperties` and looked up by `TradeThresholds`. A $30K default, plus per-symbol overrides
-for busy symbols (7 spot, 28 futures).
+Each instrument has one minimum notional: `screener.trade-alerts` in
+`src/main/resources/trade-thresholds.yml` (imported by `application.yml`; a file of that name in the
+server's working directory overrides it), bound to `TradeAlertProperties` and looked up by
+`TradeThresholds`: the symbol's override, else the venue's own default
+(`venue-default-min-notional`, e.g. MEXC spot $10K), else the global $30K. Binance has per-symbol
+overrides for busy symbols (7 spot, 28 futures).
 
 **How the values were chosen** (`trade-detection-plan.md` §10.2): a flat $30K is unusable. It
 produces ~630 spot and **~10,600 futures alerts per hour**, mostly on BTC and ETH. So we set an
@@ -323,7 +326,7 @@ Why it is valuable:
 - Built-in traps: the fixture uses its own test thresholds ($20K floor, $100K for SOLUSDT
   **futures** only). SOLUSDT **spot** alerts at $20K, so an override wrongly leaking across venues
   fails the test. The §2.1 XRP example is in the fixture too.
-- Test thresholds are independent of `application.yml`, so retuning production never breaks it.
+- Test thresholds are independent of `trade-thresholds.yml`, so retuning production never breaks it.
 
 The test checks that the detector raises exactly the `coalesced` alerts, in the same order. The
 `singleTrade` list is the independent check of the coalescing-only flag: an alert is
@@ -548,7 +551,7 @@ Plan: ship the budget-based thresholds as v1 and use real user feedback to steer
 | decoder | `marketdata/adapter/binance/BinanceAggTradeDecoder` |
 | SPI | `marketdata/spi/TradeDecoder`, `TradeSink`, `VenueTradeDecoderBinding`, `TradeDecoderRegistry` |
 | detection | `marketdata/core/trade/`: `TradeDetector`, `TradeState` (the open sweep, held in the instrument's slot), `TradeThresholds`, `TradeAlert`, `TradeAlertStore` |
-| config | `screener.trade-alerts` in `application.yml` → `config/TradeAlertProperties` |
+| config | `screener.trade-alerts`: thresholds in `trade-thresholds.yml`, behaviour in `application.yml` → `config/TradeAlertProperties` |
 | delivery | `feed/trade/TradeChannel` (`TRADE` messages, replay of `screener.trade-alerts.replay-size`); contract `.claude/docs/for-frontend/websocket-feed-api.md` §3.8 |
 | admin endpoints | `GET /api/monitoring/trade-alerts?venue=&symbol=&limit=` (each alert with `id`, `threshold` and `coalescedOnly`), `GET /api/monitoring/trade-alerts/summary` |
 | health log | trades table in `PipelineHealthLogger`: decoded/s, failures, alerts, coalescing-only alerts (`coal`) and alerts by fills per sweep, per 30 s |

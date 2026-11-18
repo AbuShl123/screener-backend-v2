@@ -32,7 +32,7 @@ class TradeDetectorTest {
     private static final long IDLE = 1_500;
 
     private final PipelineMetrics metrics = new PipelineMetrics();
-    private final TradeAlertProperties props = new TradeAlertProperties(MIN,
+    private final TradeAlertProperties props = new TradeAlertProperties(MIN, null,
             Map.of(Venue.BINANCE_FUTURES, Map.of("ETHUSDT", 50_000.0)), 100, 100,
             Map.of(Venue.MEXC_FUTURES, IDLE), 250);
     private final TradeAlertStore store = new TradeAlertStore(props);

@@ -13,8 +13,9 @@ design, thresholds, the replay fixture, future ideas). Read its §1–2 first if
 **Status (2026-11-18)**: Phase 5 of the trade-alerts work, MEXC first. Slice 0 (capture and
 analysis), slice 1 (transport: both `TRADE` streams connect and route), slice 2 (decoding,
 filtering, sweep grouping, the spot frame-end close, `levels`) and slice 3 (the futures idle close
-on a shard tick) are done; both streams are still off by default. Next: thresholds and the live
-check (slice 4).
+on a shard tick) are done. Slice 4: the thresholds moved to `trade-thresholds.yml` with a per-venue
+default (MEXC spot $10K) and the provisional 4 h futures overrides. Still open: re-deriving the MEXC
+thresholds over busy hours, and the live check. Both streams stay off by default until then.
 
 **Detailed sources**: `external-docs/mexc/mexc-trades-empirical.md` (the wire contract and every
 measured number), `.claude/plans/trade-mexc-plan.md` (implementation plan; "Capture findings" holds
@@ -448,7 +449,10 @@ The same policy as Binance (a floor; a symbol firing more than ~10 alerts/h is r
   flat $30K gave ~630 spot alerts per hour.
 - **Futures**: $30K plus overrides `BTC_USDT` 750K, `ETH_USDT` 500K, `SOL_USDT` 300K, `ZEC_USDT` 200K,
   `XRP_USDT` 150K. Keys are native symbols (`BTC_USDT`, not `BTCUSDT`).
-- `TradeAlertProperties` has one global `default-min-notional` today; MEXC needs a default per venue.
+- Spot's floor is a per-venue default, `venue-default-min-notional.MEXC_SPOT: 10000`, which sits
+  between the symbol overrides and the global $30K. All thresholds live in
+  `src/main/resources/trade-thresholds.yml`. The MEXC values there are the 4 h ones above,
+  provisional until they are re-derived over busy hours.
 
 ---
 

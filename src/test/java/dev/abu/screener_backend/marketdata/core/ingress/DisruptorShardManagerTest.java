@@ -72,7 +72,7 @@ class DisruptorShardManagerTest {
     }
 
     private DisruptorShardManager start(Map<Venue, Long> idle) {
-        TradeAlertProperties props = new TradeAlertProperties(1, null, 10, 10, idle, 10);
+        TradeAlertProperties props = new TradeAlertProperties(1, null, null, 10, 10, idle, 10);
         DepthSyncStrategy strategy = new DepthSyncStrategy() {
             @Override
             public BookSyncContext newContext() {

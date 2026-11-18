@@ -110,10 +110,13 @@ screener:
     recent-capacity: 500                 # alerts kept in TradeAlertStore
 ```
 
-- Bound to a `TradeAlertProperties` record in `config/`. The values above only show the shape;
-  `application.yml` ships the default and per-symbol entries from the slice 0 analysis (§10.2, Q1).
-- `TradeThresholds.minNotional(Instrument)` does two map lookups (`EnumMap<Venue, Map<String,
-  Double>>`, then the default). At under 1K trades/s that costs nothing, and Phase 6's per-user
+- Bound to a `TradeAlertProperties` record in `config/`. The values above only show the shape. The
+  thresholds ship in `src/main/resources/trade-thresholds.yml` (the default and per-symbol entries
+  from the slice 0 analysis, §10.2, Q1), which `application.yml` imports into this prefix; the
+  behaviour settings stay in `application.yml`. A per-venue `venue-default-min-notional` sits
+  between the two (`trade-mexc-plan.md` §2.8).
+- `TradeThresholds.minNotional(Instrument)` does up to three map lookups (the symbol override in
+  `EnumMap<Venue, Map<String, Double>>`, the venue default, then the global default). At under 1K trades/s that costs nothing, and Phase 6's per-user
   overrides layer onto one central lookup rather than a value copied into every slot.
 
 ### 2.6 Alerts and the store (slice 2)
@@ -489,6 +492,8 @@ ladder steps across the quieter hours. In the sell-off it rises 1–4 steps (spo
 futures HYPE 150K → 750K). Any static list therefore swings about 5–8× in alert volume with the
 market. Revisit the list once the capture covers an Asia session and a weekend.
 
+The block lives in `src/main/resources/trade-thresholds.yml` (imported by `application.yml`):
+
 ```yaml
 screener:
   trade-alerts:
@@ -536,7 +541,7 @@ screener:
 Other policies, derived over all 5.1 h (alerts/h spot / futures, overrides in brackets): floor 30K
 cap 10/h → 77 / 309 (4 / 22); floor 20K → 108 / 433 (7 / 31); cap 5/h → 53 / 191 (8 / 31); floor
 50K → 42 / 197 (3 / 12). `analyze.py --floor --cap` prints any other combination, and
-`analyze.py --thresholds <application.yml>` evaluates a configured list.
+`analyze.py --thresholds <trade-thresholds.yml>` evaluates a configured list.
 
 ### 10.3 Slice 3 continuation rule
 

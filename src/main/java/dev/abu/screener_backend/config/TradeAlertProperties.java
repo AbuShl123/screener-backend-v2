@@ -9,12 +9,20 @@ import java.util.Map;
 /**
  * Large-trade detection tunables ({@code .claude/plans/trade-detection-plan.md} §2.5).
  *
- * @param defaultMinNotional a trade (slice 3: a sweep) alerts when its notional, in quote currency
- *                           (USDT on Binance), is at least this. Applies to every instrument without
- *                           an override
- * @param minNotional        per-venue, per-native-symbol overrides of the default ({@code BTCUSDT} on
- *                           {@code BINANCE_FUTURES}); optional. An override for one venue does not
- *                           apply to the same symbol on another
+ * <p>The thresholds ({@code default-min-notional}, {@code venue-default-min-notional},
+ * {@code min-notional}) live in {@code trade-thresholds.yml}, which {@code application.yml} imports
+ * into this same prefix; a {@code trade-thresholds.yml} in the working directory overrides the
+ * bundled one per property. The behaviour settings stay in {@code application.yml}.
+ *
+ * @param defaultMinNotional      a sweep alerts when its notional, in quote currency (USDT on every
+ *                                venue with trade alerts), is at least this. Applies to every
+ *                                instrument without a venue default or a symbol override
+ * @param venueDefaultMinNotional per-venue defaults ({@code MEXC_SPOT: 10000}); optional. Between the
+ *                                symbol overrides and the global default ({@code trade-mexc-plan.md}
+ *                                §2.8)
+ * @param minNotional             per-venue, per-native-symbol overrides ({@code BTCUSDT} on
+ *                                {@code BINANCE_FUTURES}); optional. An override for one venue does
+ *                                not apply to the same symbol on another
  * @param recentCapacity     how many of the most recent alerts {@code TradeAlertStore} keeps
  * @param replaySize         how many of the most recent alerts every {@code /ws} {@code SNAPSHOT}
  *                           replays ({@code TradeChannel}); independent of {@code recentCapacity}
@@ -29,6 +37,7 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "screener.trade-alerts")
 public record TradeAlertProperties(
         double defaultMinNotional,
+        Map<Venue, Double> venueDefaultMinNotional,
         Map<Venue, Map<String, Double>> minNotional,
         int recentCapacity,
         int replaySize,
@@ -49,6 +58,18 @@ public record TradeAlertProperties(
             throw new IllegalArgumentException(
                     "screener.trade-alerts.replay-size must be > 0, got " + replaySize);
         }
+        Map<Venue, Double> venueDefaults = new EnumMap<>(Venue.class);
+        if (venueDefaultMinNotional != null) {
+            venueDefaultMinNotional.forEach((venue, value) -> {
+                if (value == null || !(value > 0)) {
+                    throw new IllegalArgumentException("screener.trade-alerts.venue-default-min-notional."
+                            + venue + " must be > 0, got " + value);
+                }
+                venueDefaults.put(venue, value);
+            });
+        }
+        venueDefaultMinNotional = Map.copyOf(venueDefaults);
+
         Map<Venue, Map<String, Double>> copy = new EnumMap<>(Venue.class);
         if (minNotional != null) {
             minNotional.forEach((venue, symbols) -> {

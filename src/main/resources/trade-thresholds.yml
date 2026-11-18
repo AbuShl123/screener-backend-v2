@@ -1,0 +1,69 @@
+# Large-trade alert thresholds: the minimum notional, in USDT, at which a sweep alerts.
+# Imported by application.yml into screener.trade-alerts. A trade-thresholds.yml in the server's
+# working directory overrides this file per property (restart to apply); maps merge, so it can
+# change or add an override but cannot remove one from here: set it to the venue's default instead.
+#
+# Lookup per instrument: min-notional (venue + native symbol), else venue-default-min-notional,
+# else default-min-notional.
+#
+# Policy (.claude/plans/trade-detection-plan.md §10.2): a floor; a symbol whose alert rate at the
+# floor is above ~10/h gets the lowest step of 50K, 75K, 100K, 150K, 200K, 300K, 500K, 750K, ..., 5M
+# that brings it to 10/h or less. The analysis scripts in trade-capture/analysis print each venue's
+# block in this format, so a re-derived block replaces the old one as a whole.
+screener:
+  trade-alerts:
+    default-min-notional: 30000
+
+    # A venue's own default, between the symbol overrides and default-min-notional; optional.
+    venue-default-min-notional:
+      # MEXC spot's real taker flow is about $1.4M/h; $10K gives ~8 alerts/h with no overrides
+      # (.claude/plans/trade-mexc-plan.md §2.8).
+      MEXC_SPOT: 10000
+
+    # Per venue, per native symbol; optional. An override applies to its venue only.
+    min-notional:
+      BINANCE_SPOT:
+        BTCUSDT: 500000
+        ETHUSDT: 200000
+        SOLUSDT: 150000
+        BNBUSDT: 75000
+        NEARUSDT: 50000
+        XRPUSDT: 50000
+        ZECUSDT: 50000
+      BINANCE_FUTURES:
+        BTCUSDT: 5000000
+        ETHUSDT: 3000000
+        SOLUSDT: 500000
+        ZECUSDT: 300000
+        HYPEUSDT: 200000
+        XRPUSDT: 200000
+        1000PEPEUSDT: 150000
+        AAVEUSDT: 150000
+        BNBUSDT: 150000
+        NEARUSDT: 150000
+        DOGEUSDT: 100000
+        ADAUSDT: 75000
+        AVAXUSDT: 75000
+        ENAUSDT: 75000
+        GRAMUSDT: 75000
+        LINKUSDT: 75000
+        SUIUSDT: 75000
+        UNIUSDT: 75000
+        ASTERUSDT: 50000
+        BCHUSDT: 50000
+        BREVUSDT: 50000
+        FILUSDT: 50000
+        INJUSDT: 50000
+        MMTUSDT: 50000
+        PENGUUSDT: 50000
+        PUMPUSDT: 50000
+        TRUMPUSDT: 50000
+        WLDUSDT: 50000
+      # Provisional: from the first 4 h of the MEXC capture (2026-11-18 07:39-11:40 UTC, no US open).
+      # To be re-derived over busy hours (trade-mexc-plan.md slice 4).
+      MEXC_FUTURES:
+        BTC_USDT: 750000
+        ETH_USDT: 500000
+        SOL_USDT: 300000
+        ZEC_USDT: 200000
+        XRP_USDT: 150000

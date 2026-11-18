@@ -429,8 +429,8 @@ class TradeReplayTest {
             }
             overrides.put(Venue.valueOf(venue), symbols);
         }
-        return new TradeAlertProperties(node.required("defaultMinNotional").asDouble(), overrides, capacity, capacity,
-                idle, 250);
+        return new TradeAlertProperties(node.required("defaultMinNotional").asDouble(), null, overrides,
+                capacity, capacity, idle, 250);
     }
 
     // ---- comparison ----

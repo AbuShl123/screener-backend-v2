@@ -18,7 +18,7 @@ class TradeAlertStoreTest {
     private static final Instrument ETH_FUT = instrument(1, Venue.BINANCE_FUTURES, "ETHUSDT");
     private static final Instrument BTC_SPOT = instrument(2, Venue.BINANCE_SPOT, "BTCUSDT");
 
-    private final TradeAlertStore store = new TradeAlertStore(new TradeAlertProperties(1, null, 3, 3, null, 250));
+    private final TradeAlertStore store = new TradeAlertStore(new TradeAlertProperties(1, null, null, 3, 3, null, 250));
 
     @Test
     @DisplayName("recent alerts come newest first")

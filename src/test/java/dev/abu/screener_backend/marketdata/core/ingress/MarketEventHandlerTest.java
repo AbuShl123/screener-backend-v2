@@ -265,7 +265,7 @@ class MarketEventHandlerTest {
         final List<String> trace;
 
         RecordingDetector(PipelineMetrics metrics, List<String> trace) {
-            this(metrics, new TradeAlertProperties(1, null, 10, 10, null, 250), trace);
+            this(metrics, new TradeAlertProperties(1, null, null, 10, 10, null, 250), trace);
         }
 
         private RecordingDetector(PipelineMetrics metrics, TradeAlertProperties props, List<String> trace) {
