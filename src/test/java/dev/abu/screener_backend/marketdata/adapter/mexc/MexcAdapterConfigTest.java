@@ -6,6 +6,7 @@ import dev.abu.screener_backend.config.ExchangesProperties.SnapshotQueueProperti
 import dev.abu.screener_backend.config.ExchangesProperties.VenueProperties;
 import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Exchange;
+import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
@@ -21,6 +22,7 @@ import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocolRegistry;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
+import dev.abu.screener_backend.marketdata.spi.VenueStreamBinding;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -41,10 +43,26 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class MexcAdapterConfigTest {
 
     /** {@link TestVenueProps#REST}'s 10 s response timeout is what {@link #batchTimeoutMustCoverPacing} counts on. */
-    private static final VenueProperties FUTURES = TestVenueProps.venue().depth(TestVenueProps.stream()
-            .maxStreamsPerConnection(300).connections(1, 8).chunk(1).heartbeatSeconds(15)).build();
-    private static final VenueProperties SPOT = TestVenueProps.venue().depth(TestVenueProps.stream()
-            .maxStreamsPerConnection(30).connections(1, 30).chunk(30).heartbeatSeconds(20)).build();
+    private static final VenueProperties FUTURES = futures(false);
+    private static final VenueProperties SPOT = spot(false);
+
+    /** Futures with its DEPTH block and a TRADE block of the given switch, both shaped as shipped. */
+    private static VenueProperties futures(boolean tradeEnabled) {
+        return TestVenueProps.venue()
+                .depth(TestVenueProps.stream().maxStreamsPerConnection(300).connections(1, 8).chunk(1).heartbeatSeconds(15))
+                .stream(StreamKind.TRADE, TestVenueProps.stream().enabled(tradeEnabled)
+                        .maxStreamsPerConnection(300).connections(1, 8).chunk(1).heartbeatSeconds(15))
+                .build();
+    }
+
+    /** As {@link #futures}, for spot. */
+    private static VenueProperties spot(boolean tradeEnabled) {
+        return TestVenueProps.venue()
+                .depth(TestVenueProps.stream().maxStreamsPerConnection(30).connections(1, 30).chunk(30).heartbeatSeconds(20))
+                .stream(StreamKind.TRADE, TestVenueProps.stream().enabled(tradeEnabled)
+                        .maxStreamsPerConnection(30).connections(1, 30).chunk(30).heartbeatSeconds(20))
+                .build();
+    }
     private static final SnapshotQueueProperties QUEUE =
             new SnapshotQueueProperties(12, Duration.ofMillis(250), Duration.ofSeconds(20));
     private static final MexcSnapshotProperties SNAPSHOT = new MexcSnapshotProperties(Map.of(
@@ -95,6 +113,43 @@ class MexcAdapterConfigTest {
         // Spot is enabled by the same switch: a futures-only binding set fails at startup.
         assertThrows(IllegalStateException.class, () -> new StreamProtocolRegistry(
                 List.of(config.mexcFuturesStreamBinding(exchanges)), exchanges));
+    }
+
+    @Test
+    @DisplayName("with both TRADE streams on, each venue has a trade protocol of its own class, distinct from its depth one")
+    void bothTradeStreamsBound() {
+        ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.MEXC, new ExchangeProperties(true,
+                Map.of(Market.FUTURES, futures(true), Market.SPOT, spot(true)), null)));
+        MexcAdapterConfig config = new MexcAdapterConfig();
+        List<VenueStreamBinding> depthOnly = List.of(
+                config.mexcSpotStreamBinding(exchanges), config.mexcFuturesStreamBinding(exchanges));
+
+        StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
+                config.mexcSpotStreamBinding(exchanges), config.mexcFuturesStreamBinding(exchanges),
+                config.mexcSpotTradeStreamBinding(exchanges), config.mexcFuturesTradeStreamBinding(exchanges)), exchanges);
+
+        assertInstanceOf(MexcSpotStreamProtocol.class, registry.forStream(trade(Venue.MEXC_SPOT)));
+        assertInstanceOf(MexcFuturesStreamProtocol.class, registry.forStream(trade(Venue.MEXC_FUTURES)));
+        for (Venue venue : List.of(Venue.MEXC_SPOT, Venue.MEXC_FUTURES)) {
+            assertNotSame(registry.forStream(depth(venue)), registry.forStream(trade(venue)),
+                    venue + " depth and trade must not share a protocol (different channels)");
+        }
+        // An enabled TRADE stream without its binding fails at startup.
+        assertThrows(IllegalStateException.class, () -> new StreamProtocolRegistry(depthOnly, exchanges));
+    }
+
+    @Test
+    @DisplayName("the trade bindings subscribe the deal channels")
+    void tradeBindingsSubscribeDealChannels() {
+        ExchangesProperties exchanges = exchanges(null);
+        MexcAdapterConfig config = new MexcAdapterConfig();
+        Instrument spot = Instrument.of(1, Venue.MEXC_SPOT, "BTCUSDT", "BTC", "USDT");
+        Instrument futures = Instrument.of(2, Venue.MEXC_FUTURES, "BTC_USDT", "BTC", "USDT", 0.0001);
+
+        assertEquals("{\"method\":\"SUBSCRIPTION\",\"params\":[\"spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT\"]}",
+                config.mexcSpotTradeStreamBinding(exchanges).protocol().subscribeFrame(List.of(spot), 1));
+        assertEquals("{\"method\":\"sub.deal\",\"param\":{\"symbol\":\"BTC_USDT\"}}",
+                config.mexcFuturesTradeStreamBinding(exchanges).protocol().subscribeFrame(List.of(futures), 1));
     }
 
     @Test
@@ -179,5 +234,9 @@ class MexcAdapterConfigTest {
 
     private static StreamKey depth(Venue venue) {
         return new StreamKey(venue, StreamKind.DEPTH);
+    }
+
+    private static StreamKey trade(Venue venue) {
+        return new StreamKey(venue, StreamKind.TRADE);
     }
 }

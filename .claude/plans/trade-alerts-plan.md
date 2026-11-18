@@ -124,7 +124,7 @@ Each phase is shippable and builds on the one before. The first phases ship behi
 | 2 | **Decode and large-trade detection** | **Done** (slice 3's live comparison with the capture still open). Trade decoder SPI. Trade logic in the `TRADE` arm: side, notional, single static threshold, sweep coalescing (D3 layer 1). Fired alerts go to the recent-trades store. Metrics for trade rate and alert rate. Plan: `.claude/plans/trade-detection-plan.md`. |
 | 3 | **Delivery** | **Done.** `TradeChannel` bean; last-N replay on connect; entitlement gate; contract doc under `.claude/docs/for-frontend/`. First end-to-end release. Plan: `.claude/plans/trade-delivery-plan.md`; contract: `websocket-feed-api.md` §3.8. |
 | 4 | **Burst detection** | Per-instrument same-side window (D3 layer 2); burst alerts with a re-alert rule; burst tunables. |
-| 5 | **More venues** | Bybit and MEXC trade protocols and decoders, one venue at a time. |
+| 5 | **More venues** | Bybit and MEXC trade protocols and decoders, one venue at a time. **MEXC first** (trade alerts matter most on smaller exchanges): plan `.claude/plans/trade-mexc-plan.md`, slice 0 capture in progress. Contract and reconnaissance: `external-docs/mexc/mexc-trades-empirical.md`. MEXC deals are fills against individual resting orders, not per-price aggregates, and include clock-driven deals that must be filtered. |
 | 6 | **Per-user thresholds** | Per ticker per exchange user override (D6), with live updates to connected sessions. |
 
 Possible later ideas, not committed: correlating trades with depth to label a vanished wall as

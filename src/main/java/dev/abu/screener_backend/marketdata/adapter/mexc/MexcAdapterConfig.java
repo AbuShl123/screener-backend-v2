@@ -106,14 +106,33 @@ public class MexcAdapterConfig {
     VenueStreamBinding mexcSpotStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.MEXC_SPOT, StreamKind.DEPTH);
         return new VenueStreamBinding(depth,
-                new MexcSpotStreamProtocol(Venue.MEXC_SPOT, exchanges.stream(depth)));
+                MexcSpotStreamProtocol.depth(Venue.MEXC_SPOT, exchanges.stream(depth)));
     }
 
     @Bean
     VenueStreamBinding mexcFuturesStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.MEXC_FUTURES, StreamKind.DEPTH);
         return new VenueStreamBinding(depth,
-                new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, exchanges.stream(depth)));
+                MexcFuturesStreamProtocol.depth(Venue.MEXC_FUTURES, exchanges.stream(depth)));
+    }
+
+    /**
+     * No {@code TradeDecoder} is bound for MEXC yet: with this stream on, the consumer counts its
+     * events as unhandled.
+     */
+    @Bean
+    VenueStreamBinding mexcSpotTradeStreamBinding(ExchangesProperties exchanges) {
+        StreamKey trade = new StreamKey(Venue.MEXC_SPOT, StreamKind.TRADE);
+        return new VenueStreamBinding(trade,
+                MexcSpotStreamProtocol.deals(Venue.MEXC_SPOT, exchanges.stream(trade)));
+    }
+
+    /** As {@link #mexcSpotTradeStreamBinding}. */
+    @Bean
+    VenueStreamBinding mexcFuturesTradeStreamBinding(ExchangesProperties exchanges) {
+        StreamKey trade = new StreamKey(Venue.MEXC_FUTURES, StreamKind.TRADE);
+        return new VenueStreamBinding(trade,
+                MexcFuturesStreamProtocol.deal(Venue.MEXC_FUTURES, exchanges.stream(trade)));
     }
 
     @Bean

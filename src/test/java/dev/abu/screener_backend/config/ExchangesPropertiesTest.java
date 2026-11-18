@@ -227,7 +227,7 @@ class ExchangesPropertiesTest {
     }
 
     @Test
-    @DisplayName("the shipped application.yml binds: Binance (depth and trades) and Bybit on, MEXC configured but off by default")
+    @DisplayName("the shipped application.yml binds: Binance (depth and trades) and Bybit on, MEXC (depth and trades) configured but off by default")
     void shippedYamlBinds() throws IOException {
         MutablePropertySources sources = new MutablePropertySources();
         new YamlPropertySourceLoader()
@@ -276,6 +276,16 @@ class ExchangesPropertiesTest {
             assertTrue(block.streamUrl() != null && block.streamUrl().startsWith("wss://"), venue + " TRADE stream-url");
             assertTrue(block.maxConnections() >= block.minConnections() && block.minConnections() > 0,
                     venue + " TRADE connection caps");
+        }
+        // MEXC ships TRADE blocks (its bindings read them), off until its trade decoders land.
+        for (Venue venue : List.of(Venue.MEXC_SPOT, Venue.MEXC_FUTURES)) {
+            StreamKey trade = new StreamKey(venue, StreamKind.TRADE);
+            StreamProperties block = props.stream(trade);
+            StreamProperties depth = depth(props, venue);
+            assertFalse(block.enabled(), venue + " TRADE is off by default");
+            assertEquals(depth.streamUrl(), block.streamUrl(), venue + " TRADE shares the depth endpoint");
+            assertEquals(depth.maxStreamsPerConnection(), block.maxStreamsPerConnection(), venue + " TRADE per-connection limit");
+            assertEquals(depth.subscribeChunkSize(), block.subscribeChunkSize(), venue + " TRADE chunk size");
         }
         // Binance futures routes by path, and a stream on the wrong one is acked and then silent.
         assertEquals("wss://fstream.binance.com/public/ws", depth(props, Venue.BINANCE_FUTURES).streamUrl());

@@ -19,6 +19,7 @@ import java.util.List;
 
 import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotFrameReader.WRAPPER_AGGRE_DEPTHS;
 import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotFrameReader.WRAPPER_CHANNEL;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotFrameReader.WRAPPER_SYMBOL;
 import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotTestSupport.EVENT_TYPE;
 import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotTestSupport.body;
 import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotTestSupport.fixture;
@@ -29,8 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * {@link MexcSpotStreamProtocol} against MEXC spot frames as delivered
- * ({@code external-docs/mexc/mexc-spot-depth-empirical.md} §1, §5): binary depth pushes, text control
- * replies.
+ * ({@code external-docs/mexc/mexc-spot-depth-empirical.md} §1, §5, {@code mexc-trades-empirical.md} §1):
+ * binary depth and deal pushes, text control replies.
  */
 class MexcSpotStreamProtocolTest {
 
@@ -43,7 +44,8 @@ class MexcSpotStreamProtocolTest {
                 .maxStreamsPerConnection(maxStreams).connections(1, 30).chunk(chunkSize).heartbeatSeconds(20).build();
     }
 
-    private static final MexcSpotStreamProtocol PROTOCOL = new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(30, 30));
+    private static final MexcSpotStreamProtocol PROTOCOL = MexcSpotStreamProtocol.depth(Venue.MEXC_SPOT, props(30, 30));
+    private static final MexcSpotStreamProtocol DEALS = MexcSpotStreamProtocol.deals(Venue.MEXC_SPOT, props(30, 30));
 
     private static final SubscriptionIndex INDEX =
             new SubscriptionIndex(List.of(BTC, ETH, LONGXIA), PROTOCOL::routingKey);
@@ -52,17 +54,21 @@ class MexcSpotStreamProtocolTest {
 
     @ParameterizedTest
     @ValueSource(ints = {31, 300})
-    @DisplayName("more than 30 streams per connection fails at construction: the server rejects the excess")
+    @DisplayName("more than 30 streams per connection fails at construction, on either channel: the server rejects the excess")
     void maxStreamsCapped(int maxStreams) {
         assertThrows(IllegalArgumentException.class,
-                () -> new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(maxStreams, 30)));
+                () -> MexcSpotStreamProtocol.depth(Venue.MEXC_SPOT, props(maxStreams, 30)));
+        assertThrows(IllegalArgumentException.class,
+                () -> MexcSpotStreamProtocol.deals(Venue.MEXC_SPOT, props(maxStreams, 30)));
     }
 
     @Test
-    @DisplayName("a subscribe chunk over 30 fails at construction")
+    @DisplayName("a subscribe chunk over 30 fails at construction, on either channel")
     void chunkSizeCapped() {
         assertThrows(IllegalArgumentException.class,
-                () -> new MexcSpotStreamProtocol(Venue.MEXC_SPOT, props(30, 31)));
+                () -> MexcSpotStreamProtocol.depth(Venue.MEXC_SPOT, props(30, 31)));
+        assertThrows(IllegalArgumentException.class,
+                () -> MexcSpotStreamProtocol.deals(Venue.MEXC_SPOT, props(30, 31)));
     }
 
     // --- Subscribe and heartbeat ---------------------------------------------------------------
@@ -77,9 +83,20 @@ class MexcSpotStreamProtocolTest {
     }
 
     @Test
-    @DisplayName("heartbeat is a text {\"method\":\"PING\"} at the configured interval")
+    @DisplayName("the deals protocol subscribes the 100ms aggre.deals channel, in the same SUBSCRIPTION frame")
+    void dealsSubscribeFrame() {
+        assertEquals("{\"method\":\"SUBSCRIPTION\",\"params\":["
+                        + "\"spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT\","
+                        + "\"spot@public.aggre.deals.v3.api.pb@100ms@龙虾USDT\"]}",
+                DEALS.subscribeFrame(List.of(BTC, LONGXIA), 3));
+    }
+
+    @Test
+    @DisplayName("heartbeat is a text {\"method\":\"PING\"} at the configured interval, on either channel")
     void heartbeat() {
-        assertEquals(new Heartbeat.TextPing(Duration.ofSeconds(20), "{\"method\":\"PING\"}"), PROTOCOL.heartbeat());
+        Heartbeat ping = new Heartbeat.TextPing(Duration.ofSeconds(20), "{\"method\":\"PING\"}");
+        assertEquals(ping, PROTOCOL.heartbeat());
+        assertEquals(ping, DEALS.heartbeat());
     }
 
     @Test
@@ -127,6 +144,58 @@ class MexcSpotStreamProtocolTest {
                 .toByteArray());
 
         assertEquals(22, PROTOCOL.route(frame, INDEX));
+    }
+
+    @Test
+    @DisplayName("a deals push (body 314) routes by its wrapper symbol, leaving position and limit untouched")
+    void routesDealsFrame() {
+        ByteBuffer frame = ByteBuffer.wrap(dealsPush("ETHUSDT"));
+        int position = frame.position();
+        int limit = frame.limit();
+
+        assertEquals(22, DEALS.route(frame, INDEX));
+        assertEquals(position, frame.position());
+        assertEquals(limit, frame.limit());
+        assertEquals(StreamProtocol.UNKNOWN, DEALS.route(ByteBuffer.wrap(dealsPush("SOLUSDT")), INDEX));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"id\":0,\"code\":0,\"msg\":\"PONG\"}",
+            "{\"id\":0,\"code\":0,\"msg\":\"spot@public.aggre.deals.v3.api.pb@100ms@BTCUSDT\"}",
+            "{\"id\":0,\"code\":0,\"msg\":\"Not Subscribed successfully! [spot@public.aggre.deals.v3.api.pb@100ms@NOPEUSDT].  Reason： Blocked! \"}"
+    })
+    @DisplayName("the deals protocol ignores every text frame: PONG, acks, rejections")
+    void dealsTextFramesIgnored(String frame) {
+        assertEquals(StreamProtocol.IGNORED, DEALS.route(frame, INDEX));
+    }
+
+    /** The wrapper's {@code publicAggreDeals} body field. */
+    private static final int WRAPPER_AGGRE_DEALS = 314;
+
+    /** A deals push in MEXC's wire order, two fills of one taker order ({@code mexc-trades-empirical.md} §1). */
+    private static byte[] dealsPush(String symbol) {
+        String eventType = "spot@public.aggre.deals.v3.api.pb@100ms";
+        Proto body = new Proto()
+                .message(1, deal("0.9861", "343.22", "751623968833597440X1_751623688012374016X1", 11737827034L))
+                .message(1, deal("0.9861", "341.63", "751623968833597440X2_751623765225304064X1", 11737827035L))
+                .string(2, eventType);
+        return new Proto()
+                .string(WRAPPER_CHANNEL, eventType + "@" + symbol)
+                .string(WRAPPER_SYMBOL, symbol)
+                .varint(6, 1794983354590L)
+                .message(WRAPPER_AGGRE_DEALS, body)
+                .toByteArray();
+    }
+
+    private static Proto deal(String price, String quantity, String tradeId, long id) {
+        return new Proto()
+                .string(1, price)
+                .string(2, quantity)
+                .varint(3, 2)
+                .varint(4, 1794983354542L)
+                .string(5, tradeId)
+                .varint(6, id);
     }
 
     @Test
