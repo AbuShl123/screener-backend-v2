@@ -5,6 +5,7 @@ import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
+import dev.abu.screener_backend.marketdata.spi.TradeDecoderRegistry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -34,6 +35,7 @@ public class InstrumentSlotTable {
 
     private final OrderbookProperties props;
     private final SyncStrategyRegistry strategyRegistry;
+    private final TradeDecoderRegistry tradeDecoderRegistry;
 
     /** Hot path reads this. Copy-on-write: never mutated after publication. */
     private volatile InstrumentSlot[] slots = EMPTY;
@@ -42,8 +44,10 @@ public class InstrumentSlotTable {
     private InstrumentSlot[] staging;
 
     /**
-     * Creates the slot and its {@link OrderBook} for a newly registered instrument. Not visible to
-     * readers until {@link #publish()}. Discovery thread only.
+     * Creates the slot and its {@link OrderBook} for a newly registered instrument, and pins the
+     * venue's sync strategy and trade decoder (if any, with the trade detection state it needs)
+     * into it. Not visible to readers until
+     * {@link #publish()}. Discovery thread only.
      */
     public void allocate(Instrument instrument) {
         if (staging == null) {
@@ -55,7 +59,7 @@ public class InstrumentSlotTable {
         }
         DepthSyncStrategy strategy = strategyRegistry.forVenue(instrument.venue());
         staging[id] = new InstrumentSlot(instrument, new OrderBook(props.priceFilterThreshold()),
-                strategy, strategy.newContext());
+                strategy, strategy.newContext(), tradeDecoderRegistry.forVenue(instrument.venue()));
     }
 
     /** Publishes every slot allocated since the last call. Discovery thread only. */

@@ -18,10 +18,12 @@ only listens.
 - Every message is one JSON object in its own text frame, wrapped in a common **envelope**
   (`type`, instrument identity, `data`). `type` says how to read `data`.
 - On connect, and whenever a resync is needed, the server sends one **`SNAPSHOT`** holding the
-  full current state. Live messages after it are applied on top.
-- Today the only data type is **`DEPTH`**: classified order-book levels. Spike alerts and order
-  clusters will arrive later as new `type`s on the same socket. **Clients must ignore types they
-  don't know** (§4.2).
+  full current state and the most recent trade alerts. Live messages after it are applied on top.
+- Two data types:
+  - **`DEPTH`**: classified order-book levels (state: a book is upserted and removed).
+  - **`TRADE`**: a large executed trade (an event: it happened once and never changes) (§3.8).
+- Bursts (many same-side trades over seconds), spike alerts and order clusters will arrive later as
+  new `type`s on the same socket. **Clients must ignore types they don't know** (§4.2).
 
 The depth feed only contains books that **currently have at least one notable level** (tier 1–4).
 A tracked instrument with nothing notable near its mid-price isn't in the feed at all, so the feed
@@ -110,7 +112,9 @@ Every message except `SNAPSHOT` has exactly these fields, in this order:
     { "type": "DEPTH", "exchange": "BINANCE", "market": "FUTURES", "symbol": "BTCUSDT",
       "data": { "bids": [ /* levels */ ], "asks": [ /* levels */ ] } },
     { "type": "DEPTH", "exchange": "BINANCE", "market": "SPOT", "symbol": "ETHUSDT",
-      "data": { "bids": [ /* levels */ ], "asks": [ /* levels */ ] } }
+      "data": { "bids": [ /* levels */ ], "asks": [ /* levels */ ] } },
+    { "type": "TRADE", "exchange": "BINANCE", "market": "FUTURES", "symbol": "SOLUSDT",
+      "data": { "id": "BINANCE_FUTURES:SOLUSDT:3653778376", "side": "SELL", /* … §3.8 */ } }
   ]
 }
 ```
@@ -124,11 +128,17 @@ The only message without instrument fields, since it covers many instruments. Se
 Each entry of `data` is **a complete envelope, byte-for-byte what you would receive live** for
 that instrument. Run each one through the same per-type handler as live messages (§4).
 
-**How to treat it**: replace your entire local state. Clear everything, then handle each entry. Any
-book you had that isn't in the snapshot is gone. Notes:
+**How to treat it** depends on the type:
 
-- `data` may be an empty array (nothing notable anywhere right now).
-- Entries come in no particular order, and may mix types once more types exist.
+- **Depth**: replace your depth state. Clear all books, then handle each `DEPTH` entry. Any book
+  you had that isn't in the snapshot is gone.
+- **Trades**: **don't clear**. Trade alerts are history, not state: merge the snapshot's `TRADE`
+  entries into your list by `id` and don't notify the user about them (§3.8.5).
+
+Notes:
+
+- `data` may be an empty array (nothing notable anywhere right now, no recent trade alerts).
+- Entries come in no particular order and mix types. Sort trade alerts by `time` yourself.
 - Snapshot entries never have `"data": null`.
 
 ### 3.3 `DEPTH` with `data` — an order book was added or changed
@@ -251,6 +261,152 @@ on every exchange. To relate a feed row to a rule, use `symbol` + `market` witho
 - **Redundant messages are possible and harmless.** Right after a `SNAPSHOT` you may receive a
   `DEPTH` repeating what the snapshot already showed, or a `DEPTH` with `data: null` for a book the
   snapshot didn't contain. Upsert and remove-if-present handle both; don't treat them as errors.
+- **Trade alerts are never merged.** Each alert is sent live exactly once, in the tick after it is
+  detected; several may arrive in one tick, including several for one symbol. A reconnect replays
+  the most recent ones in the `SNAPSHOT` (§3.8.5). Merge by `id` anyway: it makes any repeat harmless.
+
+### 3.8 `TRADE` — a large trade was executed
+
+```json
+{
+  "type": "TRADE",
+  "exchange": "BINANCE",
+  "market": "FUTURES",
+  "symbol": "SOLUSDT",
+  "data": {
+    "id": "BINANCE_FUTURES:SOLUSDT:3653778376",
+    "side": "SELL",
+    "time": 1794931200123,
+    "notional": 612455.4,
+    "qty": 4380.0,
+    "avgPrice": 139.83,
+    "firstPrice": 139.91,
+    "lastPrice": 139.74,
+    "levels": 7,
+    "threshold": 500000
+  }
+}
+```
+
+One **taker order** (a market order, or a limit order that crossed the spread) executed for at
+least the symbol's threshold. Someone actually paid this much; unlike a depth level, it cannot be
+cancelled. A trade alert is an **event, not state**: it is never updated or removed later.
+
+Trade alerts exist today for **Binance spot and futures**. Other exchanges will follow with the
+same shape. Every session receives every alert: there is no per-user filtering on the server yet,
+so filters (exchange, market, symbol, size) are applied in the UI. Custom classification rules do
+not affect trades.
+
+`data` is an object with named fields (alerts are rare, so unlike depth levels there is no tuple):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Stable identity of the alert, the same across reconnects and server restarts. Key and deduplicate by it. **Opaque**: don't parse it. |
+| `side` | `"BUY"` \| `"SELL"` | The **aggressor's** side (§3.8.1). |
+| `time` | integer | When the trade executed on the exchange, Unix epoch **ms**. Not when it was detected or sent (§3.8.4). |
+| `notional` | number | Executed value in the **quote** asset (USDT for every instrument with trade alerts today), 2 decimals. The main size figure. |
+| `qty` | number | Executed quantity in the **base** asset (`SOL` above). |
+| `avgPrice` | number | Volume-weighted average execution price, `notional / qty`. Computed, so it can carry long decimals: format it (§3.8.6). |
+| `firstPrice` | number | Price of the first level the order took. |
+| `lastPrice` | number | Price of the last level the order took. Equal to `firstPrice` when `levels` is 1. |
+| `levels` | integer ≥ 1 | How many price levels the order took (§3.8.2). |
+| `threshold` | number | The minimum notional this symbol needed to alert, in the same quote asset. `notional ≥ threshold` always (§3.8.3). |
+
+New fields may be added to `data` later; ignore fields you don't know.
+
+#### 3.8.1 Side
+
+Every trade has a buyer and a seller. `side` is the side of the one who **crossed the spread** (the
+taker):
+
+- `BUY`: the taker bought, consuming asks (offers). Price is pushed up.
+- `SELL`: the taker sold, consuming bids. Price is pushed down.
+
+Label it as "bought" / "sold" (or "taker buy" / "taker sell"), not as bullish/bearish.
+
+#### 3.8.2 Sweeps: `levels`, `firstPrice`, `lastPrice`
+
+An order bigger than the best level eats it and continues to the next price, then the next: a
+**sweep**. The exchange reports each price level as a separate trade; the server joins them back
+into one alert.
+
+- `levels` is the number of price levels taken. Each is a different price, moving in the taker's
+  direction: for `BUY` `lastPrice > firstPrice`, for `SELL` `lastPrice < firstPrice`.
+- `levels: 1` is one large fill at one price: the order hit one level big enough to absorb it (a
+  wall, or hidden size). `firstPrice == lastPrice == avgPrice`.
+- `levels > 1` means the order swept the book. Show it (e.g. "swept 7 levels").
+- **Price impact** of the sweep, as a fraction (`0.0012` = 0.12%):
+
+  ```js
+  const impact = Math.abs(data.lastPrice / data.firstPrice - 1);
+  const pct = (impact * 100).toFixed(2);   // "0.12" → "0.12%"
+  ```
+
+  It is how far the one order moved the price. A large `levels` with a small impact means a dense
+  book; few levels with a large impact means a thin one.
+
+Limits of what the exchange reports: on futures, Binance merges same-price fills over about 100ms,
+so rarely an alert is two or more orders the exchange itself merged. On spot, two orders at the same
+price in the same millisecond (one algorithm's child orders) arrive as two alerts. Neither can be
+told apart from the data.
+
+#### 3.8.3 Size: `notional`, `threshold`
+
+Thresholds differ per symbol, from $30K on most coins to $5M on BTC futures, so that each symbol
+alerts at a readable rate. Raw `notional` therefore doesn't compare across symbols: $600K is routine
+on BTC and huge on a small coin. Use the **relative size** for emphasis, the way `tier` drives
+emphasis for depth:
+
+```js
+const relative = data.notional / data.threshold;   // always ≥ 1
+```
+
+Suggested buckets (tune freely): `1–2×`, `2–5×`, `5–10×`, `≥ 10×`. Show `notional` itself as the
+headline number.
+
+`threshold` is the value the alert was judged against when it fired. Thresholds are server
+configuration and may change between releases; with per-user thresholds (planned) it will become the
+user's own value. Always read it from the alert, never hardcode it.
+
+#### 3.8.4 Time, delay and order
+
+- `time` is the exchange's execution time. Show age from it (`Date.now() - time`).
+- **Delay**: an alert usually arrives a few hundred ms after `time`. A sweep is only known to be
+  over when that symbol trades again, and Binance futures sends the last part of a sweep up to
+  ~150ms late. On a rarely traded symbol the delay can be several seconds.
+- **Arrival order is detection order, not execution order.** A futures alert can arrive after a spot
+  alert that executed later. Keep your list sorted by `time` (then `id` to break ties), don't just
+  prepend.
+
+#### 3.8.5 Snapshot replay and deduplication
+
+Every `SNAPSHOT` carries the **most recent 100 trade alerts** across all exchanges and symbols (fewer
+right after a server restart: alerts are kept in memory only).
+
+- **Merge, don't clear.** Add each `TRADE` entry whose `id` you don't have; skip the ones you have.
+  Keep alerts you already had that aren't in the snapshot. The ids are stable, so a snapshot after a
+  reconnect or a server restart never duplicates anything.
+- **Don't notify for snapshot entries.** They are history: put them in the list silently. Only live
+  `TRADE` messages may trigger a toast or sound. Otherwise every reconnect, rule edit or
+  `SNAPSHOT_REQUEST` would replay up to 100 notifications.
+- Alerts that fired while you were disconnected are recovered only if they are still among the
+  latest 100. In a quiet market that covers roughly the last 20–40 minutes, in a volatile one a few
+  minutes.
+- Cap your own list (e.g. a few hundred alerts, or by age). The server never tells you to remove an
+  alert.
+
+#### 3.8.6 Presentation notes (suggestions, not contract)
+
+- **Rate**: measured over one afternoon, roughly 150–250 alerts/hour in total in quiet hours and
+  ~1,000/hour in a sell-off, arriving in bursts during sharp moves. About 80% are futures.
+  A list or tape absorbs that; toasts need a user-set minimum (relative size or notional), a mute
+  switch and client-side rate limiting.
+- **Prices**: `firstPrice` and `lastPrice` are exchange prices and print cleanly. Format `avgPrice`
+  with the number of decimals of `firstPrice` / `lastPrice` (or `toPrecision`), never raw.
+- **Numbers** may use exponent notation (`2.5E7` for $25M); `JSON.parse` handles it. Format
+  `notional` compactly at render time ($612.5K, $25M).
+- A useful row: side colour · `exchange` `market` `symbol` · notional · relative size · age, with
+  "swept N levels, firstPrice → lastPrice (impact %)" when `levels > 1`.
 
 ---
 
@@ -258,12 +414,13 @@ on every exchange. To relate a feed row to a rule, use `symbol` + `market` witho
 
 ### 4.1 Reference handler
 
-Write one handler per `type` and use it for live messages and snapshot entries alike:
+Write one handler per `type` and use it for live messages and snapshot entries alike. The handler
+is told whether the message came from a snapshot, so trade alerts can skip notifications:
 
 ```js
 const key = (m) => `${m.exchange}:${m.market}:${m.symbol}`;
 
-function onEnvelope(msg) {
+function onEnvelope(msg, fromSnapshot) {
   switch (msg.type) {
     case "DEPTH":
       if (msg.data === null) {
@@ -275,6 +432,13 @@ function onEnvelope(msg) {
         });
       }
       break;
+    case "TRADE":
+      if (trades.has(msg.data.id)) break;       // already have it (snapshot replay)
+      trades.set(msg.data.id, {
+        exchange: msg.exchange, market: msg.market, symbol: msg.symbol, ...msg.data,
+      });                                       // keep sorted by time; cap the size (§3.8.5)
+      if (!fromSnapshot) notifyTrade(msg);      // toasts/sounds for live alerts only
+      break;
     default:
       break;                                    // unknown type: ignore (§4.2)
   }
@@ -282,10 +446,11 @@ function onEnvelope(msg) {
 
 function onMessage(msg) {
   if (msg.type === "SNAPSHOT") {
-    books.clear();                              // and any other per-type state
-    for (const entry of msg.data) onEnvelope(entry);
+    books.clear();                              // depth is state: replace it
+                                                // trades are history: NOT cleared, merged by id
+    for (const entry of msg.data) onEnvelope(entry, true);
   } else {
-    onEnvelope(msg);
+    onEnvelope(msg, false);
   }
 }
 
@@ -375,9 +540,10 @@ function connect() {
 
 | `type` | `data` | Client action |
 |---|---|---|
-| `SNAPSHOT` | Array of envelopes, exactly as sent live | Clear all state, then handle each entry. |
+| `SNAPSHOT` | Array of envelopes, exactly as sent live | Clear depth state, then handle each entry. Trade alerts are merged by `id`, not cleared, and not notified. |
 | `DEPTH` | `{ bids, asks }` | Upsert the `(exchange, market, symbol)` book. |
 | `DEPTH` | `null` | Remove that book (no-op if absent). |
+| `TRADE` | `{ id, side, time, notional, qty, avgPrice, firstPrice, lastPrice, levels, threshold }` | Add to the alert list if the `id` is new; notify only when live. |
 | anything else | — | Ignore. |
 
 **Identity**: `exchange` (open set), `market` (`SPOT` / `FUTURES`), `symbol` (normalized
@@ -386,6 +552,9 @@ function connect() {
 **Levels**: positional arrays `[price, quantity, tier, firstSeenMillis, distance]`: `tier` 1–4,
 `firstSeenMillis` epoch ms, `distance` a fraction rounded to 4 decimals (×100 then `.toFixed(2)`
 for `%`). 0–5 per side, ordered by importance.
+
+**Trades**: one large taker order. `side` is the aggressor's; `levels > 1` is a sweep from
+`firstPrice` to `lastPrice`; relative size is `notional / threshold`; sort by `time`, dedupe by `id`.
 
 **Client → server**: `SNAPSHOT_REQUEST` (raw string) forces a resync.
 
@@ -422,17 +591,36 @@ interface DepthMessage extends InstrumentIdentity {
   data: DepthData | null;    // null = remove the book
 }
 
+interface TradeData {
+  id: string;                // opaque, stable; dedupe key
+  side: 'BUY' | 'SELL';      // aggressor's side
+  time: number;              // exchange execution time, epoch ms
+  notional: number;          // quote asset (USDT), 2 dp
+  qty: number;               // base asset
+  avgPrice: number;          // notional / qty; format before display
+  firstPrice: number;
+  lastPrice: number;         // === firstPrice when levels === 1
+  levels: number;            // ≥ 1; > 1 = sweep
+  threshold: number;         // notional >= threshold
+}
+
+interface TradeMessage extends InstrumentIdentity {
+  type: 'TRADE';
+  data: TradeData;           // never null
+}
+
 /** Any message except SNAPSHOT. Types not handled here must be ignored. */
 interface UnknownEnvelope extends InstrumentIdentity {
   type: string;
   data: unknown;
 }
 
-type Envelope = DepthMessage | UnknownEnvelope;
+type Envelope = DepthMessage | TradeMessage | UnknownEnvelope;
 
 interface SnapshotMessage {
   type: 'SNAPSHOT';
-  data: Envelope[];          // same shapes as live messages; never DEPTH with data: null
+  data: Envelope[];          // same shapes as live messages; never DEPTH with data: null;
+                             // up to 100 TRADE entries (history: merge, don't notify)
 }
 
 type FeedMessage = SnapshotMessage | Envelope;

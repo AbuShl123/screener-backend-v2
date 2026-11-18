@@ -37,6 +37,10 @@ import java.util.Locale;
  *       of the venue's streams delivers, before sync state is known. A stream at zero is dead or
  *       never subscribed; depth is also the only rate that moves for a venue whose books cannot
  *       sync yet. A new {@link StreamKind} gets its column without an edit here.</li>
+ *   <li><b>trades</b> — a second table, only for venues that decoded trades: decoded trades/s,
+ *       parse failures, large-trade alerts, how many of those exist only because a sweep's fills
+ *       were summed, and alerts by fills per sweep. A decode rate below the {@code trade/s} frame
+ *       rate means the decoder is rejecting frames.</li>
  *   <li><b>msgs/s per shard</b> — throughput, and shard balance. The two shards should track each
  *       other closely; a skew would undermine the {@code id & mask} routing assumption.</li>
  *   <li><b>ring free</b> — whether consumers keep up with producers. A persistent dip is the signal
@@ -61,6 +65,12 @@ public class PipelineHealthLogger {
     /** One frames/s column per {@link StreamKind}, appended to {@link #ROW}. */
     private static final String RATE = " %9s";
     private static final StreamKind[] KINDS = StreamKind.values();
+    /**
+     * venue | decoded trades/s | parse failures, alerts, coalescing-only alerts and alerts by fill
+     * count over the interval.
+     */
+    private static final String TRADE_ROW = "  %-16s %6s %5s %7s %5s  %s";
+    private static final int FILL_BUCKETS = PipelineMetrics.FILL_BUCKETS.length;
 
     private final InstrumentSlotTable slots;
     private final DisruptorShardManager shardManager;
@@ -70,6 +80,11 @@ public class PipelineHealthLogger {
     private final long[] lastResyncs = new long[Venue.values().length];
     private final long[] lastSnapshotFailures = new long[Venue.values().length];
     private final long[] lastFrames = new long[StreamKey.COUNT];
+    private final long[] lastTradesDecoded = new long[Venue.values().length];
+    private final long[] lastTradeParseFailures = new long[Venue.values().length];
+    private final long[] lastTradeAlerts = new long[Venue.values().length];
+    private final long[] lastTradeAlertsCoalescedOnly = new long[Venue.values().length];
+    private final long[] lastTradeAlertFills = new long[Venue.values().length * FILL_BUCKETS];
     private long[] lastProcessed;
     private long lastSampleNanos;
 
@@ -82,6 +97,7 @@ public class PipelineHealthLogger {
         StringBuilder out = new StringBuilder(512);
         out.append("pipeline health:");
         appendVenueTable(out, elapsedSec);
+        appendTradeTable(out, elapsedSec);
         out.append(System.lineSeparator()).append("  shards  ");
         appendThroughput(out, elapsedSec);
         appendRingFree(out);
@@ -129,6 +145,44 @@ public class PipelineHealthLogger {
             for (long f : frames) {
                 out.append(String.format(RATE, elapsedSec <= 0 ? "-" : Math.round(f / elapsedSec)));
             }
+        }
+    }
+
+    /**
+     * One row per venue that decoded or failed to decode a trade in the interval; the whole table
+     * is omitted when no venue did, so a run without trade streams logs nothing extra.
+     * {@code dec/s} is a rate; the rest are counts over the interval. On Binance {@code dec/s}
+     * should equal the venue's {@code trade/s} (one trade per frame): a gap means frames are failing
+     * to decode. {@code coal} counts the alerts no single fill would have raised (they exist only
+     * because a sweep's fills were summed), and {@code fills} splits the alerts by sweep size.
+     */
+    private void appendTradeTable(StringBuilder out, double elapsedSec) {
+        boolean header = false;
+        for (Venue venue : Venue.values()) {
+            int v = venue.ordinal();
+            long decoded = delta(metrics.tradesDecoded(venue), lastTradesDecoded, v);
+            long failures = delta(metrics.tradeParseFailures(venue), lastTradeParseFailures, v);
+            long alerts = delta(metrics.tradeAlerts(venue), lastTradeAlerts, v);
+            long coalescedOnly = delta(metrics.tradeAlertsCoalescedOnly(venue), lastTradeAlertsCoalescedOnly, v);
+            StringBuilder fills = new StringBuilder();
+            for (int b = 0; b < FILL_BUCKETS; b++) {
+                if (b > 0) fills.append('/');
+                fills.append(delta(metrics.tradeAlertFills(venue, b), lastTradeAlertFills, v * FILL_BUCKETS + b));
+            }
+            if (decoded == 0 && failures == 0) continue;
+            if (!header) {
+                out.append(System.lineSeparator()).append(String.format(TRADE_ROW,
+                        "trades", "dec/s", "fail", "alerts", "coal",
+                        "fills " + String.join("/", PipelineMetrics.FILL_BUCKETS)));
+                header = true;
+            }
+            out.append(System.lineSeparator()).append(String.format(TRADE_ROW,
+                    shortName(venue),
+                    elapsedSec <= 0 ? "-" : Math.round(decoded / elapsedSec),
+                    failures,
+                    alerts,
+                    coalescedOnly,
+                    fills));
         }
     }
 

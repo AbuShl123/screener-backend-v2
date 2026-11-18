@@ -36,7 +36,7 @@ disconnects (local network, see the benchmark doc), and `BINANCE_FUTURES` resync
 |---|---|
 | Identity (`Venue`, `Instrument`, dense ids, `InstrumentSlotTable`) | Done |
 | Sync SPI + per-venue strategies | Done (Binance spot, Binance futures, MEXC spot, MEXC futures, Bybit spot + futures) |
-| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames; keyed by stream (`StreamKey` = venue + kind), only `DEPTH` bound |
+| Transport SPI (`StreamProtocol`) + venue-agnostic connection pools | Done, text and binary frames; keyed by stream (`StreamKey` = venue + kind); `DEPTH` bound everywhere, `TRADE` bound for Binance (on by default) |
 | Snapshot recovery (core queue + per-venue `SnapshotFetcher`) | Done |
 | Discovery (`InstrumentSource` per exchange, merged by core) | Done; no startup retry (§13) |
 | Config consolidation under `screener.exchanges.*` | Partial: `screener.orderbook.*` and `screener.websocket.*` still sit outside it |
@@ -256,7 +256,7 @@ that does this. Removing it fails the context.
 - `MarketEvent` is a reused mutable slot: `source`, `stream`, `instrumentId`, and at most one
   payload: `rawJson` (a text frame or a REST body) or `rawBytes` (a binary frame). The publisher
   writes every field on every claim, so a stale value cannot leak from the slot's previous use.
-- `StreamKind` says what the payload *is* (today only `DEPTH`) and is what the consumer dispatches
+- `StreamKind` says what the payload *is* (`DEPTH`, and `TRADE`, bound for Binance only and dropped by its arm until the decoder lands) and is what the consumer dispatches
   on. `publishFrame` takes it from the transport; `publishSnapshot` / `publishSnapshotFailure` set
   `DEPTH` themselves, since snapshot recovery is a depth-sync concept. `StreamConnection` passes its
   stream's kind, a `final` field, on both the text and binary paths. A kind with no arm in the
@@ -463,10 +463,19 @@ The ramp is weight-limited, not queue-limited.
   futures`. Both `exchangeInfo` calls run concurrently (`Mono.zip`).
 - **`BinanceRestClient`** serves both venues, parameterized by `BinancePaths` (`/api/v3/*` vs
   `/fapi/v1/*`). No filters.
-- **`BinanceStreamProtocol`** (one instance per venue) subscribes with `{"method":"SUBSCRIBE",…}`
-  (topic `{symbol}@depth` / `{symbol}@depth@500ms`, lower-cased, 400 per frame). It routes on the
-  `"s"` field and ignores `{"result":…}` acks. `{"error":…}` frames log a WARN. Heartbeat is
-  `ProtocolPing(120s)`.
+- **`BinanceStreamProtocol`** (one instance per stream, built by `depth(…)` or `aggTrade(…)`)
+  subscribes with `{"method":"SUBSCRIBE",…}` (depth topic `{symbol}@depth` / `{symbol}@depth@500ms`,
+  trade topic `{symbol}@aggTrade`, lower-cased, 400 per frame). It routes on the `"s"` field and
+  ignores `{"result":…}` acks. `{"error":…}` frames log a WARN. Heartbeat is `ProtocolPing(120s)`.
+- **Stream URLs.** Spot serves both channels on `wss://stream.binance.com/ws`. Futures routes by
+  path: depth on `wss://fstream.binance.com/public/ws`, aggTrade on
+  `wss://fstream.binance.com/market/ws`. A stream on the wrong path is acked and then stays silent
+  (no error frame), so a wrong URL shows only as 0 frames/s in the health log. Legacy `/ws` serves
+  public streams only and is scheduled for retirement; it is no longer used.
+- **TRADE** (`streams.TRADE`, on by default: `BINANCE_SPOT_TRADE_ENABLED`,
+  `BINANCE_FUTURES_TRADE_ENABLED`). The consumer's `TRADE` arm decodes each frame with
+  `BinanceAggTradeDecoder` (one instance for both venues) into core's `TradeDetector`, which
+  coalesces sweeps and raises large-trade alerts (`.claude/plans/trade-detection-plan.md`).
 
 ---
 

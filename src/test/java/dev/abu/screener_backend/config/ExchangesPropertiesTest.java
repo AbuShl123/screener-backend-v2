@@ -150,15 +150,17 @@ class ExchangesPropertiesTest {
         VenueProperties noBlock = TestVenueProps.venue().enabled(false).noStreams().build();
         assertFalse(binance(true, Map.of(Market.SPOT, noBlock)).isEnabled(SPOT_DEPTH), "no stream block");
 
-        // The venue needs another enabled stream to pass the bind-time check; only DEPTH exists
-        // today, so the stream switch is exercised through a disabled venue's block.
-        VenueProperties depthOff = TestVenueProps.venue()
-                .depth(TestVenueProps.stream().enabled(false))
+        // An enabled venue whose DEPTH stream is on and whose TRADE block is off: the stream switch
+        // alone decides, and the sibling stream is unaffected.
+        StreamKey spotTrade = new StreamKey(Venue.BINANCE_SPOT, StreamKind.TRADE);
+        VenueProperties tradeOff = TestVenueProps.venue()
+                .stream(StreamKind.TRADE, TestVenueProps.stream().enabled(false))
                 .build();
-        ExchangesProperties props = new ExchangesProperties(Map.of(Exchange.BINANCE,
-                new ExchangeProperties(false, Map.of(Market.SPOT, depthOff), null)));
-        assertFalse(props.isEnabled(SPOT_DEPTH), "stream block enabled: false");
-        assertFalse(props.stream(SPOT_DEPTH).enabled());
+        ExchangesProperties props = binance(true, Map.of(Market.SPOT, tradeOff));
+        assertTrue(props.isEnabled(Venue.BINANCE_SPOT));
+        assertFalse(props.isEnabled(spotTrade), "stream block enabled: false");
+        assertFalse(props.stream(spotTrade).enabled());
+        assertTrue(props.isEnabled(SPOT_DEPTH));
     }
 
     @Test
@@ -225,7 +227,7 @@ class ExchangesPropertiesTest {
     }
 
     @Test
-    @DisplayName("the shipped application.yml binds: Binance and Bybit on, MEXC configured but off by default")
+    @DisplayName("the shipped application.yml binds: Binance (depth and trades) and Bybit on, MEXC configured but off by default")
     void shippedYamlBinds() throws IOException {
         MutablePropertySources sources = new MutablePropertySources();
         new YamlPropertySourceLoader()
@@ -264,6 +266,21 @@ class ExchangesPropertiesTest {
             assertTrue(props.isEnabled(new StreamKey(venue, StreamKind.DEPTH)) == props.isEnabled(venue),
                     venue + " DEPTH follows its venue's switch");
         }
+
+        // TRADE: both Binance venues ship a block (their bindings read it), on by default.
+        for (Venue venue : List.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES)) {
+            StreamKey trade = new StreamKey(venue, StreamKind.TRADE);
+            StreamProperties block = props.stream(trade);
+            assertTrue(block.enabled(), venue + " TRADE is on by default");
+            assertTrue(props.isEnabled(trade));
+            assertTrue(block.streamUrl() != null && block.streamUrl().startsWith("wss://"), venue + " TRADE stream-url");
+            assertTrue(block.maxConnections() >= block.minConnections() && block.minConnections() > 0,
+                    venue + " TRADE connection caps");
+        }
+        // Binance futures routes by path, and a stream on the wrong one is acked and then silent.
+        assertEquals("wss://fstream.binance.com/public/ws", depth(props, Venue.BINANCE_FUTURES).streamUrl());
+        assertEquals("wss://fstream.binance.com/market/ws",
+                props.stream(new StreamKey(Venue.BINANCE_FUTURES, StreamKind.TRADE)).streamUrl());
     }
 
     private static StreamProperties depth(ExchangesProperties props, Venue venue) {

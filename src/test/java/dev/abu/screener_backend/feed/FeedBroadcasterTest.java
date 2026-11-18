@@ -1,5 +1,11 @@
 package dev.abu.screener_backend.feed;
 
+import dev.abu.screener_backend.config.TradeAlertProperties;
+import dev.abu.screener_backend.feed.trade.TradeChannel;
+import dev.abu.screener_backend.marketdata.Instrument;
+import dev.abu.screener_backend.marketdata.Venue;
+import dev.abu.screener_backend.marketdata.core.trade.TradeAlert;
+import dev.abu.screener_backend.marketdata.core.trade.TradeAlertStore;
 import dev.abu.screener_backend.ws.UserWebSocketSession;
 import dev.abu.screener_backend.ws.UserWebSocketSession.Status;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The per-session loop of {@link FeedBroadcaster}, against two fake channels that record their
- * calls and return fixed strings.
+ * calls and return fixed strings, and end to end with the real {@link TradeChannel}.
  */
 class FeedBroadcasterTest {
 
@@ -131,5 +137,64 @@ class FeedBroadcasterTest {
         assertFalse(snapshot.isRunning());
         assertEquals(Status.NEED_SNAPSHOT, snapshot.getStatus());
         assertTrue(ready.batches.isEmpty() && snapshot.batches.isEmpty());
+    }
+
+    // ---- with the real TradeChannel ----
+
+    private static final Instrument SOL_FUT = Instrument.of(0, Venue.BINANCE_FUTURES, "SOLUSDT", "SOL", "USDT");
+    private static final String TRADE_ID = "\"id\":\"BINANCE_FUTURES:SOLUSDT:42\"";
+
+    @Test
+    @DisplayName("a trade alert reaches a READY session once, as a live TRADE")
+    void tradeAlertLiveOnce() {
+        TradeAlertStore store = tradeBroadcaster();
+        CapturingSession ready = new CapturingSession(true);
+        ready.setStatus(Status.READY);
+        broadcaster.addSession(ready);
+
+        store.add(tradeAlert());
+        broadcaster.drain();
+        broadcaster.drain();
+
+        assertEquals(1, ready.batches.size());
+        assertEquals(1, ready.batches.getFirst().size());
+        String live = ready.batches.getFirst().getFirst();
+        assertTrue(live.startsWith("{\"type\":\"TRADE\",") && live.contains(TRADE_ID), live);
+    }
+
+    @Test
+    @DisplayName("a session connecting in the alert's tick gets it only inside the SNAPSHOT; a SNAPSHOT_REQUEST replays it again")
+    void tradeAlertInSnapshotOnly() {
+        TradeAlertStore store = tradeBroadcaster();
+        CapturingSession session = new CapturingSession(true);  // NEED_SNAPSHOT
+        broadcaster.addSession(session);
+
+        store.add(tradeAlert());
+        broadcaster.drain();
+        broadcaster.drain();
+
+        assertEquals(1, session.batches.size(), "the snapshot, then nothing more");
+        String snapshot = session.batches.getFirst().getFirst();
+        assertTrue(snapshot.startsWith("{\"type\":\"SNAPSHOT\",\"data\":[{\"type\":\"TRADE\","), snapshot);
+        assertTrue(snapshot.contains(TRADE_ID), snapshot);
+
+        session.setStatus(Status.NEED_SNAPSHOT);                // SNAPSHOT_REQUEST
+        broadcaster.drain();
+
+        assertEquals(2, session.batches.size());
+        assertEquals(snapshot, session.batches.get(1).getFirst());
+    }
+
+    /** Replaces the fake-channel broadcaster with one serving a real {@link TradeChannel}. */
+    private TradeAlertStore tradeBroadcaster() {
+        TradeAlertProperties props = new TradeAlertProperties(1, null, 10, 10);
+        TradeAlertStore store = new TradeAlertStore(props);
+        broadcaster = new FeedBroadcaster(List.of(new TradeChannel(store, props)));
+        return store;
+    }
+
+    private static TradeAlert tradeAlert() {
+        return new TradeAlert(SOL_FUT, true, 140, 1000, 140_000, 100_000, 140, 140, 1, false,
+                42, 42, 1_794_931_200_123L, 1_794_931_200_300L);
     }
 }

@@ -22,6 +22,7 @@ import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocolRegistry;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
+import dev.abu.screener_backend.marketdata.spi.TradeDecoderRegistry;
 import dev.abu.screener_backend.marketdata.spi.VenueStrategyBinding;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,6 +38,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -100,17 +102,28 @@ class BinanceAdapterConfigTest {
         assertEquals(-1, ((BinanceSyncContext) spot.newContext()).lastUpdateId, "a fresh context has no sync point");
     }
 
-    @Test
-    @DisplayName("every Binance venue has a stream binding with its own BinanceStreamProtocol")
-    void everyBinanceVenueHasStreamBinding() {
+    /** Both Binance venues with a DEPTH block and a TRADE block of the given switch. */
+    private static ExchangesProperties binanceWithTrade(boolean tradeEnabled) {
+        VenueProperties venue = TestVenueProps.venue()
+                .stream(StreamKind.TRADE, TestVenueProps.stream().enabled(tradeEnabled))
+                .build();
+        return new ExchangesProperties(Map.of(Exchange.BINANCE,
+                new ExchangeProperties(true, Map.of(Market.SPOT, venue, Market.FUTURES, venue), null)));
+    }
+
+    private static StreamProtocolRegistry streamRegistry(ExchangesProperties exchanges) {
         BinanceAdapterConfig config = new BinanceAdapterConfig();
-        VenueProperties spot = TestVenueProps.venue().build();
-        VenueProperties futures = TestVenueProps.venue().build();
-        ExchangesProperties exchanges = new ExchangesProperties(Map.of(Exchange.BINANCE,
-                new ExchangeProperties(true, Map.of(Market.SPOT, spot, Market.FUTURES, futures), null)));
-        StreamProtocolRegistry registry = new StreamProtocolRegistry(List.of(
-                config.binanceSpotStreamBinding(exchanges),
-                config.binanceFuturesStreamBinding(exchanges)), exchanges);
+        return new StreamProtocolRegistry(List.of(
+                config.binanceSpotDepthStreamBinding(exchanges),
+                config.binanceFuturesDepthStreamBinding(exchanges),
+                config.binanceSpotTradeStreamBinding(exchanges),
+                config.binanceFuturesTradeStreamBinding(exchanges)), exchanges);
+    }
+
+    @Test
+    @DisplayName("every Binance venue has a depth stream binding with its own BinanceStreamProtocol")
+    void everyBinanceVenueHasStreamBinding() {
+        StreamProtocolRegistry registry = streamRegistry(binanceWithTrade(false));
 
         for (Venue venue : Venue.values()) {
             if (venue.exchange() == Exchange.BINANCE) {
@@ -118,6 +131,38 @@ class BinanceAdapterConfigTest {
             }
         }
         assertNotSame(registry.forStream(depth(Venue.BINANCE_SPOT)), registry.forStream(depth(Venue.BINANCE_FUTURES)));
+    }
+
+    @Test
+    @DisplayName("every Binance venue has a TRADE binding with its own protocol, distinct from its depth one")
+    void everyBinanceVenueHasTradeBinding() {
+        StreamProtocolRegistry registry = streamRegistry(binanceWithTrade(true));
+
+        for (Venue venue : Venue.values()) {
+            if (venue.exchange() != Exchange.BINANCE) continue;
+            StreamKey trade = new StreamKey(venue, StreamKind.TRADE);
+            assertInstanceOf(BinanceStreamProtocol.class, registry.forStream(trade), venue + " TRADE");
+            assertNotSame(registry.forStream(depth(venue)), registry.forStream(trade),
+                    venue + " depth and trade must not share a protocol (different channels)");
+        }
+        assertNotSame(registry.forStream(new StreamKey(Venue.BINANCE_SPOT, StreamKind.TRADE)),
+                registry.forStream(new StreamKey(Venue.BINANCE_FUTURES, StreamKind.TRADE)));
+    }
+
+    @Test
+    @DisplayName("every Binance venue has a trade decoder binding, both sharing one BinanceAggTradeDecoder")
+    void everyBinanceVenueHasTradeDecoder() {
+        BinanceAdapterConfig config = new BinanceAdapterConfig();
+        BinanceAggTradeDecoder decoder = config.binanceAggTradeDecoder();
+        TradeDecoderRegistry registry = new TradeDecoderRegistry(List.of(
+                config.binanceSpotTradeDecoderBinding(decoder),
+                config.binanceFuturesTradeDecoderBinding(decoder)));
+
+        for (Venue venue : Venue.values()) {
+            if (venue.exchange() == Exchange.BINANCE) {
+                assertSame(decoder, registry.forVenue(venue), venue + " must decode with the shared Binance decoder");
+            }
+        }
     }
 
     @Test

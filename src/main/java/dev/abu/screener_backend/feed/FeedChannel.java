@@ -5,7 +5,8 @@ import dev.abu.screener_backend.ws.UserWebSocketSession;
 import java.util.List;
 
 /**
- * One kind of data delivered over the {@code /ws} feed (depth today; spikes and clusters later).
+ * One kind of data delivered over the {@code /ws} feed (depth and trade alerts today; bursts, spikes
+ * and clusters later).
  * {@link FeedBroadcaster} runs the per-session loop and knows nothing about what a channel sends.
  *
  * <p>All three methods run on the broadcaster's single {@code @Scheduled} thread, so a channel may

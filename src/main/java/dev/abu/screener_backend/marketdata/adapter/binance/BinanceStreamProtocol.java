@@ -14,11 +14,13 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Binance's depth-stream wire protocol, shared by spot and futures (one instance per venue).
+ * Binance's stream wire protocol, shared by spot and futures and by every channel: one instance per
+ * stream ({@link #depth}, {@link #aggTrade}).
  *
- * <p>Subscribes with {@code {"method":"SUBSCRIBE","params":[…],"id":N}} to {@code <symbol>@depth}
- * on spot (1s) and {@code <symbol>@depth@500ms} on futures, routes depth frames by
- * their {@code "s"} field (the upper-case native symbol), and keeps the connection alive with a
+ * <p>Subscribes with {@code {"method":"SUBSCRIBE","params":[…],"id":N}} to the instance's channel:
+ * {@code <symbol>@depth} on spot (1s) and {@code <symbol>@depth@500ms} on futures for depth,
+ * {@code <symbol>@aggTrade} on both for trades. Routes data frames by their {@code "s"} field (the
+ * upper-case native symbol), which both channels carry, and keeps the connection alive with a
  * WebSocket control-frame PING.
  */
 @Slf4j
@@ -30,10 +32,20 @@ public final class BinanceStreamProtocol implements StreamProtocol {
     private final StreamProperties props;
     private final String topicSuffix;
 
-    public BinanceStreamProtocol(Venue venue, StreamProperties props) {
+    /** Order-book diffs: {@code @depth} (1s) on spot, {@code @depth@500ms} on futures. */
+    public static BinanceStreamProtocol depth(Venue venue, StreamProperties props) {
+        return new BinanceStreamProtocol(venue, props, venue.market() == Market.SPOT ? "@depth" : "@depth@500ms");
+    }
+
+    /** Aggregated trades, {@code @aggTrade} on both venues. */
+    public static BinanceStreamProtocol aggTrade(Venue venue, StreamProperties props) {
+        return new BinanceStreamProtocol(venue, props, "@aggTrade");
+    }
+
+    private BinanceStreamProtocol(Venue venue, StreamProperties props, String topicSuffix) {
         this.venue = venue;
         this.props = props;
-        this.topicSuffix = venue.market() == Market.SPOT ? "@depth" : "@depth@500ms";
+        this.topicSuffix = topicSuffix;
     }
 
     @Override
@@ -57,8 +69,8 @@ public final class BinanceStreamProtocol implements StreamProtocol {
     public int route(String frame, SubscriptionIndex index) {
         if (frame.length() <= 4) return IGNORED;
         // O(1) discrimination on the first key: {"result":…} is a SUBSCRIBE ack, {"error":…} a
-        // rejected request, and every depth frame starts {"e":"depthUpdate" — charAt(3) is what
-        // separates "e" from "error".
+        // rejected request, and every data frame starts {"e":"depthUpdate" or {"e":"aggTrade" —
+        // charAt(3) is what separates "e" from "error".
         char c2 = frame.charAt(2);
         if (c2 == 'r') {
             return IGNORED;

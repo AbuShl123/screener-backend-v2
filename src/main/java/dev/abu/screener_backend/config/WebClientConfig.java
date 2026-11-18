@@ -20,7 +20,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 @EnableConfigurationProperties({
         ExchangesProperties.class, DiscoveryProperties.class, WebSocketProperties.class, DisruptorProperties.class,
         OrderbookProperties.class, JwtProperties.class, AdminProperties.class,
-        BillingProperties.class, PaymentProperties.class, EmailProperties.class
+        BillingProperties.class, PaymentProperties.class, EmailProperties.class, TradeAlertProperties.class
 })
 public class WebClientConfig {
 

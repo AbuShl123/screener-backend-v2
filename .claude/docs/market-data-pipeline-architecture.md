@@ -100,11 +100,12 @@ including parts that are not built yet; §2.2 maps each box to the code.*
 |---|---|---|
 | `InstrumentUniverseService`, `instrument`, `universeChangedEvent()` | `marketdata/InstrumentUniverseService`, `InstrumentUniverseChangedEvent` | built |
 | `InstrumentSource` (SPI) | `spi/InstrumentSource` + one per exchange | built |
-| `InstrumentSlotArray`, `slot[id]` | `core/slot/InstrumentSlotTable`; `InstrumentSlot = {instrument, book, syncStrategy, syncCtx}` | built (no `CandleStore` yet) |
+| `InstrumentSlotArray`, `slot[id]` | `core/slot/InstrumentSlotTable`; `InstrumentSlot = {instrument, book, syncStrategy, syncCtx, tradeDecoder, trade}` | built (no `CandleStore` yet) |
 | `StreamConnection` (×N), `ping/subscribe` | `core/stream/StreamConnection`, `ConnectionPool` (one per `StreamKey`), `StreamManager` | built |
 | `StreamProtocol` (SPI) | `spi/StreamProtocol`, bound per stream (`StreamKey`) | built |
 | `Ring Buffer (×N)`, `(id, frame)` | `core/ingress/DisruptorShardManager`, `DisruptorMarketEventPublisher`, `MarketEvent` | built |
-| `Router` (`KLINE` / `DEPTH`) | the `switch (event.stream)` in `core/ingress/MarketEventHandler`; `marketdata/StreamKind` | built, `DEPTH` arm only (a `default` arm counts kinds with no arm) |
+| `Router` (`KLINE` / `DEPTH`) | the `switch (event.stream)` in `core/ingress/MarketEventHandler`; `marketdata/StreamKind` | built, `DEPTH` and `TRADE` arms (a `default` arm counts kinds with no arm) |
+| `TradeDecoder` (SPI) → trade sink | `spi/TradeDecoder` + `spi/TradeSink`, bound per venue (`VenueTradeDecoderBinding`); `adapter/binance/BinanceAggTradeDecoder`; `core/trade/TradeDetector` | built for Binance; the detector counts decoded trades, coalesces sweeps in the slot's `TradeState` and alerts on sweeps at or above `TradeThresholds` |
 | `SyncStrategy` (SPI) → `OrderBook` | `spi/DepthSyncStrategy` + one per venue; `core/book/OrderBook` | built |
 | `requestRecovery(id)`, `SnapshotRequestQueue` | `spi/RecoverySink`, `core/recovery/SnapshotRequestQueue` | built |
 | `SnapshotFetchPacer` (SPI) | `spi/SnapshotFetcher` + one per venue | built |
@@ -253,7 +254,7 @@ that).
 | Field | Meaning |
 |---|---|
 | `source` (`EventSource`) | **Provenance**: `WS_MSG`, `REST_MSG`, `REST_FAILED`. Drives the strategy's parse path and backpressure: REST events are never dropped, because each is the single outcome of a request |
-| `stream` (`StreamKind`) | **What the payload is**, taken from the publishing connection; the consumer dispatches on it. `DEPTH` today, `TRADE` and `KLINE` planned |
+| `stream` (`StreamKind`) | **What the payload is**, taken from the publishing connection; the consumer dispatches on it. `DEPTH` and `TRADE` today (`TRADE` bound for Binance only, decoded in its arm by the slot's `TradeDecoder`), `KLINE` planned |
 | `instrumentId` | Dense id |
 | `rawJson` / `rawBytes` | At most one payload; fixed per venue by its wire protocol |
 
@@ -406,6 +407,7 @@ each exchange's book is still classified and delivered separately. Full detail:
  shard threads ──► OrderBookFeedStore.add(update)        (global store + one per user context)
                        pending map  (coalesces per feedKey, swapped atomically on drain)
                        snapshot map (current state, for new clients)
+               ──► TradeAlertStore.add(alert)            (ring of recent alerts + running count)
                                       │
  FeedBroadcaster @Scheduled(100 ms) ──┤  one thread; for each FeedChannel: drain() once
                                       │  for each session: snapshot (new) or updates (ready)
@@ -420,8 +422,14 @@ each exchange's book is still classified and delivered separately. Full detail:
   window become one message.
 - **`FeedBroadcaster`** is a fixed-delay loop over a list of **`FeedChannel`** beans. Each channel
   drains its own stores and builds the tick's bodies once; the broadcaster owns only the per-session
-  loop. `DepthChannel` is the one channel today and merges the global feed with each custom-rules
-  user's personal feed (a session gets exactly one authoritative update per instrument per tick).
+  loop. Two channels today, in `@Order`:
+  - `DepthChannel` merges the global feed with each custom-rules user's personal feed (a session
+    gets exactly one authoritative update per instrument per tick).
+  - `TradeChannel` takes the alerts added since its last drain from `TradeAlertStore`
+    (`drainSince`, non-destructive, so `/api/monitoring/trade-alerts` reads the same ring), sends
+    each to every session once as a `TRADE` message, and replays the last `replay-size` (100) in
+    every `SNAPSHOT`. One global stream: rules do not affect trades.
+
   A new signal type adds a channel bean; the broadcaster does not change.
 - **Per-session backpressure.** A session has a bounded queue and a virtual-thread sender. A batch
   that cannot be enqueued **evicts** the session (it is disconnected, never skipped), because gap-free
@@ -448,7 +456,7 @@ each exchange's book is still classified and delivered separately. Full detail:
 
 Three cross-thread seams are the only places state is shared, each by an explicit mechanism: the ring
 buffer (producers → shard), the volatile-published slot array and user-context array (cold → hot),
-and the feed stores' coalescing maps (shard → broadcaster).
+and the feed stores' coalescing maps and `TradeAlertStore`'s lock (shard → broadcaster).
 
 ---
 
@@ -498,15 +506,16 @@ no dynamic subscribe, no startup retry for discovery.
 ## 12. Planned (not built)
 
 The diagram and the Requirements Document show the pipeline with additional stream kinds and signals.
-Today only `DEPTH` exists. The seams for the rest are already in place:
+Today `DEPTH` is fully built and `TRADE` is streamed, decoded and coalesced into sweeps that are judged against per-symbol thresholds and delivered over `/ws` as `TRADE` messages. The seams for the rest
+are already in place:
 
 | Planned | Seam already built | Where it is designed |
 |---|---|---|
 | **Kline streams**: `KLINE` stream kind, `CandleDecoder` SPI, `CandleStore` in `InstrumentSlot`, `KLINE` arm in `MarketEventHandler`, Binance futures `/market` endpoint | `StreamKind`, the dispatch `switch`, `MarketEvent.stream`, generic `MarketEventPublisher`, **transport keyed by `StreamKey`** (per-stream pools, protocol bindings, `streams.<KIND>` config, per-kind frame counters) | `.claude/plans/team-plans/spike-alerts-plan.md`; the generalization steps, already done, are `.claude/plans/market-event-generalization-plan.md` and `.claude/plans/multi-stream-transport-plan.md` |
-| **Trade streams**: `TRADE` stream kind, `TradeDecoder` SPI, trade state in `InstrumentSlot`, `TRADE` arm in `MarketEventHandler` | same as klines | no plan file yet; follows the recipe in §13 |
+| **Trade streams**: Bybit and MEXC trade protocols and decoders; a shard tick to flush sweeps on quiet symbols | **transport, decoding and sweep detection done**: `StreamKind.TRADE`, Binance spot and futures `@aggTrade` bindings (`BinanceStreamProtocol.aggTrade`, futures on `/market/ws`), `streams.TRADE` blocks (on by default); the `TradeDecoder` SPI with `BinanceAggTradeDecoder` pinned in the slot; the `TRADE` arm decodes into `TradeDetector`, which counts decoded trades, folds the fills of one taker order into a sweep held in the slot's `TradeState` (same side and trade time, price moving toward the aggressor, contiguous ids), and judges each sweep, once the instrument's next trade closes it, against `screener.trade-alerts` (a $30K floor plus per-symbol overrides from the slice 0 capture), into the in-memory `TradeAlertStore` behind `/api/monitoring/trade-alerts` | `.claude/plans/trade-alerts-plan.md`; Phase 1: `.claude/plans/trade-streams-transport-plan.md`; Phase 2: `.claude/plans/trade-detection-plan.md` (slices 0–3 done; slice 4, the tick, deferred) |
 | **`SpikeDetector`** (price and volume spikes from candles) | `FeedChannel` interface for delivery | `spike-alerts-plan.md` |
 | **`OrderClusterDetector`** (split-order walls across adjacent levels) | depth arm of the handler; `FeedChannel` | `.claude/plans/team-plans/order-cluster-plan.md` |
-| **Trade alerts** (large trades) | trade streams (above); `FeedChannel` | named in the Architectural Model; no plan file at the time of writing |
+| **Trade alerts**: same-side bursts (Phase 4), per-user thresholds (Phase 6) | **delivery done**: `TradeChannel` sends every alert to every session and replays the last 100 in each `SNAPSHOT` (`websocket-feed-api.md` §3.8); `TradeAlert` carries the threshold it was judged against | `.claude/plans/trade-alerts-plan.md`; Phase 3: `.claude/plans/trade-delivery-plan.md` |
 | Non-blocking ingress with reset lane | `DisruptorMarketEventPublisher` is the single place for the change | `multi-exchange-progress.md` §13 |
 | Primitive-array book store replacing `TreeMap<Double,…>` | none (the classifier reads `getBids()` / `getAsks()` directly) | `CLAUDE.md` Future Work |
 
@@ -536,12 +545,15 @@ handed to `SnapshotQueueFactory`. **No core edit.** Checklist and the seams Bybi
    parses the frame in place and reports each item to a core-owned sink as primitives (one callback
    per trade or candle update, so a batched frame needs no allocation), converting quantities through
    `Instrument.quantityMultiplier`. **Core owns the state.** Depth stays the only kind with an
-   adapter-owned sync strategy.
-5. Add the kind's state as a new field in `InstrumentSlot`, `null` for venues that do not stream it,
-   allocated in `InstrumentSlotTable.allocate`. The shard thread already serializes everything for
-   the instrument, so the new state needs no locking.
+   adapter-owned sync strategy: a trade-like kind adds a decoder binding, not a sync strategy.
+   `TRADE` is the worked example: `spi/TradeDecoder` → `spi/TradeSink` (core's
+   `core/trade/TradeDetector`), bound with `VenueTradeDecoderBinding` and collected by
+   `TradeDecoderRegistry`, which returns `null` for a venue without one.
+5. Add the kind's decoder and state as new fields in `InstrumentSlot`, `null` for venues that do not
+   stream it, set in `InstrumentSlotTable.allocate`. The shard thread already serializes everything
+   for the instrument, so the new state needs no locking.
 6. Add an arm to the `switch` in `MarketEventHandler`. Until it exists, the kind's events are counted
-   and dropped by the `default` arm with a WARN.
+   and dropped by the `default` arm with a WARN; the arm does the same for a slot with no decoder.
 7. Deliver it, if it is delivered, through a `FeedChannel` bean.
 
 What does **not** change: the transport classes (`StreamManager`, `ConnectionPool`,

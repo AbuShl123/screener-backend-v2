@@ -10,7 +10,9 @@ import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.config.DisruptorProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.marketdata.Venue;
+import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
+import dev.abu.screener_backend.marketdata.core.trade.TradeDetector;
 import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -30,6 +32,8 @@ public class DisruptorShardManager {
     private final OrderBookFeedStore        feedStore;
     private final DefaultClassificationRule defaultRule;
     private final ExchangesProperties       exchangesProps;
+    private final TradeDetector             tradeDetector;
+    private final PipelineMetrics           metrics;
 
     private Disruptor<MarketEvent>[]  disruptors;
     private RingBuffer<MarketEvent>[] ringBuffers;
@@ -64,7 +68,7 @@ public class DisruptorShardManager {
                     new BlockingWaitStrategy()
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule, maxVisibleDistances);
-            handlers[i]    = new MarketEventHandler(i, slots, classifiers[i]);
+            handlers[i]    = new MarketEventHandler(i, slots, classifiers[i], tradeDetector, metrics);
             disruptor.handleEventsWith(handlers[i]);
 
             ringBuffers[i] = disruptor.start();

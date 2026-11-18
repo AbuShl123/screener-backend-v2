@@ -14,6 +14,7 @@ import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.InstrumentCandidate;
 import dev.abu.screener_backend.marketdata.spi.InstrumentSource;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
+import dev.abu.screener_backend.marketdata.spi.TradeDecoderRegistry;
 import dev.abu.screener_backend.marketdata.spi.VenueStrategyBinding;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -438,7 +439,8 @@ class InstrumentUniverseServiceTest {
         RecordingSlotTable(List<String> calls) {
             super(new OrderbookProperties(0.1), new SyncStrategyRegistry(List.of(
                     new VenueStrategyBinding(Venue.BINANCE_SPOT, new NoopStrategy()),
-                    new VenueStrategyBinding(Venue.BINANCE_FUTURES, new NoopStrategy()))));
+                    new VenueStrategyBinding(Venue.BINANCE_FUTURES, new NoopStrategy()))),
+                    new TradeDecoderRegistry(List.of()));
             this.calls = calls;
         }
 

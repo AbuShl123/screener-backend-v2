@@ -99,11 +99,11 @@ class MexcSnapshotPropertiesTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"application.yml", "application-local.yml"})
+    @ValueSource(strings = {"application.yml"})
     @DisplayName("the shipped YAML binds for both venues, and its batch-timeout covers a paced batch")
     void shippedYaml(String file) throws IOException {
+        // application-local.yml is a gitignored partial overlay on application.yml, so it can't bind on its own.
         ClassPathResource resource = new ClassPathResource(file);
-        // application-local.yml is gitignored: present on a dev box, absent on a fresh checkout.
         assumeTrue(resource.exists(), file + " not on the classpath");
         MutablePropertySources sources = new MutablePropertySources();
         new YamlPropertySourceLoader().load(file, resource).forEach(sources::addLast);
