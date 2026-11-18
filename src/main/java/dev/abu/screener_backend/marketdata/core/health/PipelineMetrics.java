@@ -34,6 +34,7 @@ public class PipelineMetrics {
     private final LongAdder[] snapshotFailures = adders(Venue.values().length);
     /** Per venue: a venue has at most one trade stream, so per venue is per trade stream. */
     private final LongAdder[] tradesDecoded = adders(Venue.values().length);
+    private final LongAdder[] tradesFiltered = adders(Venue.values().length);
     private final LongAdder[] tradeParseFailures = adders(Venue.values().length);
     private final LongAdder[] tradeAlerts = adders(Venue.values().length);
     private final LongAdder[] tradeAlertsCoalescedOnly = adders(Venue.values().length);
@@ -99,9 +100,10 @@ public class PipelineMetrics {
     }
 
     /**
-     * One trade decoded from a {@code TRADE} frame. On Binance this tracks the stream's frame
-     * count one for one (one trade per frame); a gap between the two means frames are failing to
-     * decode. Venues that batch trades decode more trades than frames.
+     * One trade decoded from a {@code TRADE} frame and handed to detection. On Binance this tracks
+     * the stream's frame count one for one (one trade per frame); a gap between the two means frames
+     * are failing to decode. Venues that batch trades decode more trades than frames, and trades the
+     * decoder drops are counted by {@link #recordTradeFiltered} instead.
      *
      * <p><b>Hot path</b> — called on a Disruptor consumer thread for every trade. Striped, because
      * every shard decodes trades of every venue.
@@ -113,6 +115,19 @@ public class PipelineMetrics {
     /** Monotonic total since startup. Subtract two samples for a rate. */
     public long tradesDecoded(Venue venue) {
         return tradesDecoded[venue.ordinal()].sum();
+    }
+
+    /**
+     * One trade the venue's decoder dropped by policy (MEXC spot {@code X0_X0}, MEXC futures
+     * self-trades). <b>Hot path</b>, like {@link #recordTradeDecoded}.
+     */
+    public void recordTradeFiltered(Venue venue) {
+        tradesFiltered[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total since startup. Subtract two samples for a rate. */
+    public long tradesFiltered(Venue venue) {
+        return tradesFiltered[venue.ordinal()].sum();
     }
 
     /** One {@code TRADE} frame the venue's decoder could not parse. Zero in steady state. */

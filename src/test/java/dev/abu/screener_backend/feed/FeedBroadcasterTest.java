@@ -194,7 +194,7 @@ class FeedBroadcasterTest {
     }
 
     private static TradeAlert tradeAlert() {
-        return new TradeAlert(SOL_FUT, true, 140, 1000, 140_000, 100_000, 140, 140, 1, false,
+        return new TradeAlert(SOL_FUT, true, 140, 1000, 140_000, 100_000, 140, 140, 1, 1, false,
                 42, 42, 1_794_931_200_123L, 1_794_931_200_300L);
     }
 }

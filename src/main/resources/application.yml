@@ -138,7 +138,7 @@ screener:
               subscribe-chunk-size: 30
               heartbeat-interval-seconds: 20
             TRADE:
-              # Off until the MEXC trade decoders land (.claude/plans/trade-mexc-plan.md).
+              # Off until the live check of .claude/plans/trade-mexc-plan.md slice 4.
               enabled: ${MEXC_SPOT_TRADE_ENABLED:false}
               stream-url: wss://wbs-api.mexc.com/ws
               # The same 30-per-connection server limit as depth.
@@ -169,7 +169,7 @@ screener:
               subscribe-chunk-size: 1
               heartbeat-interval-seconds: 15
             TRADE:
-              # Off until the MEXC trade decoders land (.claude/plans/trade-mexc-plan.md).
+              # Off until the live check of .claude/plans/trade-mexc-plan.md slice 4.
               enabled: ${MEXC_FUTURES_TRADE_ENABLED:false}
               stream-url: wss://contract.mexc.com/edge
               max-streams-per-connection: 300
@@ -291,7 +291,7 @@ screener:
         PUMPUSDT: 50000
         TRUMPUSDT: 50000
         WLDUSDT: 50000
-    recent-capacity: 500                 # alerts kept in memory for /api/monitoring/trade-alerts
+    recent-capacity: 100                 # alerts kept in memory for /api/monitoring/trade-alerts
     replay-size: 100                     # alerts replayed in every /ws SNAPSHOT
 
   ticker:

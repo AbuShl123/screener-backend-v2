@@ -4,12 +4,16 @@ import dev.abu.screener_backend.marketdata.StreamKind;
 
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.config.OrderbookProperties;
+import dev.abu.screener_backend.config.TradeAlertProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
+import dev.abu.screener_backend.marketdata.core.trade.TradeAlertStore;
+import dev.abu.screener_backend.marketdata.core.trade.TradeDetector;
+import dev.abu.screener_backend.marketdata.core.trade.TradeThresholds;
 import dev.abu.screener_backend.marketdata.spi.BookSyncContext;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
@@ -22,6 +26,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -40,9 +46,11 @@ class MarketEventHandlerTest {
 
     private final RecordingStrategy strategy = new RecordingStrategy();
     private final RecordingClassifier classifier = new RecordingClassifier();
-    private final RecordingDecoder decoder = new RecordingDecoder();
-    private final TradeSink sink = (slot, price, qty, buy, time, first, last) -> { };
+    /** Decoder calls and frame-end calls, in the order they happened. */
+    private final List<String> trace = new ArrayList<>();
+    private final RecordingDecoder decoder = new RecordingDecoder(trace);
     private final PipelineMetrics metrics = new PipelineMetrics();
+    private final RecordingDetector detector = new RecordingDetector(metrics, trace);
     private final MarketEvent event = new MarketEvent();
     private InstrumentSlotTable slots;
     private MarketEventHandler handler;
@@ -58,7 +66,7 @@ class MarketEventHandlerTest {
         slots.allocate(Instrument.of(ID, Venue.BINANCE_SPOT, "BTCUSDT", "BTC", "USDT"));
         slots.allocate(Instrument.of(NO_DECODER_ID, Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT"));
         slots.publish();
-        handler = new MarketEventHandler(0, slots, classifier, sink, metrics);
+        handler = new MarketEventHandler(0, slots, classifier, detector, metrics);
     }
 
     @Test
@@ -86,7 +94,7 @@ class MarketEventHandlerTest {
     }
 
     @Test
-    @DisplayName("a TRADE event reaches the slot's decoder with the shared sink, not the sync strategy or the classifier")
+    @DisplayName("a TRADE event reaches the slot's decoder with the shared detector, not the sync strategy or the classifier")
     void tradeEventReachesDecoder() {
         String frame = "{\"e\":\"aggTrade\"}";
         tradeEvent(ID, frame);
@@ -97,7 +105,7 @@ class MarketEventHandlerTest {
         DecodeCall call = decoder.calls.get(0);
         assertSame(slots.get(ID), call.slot());
         assertSame(frame, call.rawJson());
-        assertSame(sink, call.sink());
+        assertSame(detector, call.sink());
         assertTrue(strategy.calls.isEmpty(), "trades never touch the book");
         assertTrue(classifier.instruments.isEmpty());
         assertEquals(0, metrics.tradeParseFailures(Venue.BINANCE_SPOT));
@@ -108,7 +116,25 @@ class MarketEventHandlerTest {
     }
 
     @Test
-    @DisplayName("a TRADE frame the decoder rejects is counted as a parse failure for its venue")
+    @DisplayName("a text TRADE event takes the String overload, a binary one the ByteBuffer overload; the frame end follows each decode")
+    void payloadPicksOverloadThenFrameEnd() {
+        tradeEvent(ID, "{\"e\":\"aggTrade\"}");
+        handler.onEvent(event, 0, true);
+
+        ByteBuffer frame = ByteBuffer.wrap("binary".getBytes(StandardCharsets.UTF_8));
+        event.source = EventSource.WS_MSG;
+        event.stream = StreamKind.TRADE;
+        event.instrumentId = ID;
+        event.rawBytes = frame;
+        handler.onEvent(event, 1, true);
+
+        assertEquals(List.of("decode text", "frame end", "decode binary", "frame end"), trace);
+        assertSame(frame, decoder.calls.get(1).rawBytes(), "the routed buffer itself, not a copy");
+        assertNull(event.rawBytes, "cleared");
+    }
+
+    @Test
+    @DisplayName("a TRADE frame the decoder rejects is counted as a parse failure for its venue, and still ends the frame")
     void tradeParseFailureIsCounted() {
         decoder.result = false;
         tradeEvent(ID, "garbage");
@@ -118,6 +144,7 @@ class MarketEventHandlerTest {
         assertEquals(1, metrics.tradeParseFailures(Venue.BINANCE_SPOT));
         assertEquals(0, metrics.tradeParseFailures(Venue.BINANCE_FUTURES));
         assertEquals(0, handler.unhandledKinds());
+        assertEquals(List.of("decode text", "frame end"), trace);
         assertCleared();
     }
 
@@ -130,6 +157,7 @@ class MarketEventHandlerTest {
 
         assertTrue(decoder.calls.isEmpty());
         assertTrue(strategy.calls.isEmpty());
+        assertTrue(trace.isEmpty(), "no decode, so no frame end");
         assertEquals(1, handler.unhandledKinds());
         assertEquals(0, metrics.tradeParseFailures(Venue.BINANCE_FUTURES), "no decoder is not a parse failure");
         assertEquals(1, handler.processed());
@@ -172,7 +200,7 @@ class MarketEventHandlerTest {
 
     private record Call(InstrumentSlot slot, EventSource source, StreamKind stream) { }
 
-    private record DecodeCall(InstrumentSlot slot, String rawJson, TradeSink sink) { }
+    private record DecodeCall(InstrumentSlot slot, String rawJson, ByteBuffer rawBytes, TradeSink sink) { }
 
     private static final class RecordingStrategy implements DepthSyncStrategy {
         final List<Call> calls = new ArrayList<>();
@@ -190,12 +218,44 @@ class MarketEventHandlerTest {
 
     private static final class RecordingDecoder implements TradeDecoder {
         final List<DecodeCall> calls = new ArrayList<>();
+        final List<String> trace;
         boolean result = true;
+
+        RecordingDecoder(List<String> trace) {
+            this.trace = trace;
+        }
 
         @Override
         public boolean decode(InstrumentSlot slot, String rawJson, TradeSink sink) {
-            calls.add(new DecodeCall(slot, rawJson, sink));
+            calls.add(new DecodeCall(slot, rawJson, null, sink));
+            trace.add("decode text");
             return result;
+        }
+
+        @Override
+        public boolean decode(InstrumentSlot slot, ByteBuffer frame, TradeSink sink) {
+            calls.add(new DecodeCall(slot, null, frame, sink));
+            trace.add("decode binary");
+            return result;
+        }
+    }
+
+    private static final class RecordingDetector extends TradeDetector {
+        final List<String> trace;
+
+        RecordingDetector(PipelineMetrics metrics, List<String> trace) {
+            this(metrics, new TradeAlertProperties(1, null, 10, 10), trace);
+        }
+
+        private RecordingDetector(PipelineMetrics metrics, TradeAlertProperties props, List<String> trace) {
+            super(metrics, new TradeThresholds(props), new TradeAlertStore(props));
+            this.trace = trace;
+        }
+
+        @Override
+        public void onFrameEnd(InstrumentSlot slot) {
+            trace.add("frame end");
+            super.onFrameEnd(slot);
         }
     }
 

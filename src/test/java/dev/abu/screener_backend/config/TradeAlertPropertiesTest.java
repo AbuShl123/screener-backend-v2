@@ -34,7 +34,7 @@ class TradeAlertPropertiesTest {
                 .get();
 
         assertEquals(30_000, props.defaultMinNotional());
-        assertEquals(500, props.recentCapacity());
+        assertEquals(100, props.recentCapacity());
         assertEquals(100, props.replaySize());
         assertEquals(Set.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES), props.minNotional().keySet());
 

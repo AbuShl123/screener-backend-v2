@@ -359,8 +359,9 @@ multi-fill alerts against the Binance trade list.
 
 ## 7. Slice 4 — shard tick and stale-sweep flush (deferred, §10.4)
 
-Not part of Phase 2. Build it with Phase 4, whose burst windows need the same tick, or earlier if
-Phase 6 lets users set thresholds low enough to alert on thin symbols.
+Not part of Phase 2. **Built with MEXC instead**: `trade-mexc-plan.md` §2.6 and slice 3 hold the
+design, with the idle close configured per venue (Binance stays off). The sketch below is what it
+started from.
 
 - A scheduler publishes one `TICK` event per shard every `tick-interval` (starting idea 250 ms).
   `MarketEventHandler` handles it before the slot lookup (no instrument).

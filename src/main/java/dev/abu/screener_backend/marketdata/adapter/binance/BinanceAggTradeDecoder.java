@@ -34,6 +34,10 @@ import tools.jackson.core.json.JsonFactory;
  *       still decodes with ids {@code -1}.</li>
  * </ul>
  *
+ * <p>One {@code aggTrade} already sums a taker order's fills at one price, and Binance publishes no
+ * taker-order id, so the decoder keeps the SPI defaults: {@code takerOrderId = -1}, no maker fills,
+ * no close at frame end.
+ *
  * <p>Stateless: one instance serves both Binance venues.
  */
 @Slf4j
@@ -82,7 +86,7 @@ public final class BinanceAggTradeDecoder implements TradeDecoder {
             return false;
         }
 
-        sink.onTrade(slot, price, qty, !buyerMaker, tradeTimeMs, firstTradeId, lastTradeId);
+        sink.onTrade(slot, price, qty, !buyerMaker, tradeTimeMs, firstTradeId, lastTradeId, -1);
         return true;
     }
 

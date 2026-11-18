@@ -13,6 +13,8 @@ open.
 **Detailed sources**: `.claude/plans/trade-alerts-plan.md` (vision, phases, decisions D1–D6),
 `.claude/plans/trade-detection-plan.md` (implementation plan; §10 holds every measured number).
 This document summarizes them and adds the reasoning from the design discussions.
+**MEXC**: `how-large-trades-are-detected-on-mexc.md` covers how MEXC differs, plus general trading
+mechanics (why orders sweep, levels vs price impact).
 
 ---
 
@@ -386,8 +388,10 @@ unavoidable ~150 ms, because Binance sends a sweep's last fragment only when its
 - **Data loss on disconnect**: trades missed during a WebSocket reconnect are lost. Locally, Binance
   connections drop occasionally (163 s of futures outage in the capture). On the server this is
   rare.
-- **Binance only**: Bybit and MEXC come in Phase 5. The decoder SPI already allows several trades
-  per frame and missing numeric ids.
+- **Binance and MEXC**: MEXC's decoders are built and its streams are off by default until its
+  live check (`how-large-trades-are-detected-on-mexc.md`); Bybit comes later in Phase 5. The decoder
+  SPI allows several trades per frame, binary frames, missing numeric ids, a venue taker-order id,
+  and deals dropped by venue policy.
 - **In memory only**: the alert store holds the last 500 alerts and is lost on restart.
 
 ---

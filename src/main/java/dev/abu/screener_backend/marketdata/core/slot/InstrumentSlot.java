@@ -37,10 +37,14 @@ public record InstrumentSlot(
         this(instrument, book, syncStrategy, syncCtx, null, null);
     }
 
-    /** A slot for a venue that streams trades: a fresh {@link TradeState} goes with the decoder. */
+    /**
+     * A slot for a venue that streams trades: a fresh {@link TradeState} goes with the decoder,
+     * carrying the decoder's {@link TradeDecoder#reportsMakerFills} and
+     * {@link TradeDecoder#closesSweepAtFrameEnd} so the detector reads them from the state.
+     */
     public InstrumentSlot(Instrument instrument, OrderBook book, DepthSyncStrategy syncStrategy,
                           BookSyncContext syncCtx, TradeDecoder tradeDecoder) {
-        this(instrument, book, syncStrategy, syncCtx, tradeDecoder,
-                tradeDecoder == null ? null : new TradeState());
+        this(instrument, book, syncStrategy, syncCtx, tradeDecoder, tradeDecoder == null ? null
+                : new TradeState(tradeDecoder.reportsMakerFills(), tradeDecoder.closesSweepAtFrameEnd()));
     }
 }

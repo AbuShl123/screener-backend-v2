@@ -104,7 +104,7 @@ public class TradeChannel implements FeedChannel {
         sb.append(",\"avgPrice\":").append(alert.vwap());
         sb.append(",\"firstPrice\":").append(alert.firstPrice());
         sb.append(",\"lastPrice\":").append(alert.lastPrice());
-        sb.append(",\"levels\":").append(alert.fills());
+        sb.append(",\"levels\":").append(alert.levels());
         sb.append(",\"threshold\":").append(alert.minNotional());
         sb.append("}}");
         return sb.toString();

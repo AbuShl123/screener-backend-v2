@@ -22,6 +22,7 @@ import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
 import dev.abu.screener_backend.marketdata.spi.FakeRecoverySink;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocolRegistry;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
+import dev.abu.screener_backend.marketdata.spi.TradeDecoderRegistry;
 import dev.abu.screener_backend.marketdata.spi.VenueStreamBinding;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -150,6 +151,17 @@ class MexcAdapterConfigTest {
                 config.mexcSpotTradeStreamBinding(exchanges).protocol().subscribeFrame(List.of(spot), 1));
         assertEquals("{\"method\":\"sub.deal\",\"param\":{\"symbol\":\"BTC_USDT\"}}",
                 config.mexcFuturesTradeStreamBinding(exchanges).protocol().subscribeFrame(List.of(futures), 1));
+    }
+
+    @Test
+    @DisplayName("each MEXC venue has its own trade decoder: binary spot deals, JSON futures deals")
+    void eachVenueHasTradeDecoder() {
+        MexcAdapterConfig config = new MexcAdapterConfig();
+        TradeDecoderRegistry registry = new TradeDecoderRegistry(List.of(
+                config.mexcSpotTradeDecoderBinding(), config.mexcFuturesTradeDecoderBinding()));
+
+        assertInstanceOf(MexcSpotDealsDecoder.class, registry.forVenue(Venue.MEXC_SPOT));
+        assertInstanceOf(MexcFuturesDealDecoder.class, registry.forVenue(Venue.MEXC_FUTURES));
     }
 
     @Test

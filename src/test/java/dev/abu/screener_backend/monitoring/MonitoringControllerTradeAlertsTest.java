@@ -27,13 +27,13 @@ class MonitoringControllerTradeAlertsTest {
     @Test
     @DisplayName("an alert is shown with its stable id, by venue and native symbol, its side spelled out, its threshold and readable times")
     void view() {
-        store.add(new TradeAlert(BTC_FUT, false, 65_000, 2, 130_000, 100_000, 64_990, 65_010, 3, true,
+        store.add(new TradeAlert(BTC_FUT, false, 65_000, 2, 130_000, 100_000, 64_990, 65_010, 3, 2, true,
                 100, 102, 1_794_860_803_450L, 1_794_860_803_600L));
 
         TradeAlertView v = controller.getTradeAlerts(null, null, 100).getFirst();
 
         assertEquals(new TradeAlertView("BINANCE_FUTURES:BTCUSDT:100", Venue.BINANCE_FUTURES, "BTCUSDT",
-                "SELL", 130_000, 100_000, 2, 65_000, 64_990, 65_010, 3, true, 100, 102,
+                "SELL", 130_000, 100_000, 2, 65_000, 64_990, 65_010, 3, 2, true, 100, 102,
                 Instant.ofEpochMilli(1_794_860_803_450L), Instant.ofEpochMilli(1_794_860_803_600L)), v);
     }
 
@@ -66,6 +66,6 @@ class MonitoringControllerTradeAlertsTest {
     }
 
     private static TradeAlert alert(Instrument instrument, long id) {
-        return new TradeAlert(instrument, true, 100, 1000, 100_000, 1, 100, 100, 1, false, id, id, id, id);
+        return new TradeAlert(instrument, true, 100, 1000, 100_000, 1, 100, 100, 1, 1, false, id, id, id, id);
     }
 }

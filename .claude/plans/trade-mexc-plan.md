@@ -4,12 +4,24 @@ Phase 5 of `.claude/plans/trade-alerts-plan.md`, MEXC first: large-trade alerts 
 futures, through the same detector, store and `TradeChannel` as Binance. Trade alerts matter most on
 smaller exchanges, so MEXC ships before Bybit.
 
-**Read first**: `external-docs/mexc/mexc-trades-empirical.md` (the wire contract and the
-reconnaissance this plan rests on), `.claude/plans/trade-detection-plan.md` (§2 design, §10 the
-Binance findings this plan mirrors), `.claude/docs/market-data-pipeline-architecture.md` §13.
+**Read first**:
+- `.claude/docs/how-large-trades-are-detected-on-mexc.md`: the explainer. What MEXC sends, why deals
+  are filtered, how sweeps are grouped and closed, the trading mechanics behind it.
+- `external-docs/mexc/mexc-trades-empirical.md`: the wire contract and every measured number.
+- `.claude/plans/trade-detection-plan.md`: §2 is the detector design, §10 has the Binance findings this
+  plan mirrors.
+- `.claude/docs/market-data-pipeline-architecture.md` §13.
 
-As in Phase 2, slice 0 is an offline capture and analysis that answers every question needing market
-data. The app slices implement decisions already taken from it and check themselves against it.
+Slice 0 was an offline capture and analysis. It answered every question that needed market data.
+Each app slice implements decisions already taken from that data and checks itself against it.
+
+| Slice | What | Status |
+|---|---|---|
+| 0 | Capture and analysis (offline) | done |
+| 1 | Transport: both `TRADE` streams connect, subscribe and route | done |
+| 2 | Decode and detect; spot closes sweeps at frame end; spot replay fixture | done |
+| 3 | Idle close: shard tick for MEXC futures; futures replay fixture | next |
+| 4 | Thresholds (per-venue floor) and live check; streams on by default | |
 
 ---
 
@@ -18,13 +30,15 @@ data. The app slices implement decisions already taken from it and check themsel
 - The Binance trade path is complete: `TradeDecoder` SPI → `TradeDetector` (sweep coalescing,
   thresholds) → `TradeAlertStore` → `TradeChannel`. Everything after the decoder is venue-agnostic
   except the sweep continuation rule (2.4).
-- MEXC depth is live on both venues. Its stream protocols already route deal frames correctly: spot
-  frames carry the same wrapper `symbol` (field 3), futures frames start with `"symbol"`.
+- Both MEXC `TRADE` streams are bound, configured and off by default (slice 1). With no decoder bound,
+  the handler counts their events as unhandled.
 - `MarketEvent` carries binary frames in `rawBytes`, but `TradeDecoder.decode` takes only a `String`.
 - `Instrument.quantityMultiplier()` holds futures `contractSize`; the depth path already multiplies by it.
 - The MEXC universe is USDT-quoted only, so `price × qty` is notional in USDT, as on Binance.
+- A sweep closes only when its instrument's next trade arrives. `TradeAlertProperties` has one global
+  `default-min-notional`.
 
-### What differs from Binance (reconnaissance, `mexc-trades-empirical.md`)
+### What differs from Binance (`mexc-trades-empirical.md`)
 
 | | Binance aggTrade | MEXC spot | MEXC futures |
 |---|---|---|---|
@@ -33,8 +47,10 @@ data. The app slices implement decisions already taken from it and check themsel
 | Quantity | base | base | **contracts** × `contractSize` |
 | Taker-order id | none | **exact** (`tradeId` left half) | none |
 | Numeric trade id | `f` / `l`, contiguous per symbol | field 6, on real fills only | `i`, a sequence shared across contracts |
-| Equal price in one sweep | never (new order) | normal | normal |
-| Clock-driven deals | none seen | `X0_X0`: ~85–90% of deals, ~95% of notional | `M=1`: ~60–70% of deals |
+| Equal price in one sweep | never (new order) | normal (32% of steps) | normal |
+| Deals to drop | none | `X0_X0` synthetic: 85% of deals, 93.5% of notional | `M=1` self-trades: 72% of deals, 11% of notional |
+| One sweep's fills arrive | together | in one frame (99.96%) | split across frames in 59% of multi-fill sweeps, ≤ 213 ms apart |
+| Real flow | large | $1.4M/h; largest order in 4 h $96K | $180M/h |
 
 ---
 
@@ -45,126 +61,186 @@ data. The app slices implement decisions already taken from it and check themsel
 ```
 TRADE event (shard thread)
   └─ MarketEventHandler TRADE arm
-       └─ rawBytes != null ? decoder.decode(slot, rawBytes, sink) : decoder.decode(slot, rawJson, sink)
-            └─ MEXC decoder: parse, drop filtered deals (2.5), report the rest oldest first
-                 └─ TradeDetector.onTrade(slot, price, qty, buy, time, firstId, lastId, takerOrderId)
-                      └─ continuation rule (2.4) → threshold → TradeAlertStore → TradeChannel
+       ├─ rawBytes != null ? decoder.decode(slot, rawBytes, sink) : decoder.decode(slot, rawJson, sink)
+       │    └─ MEXC decoder: parse, filtered deals → sink.onFiltered (2.5), the rest oldest first
+       │         └─ TradeDetector.onTrade(slot, price, qty, buy, time, firstId, lastId, takerOrderId)
+       │              └─ continuation rule (2.4) → on close: threshold → TradeAlertStore → TradeChannel
+       └─ detector.onFrameEnd(slot)        closes the open sweep if the venue closes at frame end (2.6)
+
+TICK event (shard thread, every tick-interval-ms)
+  └─ MarketEventHandler, before the slot lookup
+       └─ for each slot of this shard: detector.closeIfIdle(slot)   venues with an idle close (2.6)
 ```
 
-### 2.2 SPI changes (core)
+### 2.2 SPI and core changes
 
 | Type | Change |
 |---|---|
 | `TradeDecoder` | Adds `default boolean decode(InstrumentSlot slot, ByteBuffer frame, TradeSink sink)` returning `false`. Binary decoders override it. Same absolute-index rule as `MexcSpotFrameReader`: never move `position` / `limit`. |
-| `TradeDecoder` | Adds `default boolean reportsMakerFills()` returning `false`. `true` means one event is one fill against one resting order, so an equal price can continue a sweep (2.4). It is read once, at slot allocation. |
+| `TradeDecoder` | Adds `default boolean reportsMakerFills()` returning `false`. `true` means one event is one fill against one resting order, so an equal price can continue a sweep (2.4). |
+| `TradeDecoder` | Adds `default boolean closesSweepAtFrameEnd()` returning `false`. `true` means one taker order's fills always arrive in one frame, so the sweep still open after a frame is complete (2.6). |
 | `TradeSink.onTrade` | Gains `long takerOrderId`: `-1` when the venue has none (Binance, MEXC futures). |
 | `TradeSink` | Gains `onFiltered(InstrumentSlot slot)`, called once per deal a decoder drops by venue policy (2.5), for the health log. |
-| `MarketEventHandler` | The `TRADE` arm picks the overload by payload: `rawBytes` if set, else `rawJson`. |
-| `TradeState` | Gains `takerOrderId` and the `makerFills` flag, which `InstrumentSlotTable` copies from the decoder at allocation. |
+| `TradeState` | Gains `takerOrderId`, `levels`, `levelNotional` / `maxLevelNotional` (2.8), `lastFillAtMs` and `closedByIdle` (2.6), and the flags `makerFills` and `closeAtFrameEnd`. `InstrumentSlot` copies both flags from the decoder when it creates the state. |
+| `TradeDetector` | Gains `onFrameEnd(slot)` and `closeIfIdle(slot)` (2.6). Takes a clock (`LongSupplier`, default `System::currentTimeMillis`) for `lastFillAtMs`, the idle check and `detectedAtMs`, so the replay test can drive it. |
+| `MarketEventHandler` | The `TRADE` arm picks the overload by payload: `rawBytes` if set, else `rawJson`. It then calls `onFrameEnd`. It depends on `TradeDetector` (core) instead of `TradeSink`: frame end and idle close are core calls, not part of the decoder SPI. It handles `TICK` events (2.6). |
 
-### 2.3 Transport (adapter)
+### 2.3 Transport (adapter) — built in slice 1
 
 - `MexcSpotStreamProtocol` takes the channel prefix from its constructor: depth
   `spot@public.aggre.depth.v3.api.pb@100ms@`, trade `spot@public.aggre.deals.v3.api.pb@100ms@`.
-  Routing and ack handling stay the same.
 - `MexcFuturesStreamProtocol` takes the channel name (`depth` / `deal`) and builds `sub.<ch>`,
   `push.<ch>` and `rs.sub.<ch>` from it.
-- `MexcAdapterConfig` adds a `VenueStreamBinding` for each `TRADE` stream and one
+- `MexcAdapterConfig` binds a `VenueStreamBinding` for each `TRADE` stream. Slice 2 adds one
   `VenueTradeDecoderBinding` per venue.
-- YAML, off until slice 3 verifies:
-
-  ```yaml
-  SPOT:
-    streams:
-      TRADE:
-        enabled: ${MEXC_SPOT_TRADE_ENABLED:false}
-        stream-url: wss://wbs-api.mexc.com/ws
-        max-streams-per-connection: 30   # server limit, as for depth
-        min-connections: 1
-        max-connections: 30              # ~508 pairs → 17
-        subscribe-chunk-size: 30
-        heartbeat-interval-seconds: 20
-  FUTURES:
-    streams:
-      TRADE:
-        enabled: ${MEXC_FUTURES_TRADE_ENABLED:false}
-        stream-url: wss://contract.mexc.com/edge
-        max-streams-per-connection: 300
-        min-connections: 1
-        max-connections: 8
-        subscribe-chunk-size: 1          # sub.deal takes one symbol
-        heartbeat-interval-seconds: 15
-  ```
-
-  Spot adds about 17 sockets next to depth's 17. Tested limits: no per-IP cap up to 300.
+- YAML: `venues.SPOT.streams.TRADE` (`MEXC_SPOT_TRADE_ENABLED`, 30 per connection, up to 30
+  connections) and `venues.FUTURES.streams.TRADE` (`MEXC_FUTURES_TRADE_ENABLED`, 300 per connection,
+  chunk size 1). Both are off until slice 4 verifies.
 
 ### 2.4 Sweep continuation rule
 
 A trade continues the open sweep when it has the same side and:
 
-1. **Both taker-order ids are known**: they are equal. Nothing else is checked. This covers MEXC spot exactly.
-2. **Otherwise**, the Binance rule (`trade-detection-plan.md` §10.3), with one change for venues
-   whose `reportsMakerFills()` is true: the price may also stay **equal**, not only move toward the
-   aggressor. Same `tradeTimeMs` and, when known, `firstTradeId == lastTradeId + 1` as today.
+1. **Both taker-order ids are known**: they are equal. Nothing else is checked. This covers MEXC spot
+   exactly.
+2. **Otherwise**, the Binance rule (`trade-detection-plan.md` §10.3): same `tradeTimeMs` and, when
+   both ids are known, `firstTradeId == lastTradeId + 1`. There is one change for venues whose
+   `reportsMakerFills()` is true: the price may also stay **equal**, not only move toward the
+   aggressor. This is *rule A*. On spot it recovers 99.4% of multi-fill orders exactly; Binance's
+   strict rule recovers 61.5%.
 
-For MEXC futures, whether to allow a small time difference (one sweep's last fill landed 1 ms
-later) is slice 0's Q3. Binance's behaviour must not change: its replay test is the guard.
+The time must be **exactly equal**. Futures shows extra 1 ms steps that look like one order crossing a
+millisecond (about 4,000 in 4 h). Allowing them would change about a quarter of futures alerts, and
+that cannot be proven from the stream. Exact time matches spot and Binance. Binance's behaviour must
+not change: its replay test is the guard.
 
-### 2.5 Filtering clock-driven deals
+### 2.5 Filtering deals that are not real trading
 
 The decoder decides, because only the adapter knows the format. Each dropped deal goes to
-`sink.onFiltered`, not `onTrade`: it never opens or continues a sweep and is never judged.
-Working decisions, to be confirmed or changed by slice 0 (Q1, Q2):
+`sink.onFiltered` instead of `onTrade`: it never opens, continues or closes a sweep and is never
+judged.
 
-- **Spot `X0_X0` deals** (no fill numbers): drop.
-- **Futures `M=1`**: open. The choices are to drop all of them, keep all of them, or keep only
-  those with `O ≠ 3`. A filter on the 500 ms clock is not on the list: it would be fragile and
-  undocumented.
+- **Spot `X0_X0` deals** (taker and maker fill numbers both 0): drop all. They are synthetic paired
+  orders on a per-symbol 500 ms clock. Unfiltered, they would make 198 spot alerts in 4 h instead
+  of 10.
+- **Futures `M=1`**: drop all. `M=1` is a self-trade (same account on both sides). `M` belongs to the
+  taker order, so dropping it practically never breaks a real sweep. `O` is not used.
 
-### 2.6 Decoders (adapter)
+### 2.6 Closing a sweep
+
+The next trade is too slow a signal on MEXC. Once filtered deals are dropped, real deals are sparse.
+38% of futures alerts come from contracts with < 0.1 real deals/s, where the next deal comes at p90
+76 s and at worst 12 min. Each venue gets the close that fits its data.
+
+**Spot: at the end of the frame.** `MexcSpotDealsDecoder.closesSweepAtFrameEnd()` is `true`. After
+every decode of a `TRADE` frame, successful or not, the handler calls `detector.onFrameEnd(slot)`. If
+`TradeState.closeAtFrameEnd` is set and a sweep is open, it is closed and judged. Inside a frame, the
+taker id still separates orders. An order's fills share one frame in 99.96% of multi-fill orders,
+and none of the 0.04% exceptions was large. Such an order becomes two smaller sweeps, which is
+accepted. Spot's close delay becomes zero.
+
+**Futures: idle timer (shard tick).** This is slice 4 of `trade-detection-plan.md`, built here.
+- Futures pushes each fill as it is matched (`ts − t` p50 0 ms). A sweep often arrives in several
+  frames (59% of multi-fill sweeps), so it can't close at frame end. Its pieces are at most 213 ms
+  apart by `ts` (p99 144 ms).
+- `TradeState.lastFillAtMs` is set from the detector's clock on every trade that opens or continues a
+  sweep. It is the shard's processing time, so ring lag delays fills and ticks alike.
+- A scheduler in `DisruptorShardManager` (one daemon thread) publishes one event per shard every
+  `tick-interval-ms`, with `EventSource.TICK`, no stream kind and `instrumentId = -1`. It claims with
+  `tryNext()`: a tick that doesn't fit a full ring is skipped, because the next one follows. It runs
+  only when some venue has an idle close configured.
+- **Threading invariant**: the scheduler thread only publishes ticks. It never reads or writes a
+  slot or a `TradeState`. Every close, idle or not, runs on the shard's consumer thread, in ring order
+  with that shard's trades, so the sweep state keeps a single owner and needs no locks or `volatile`.
+  The tick is one more producer on rings that are already `ProducerType.MULTI`, and its claim never
+  blocks.
+- `MarketEventHandler` handles `TICK` before the slot lookup. It walks its shard's ids
+  (`id = shardIndex; id += shardCount`) and calls `detector.closeIfIdle(slot)` on slots with a
+  `TradeState`.
+- `closeIfIdle` closes and judges an open sweep when its venue has an idle close and
+  `now − lastFillAtMs ≥ sweep-idle-close-ms`. It sets `closedByIdle`.
+- **Starting values**: tick 250 ms, idle 1500 ms for `MEXC_FUTURES`, so the worst close delay is
+  about 1.75 s. The idle must stay well above the gap between a sweep's pieces on *our* clock. Lag
+  spikes in the capture stretched that gap to 3.8 s (p99.9 1.2 s). Too short an idle splits sweeps;
+  too long delays alerts.
+- **Split check**: a deal arriving after an idle close that would have continued the closed sweep
+  (2.4 against the closed state, which stays in place until the next `open`) is counted as an
+  **idle split** per venue. That is the live measure of whether the idle value is too short.
+- Venues without an idle close (Binance, MEXC spot) behave as today: Binance's sweeps close on the
+  next trade. Binance can be given an idle close later by config alone.
+
+### 2.7 Decoders (adapter)
 
 **`MexcSpotDealsDecoder`** (binary):
 - Moves the wire primitives out of `MexcSpotFrameReader` into a shared package-private
   `MexcProtobufWire`, adding a 64-bit varint read for `time` and field 6.
 - Walks body 314, item by item, in wire order (time order). `tradeType` 1 is a buy.
-- Splits `tradeId` without allocating: the digits before the first `X` are the taker-order id (it
-  fits a `long`), and the digits after it are the fill number. A deal whose taker and maker fill
-  numbers are both 0 is an `X0_X0` deal (2.5).
-- Field 6 is the trade id: `firstTradeId == lastTradeId`.
-- Validates the whole frame before reporting anything, so a failed frame reports nothing. The
-  frames are small, so a second walk is cheap.
+- Splits `tradeId` (`<A>X<n>_<B>X<m>`) without allocating. The digits before the first `X` are the
+  taker-order id (it fits a `long`) and the digits after it are the fill number. A deal whose taker
+  and maker fill numbers are both 0 is an `X0_X0` deal (2.5).
+- Field 6 is the trade id: `firstTradeId == lastTradeId`. Real fills always carry it; a real fill
+  without it fails the frame.
+- `reportsMakerFills()` and `closesSweepAtFrameEnd()` are `true`.
+- Validates the whole frame before reporting anything, so a failed frame reports nothing. The frames
+  are small, so a second walk is cheap.
 
 **`MexcFuturesDealDecoder`** (JSON):
-- Jackson streaming. `data` is newest first, but the sink needs oldest first. Collect the
+- Jackson streaming. `data` is newest first, but the sink needs oldest first. It collects the
   primitives into a small reusable per-thread buffer (a `ThreadLocal` read once per frame,
-  allocation-free after warm-up), then report in reverse. Frames usually carry one deal and at
-  most ~33.
+  allocation-free after warm-up) and reports them in reverse. Frames usually carry one deal and at
+  most 50.
 - Quantity is `v × slot.instrument().quantityMultiplier()`. The trade id is `i`, a numeric string
-  parsed in place. `takerOrderId` is `-1`.
-- Validates every item before reporting. Required fields: `p`, `v`, `T`, `t`, plus `M` (and `O`)
-  if the filter uses them.
+  parsed in place. `takerOrderId` is `-1`. `T` 1 is a buy.
+- `reportsMakerFills()` is `true`; `closesSweepAtFrameEnd()` is `false`.
+- Validates every item before reporting. Required fields: `p`, `v`, `T`, `t`, `i`, `M`. Others
+  (`O`, `cts`) are skipped.
 
-### 2.7 Thresholds, alerts, delivery
+### 2.8 Thresholds, alerts, delivery
 
-- `screener.trade-alerts.min-notional` gets `MEXC_SPOT` and `MEXC_FUTURES` blocks. Keys are
-  native symbols, so futures uses `BTC_USDT`. Values come from slice 0.
-- Alert id: `VENUE:NATIVESYMBOL:firstTradeId` works unchanged (field 6 / `i`). It looks like
+- **Per-venue floor.** Real spot flow is tiny: a $30K floor gives 2.5 spot alerts/h, $10K gives 8/h.
+  `TradeAlertProperties` gains `venue-default-min-notional`, a per-venue default between the symbol
+  overrides and the global default. `TradeThresholds` looks up the symbol override, then the venue
+  default, then the global default.
+  ```yaml
+  screener:
+    trade-alerts:
+      default-min-notional: 30000
+      venue-default-min-notional:          # optional; a venue's own default
+        MEXC_SPOT: 10000
+      min-notional:
+        MEXC_FUTURES:                      # native symbols
+          BTC_USDT: 750000
+          ETH_USDT: 500000
+          SOL_USDT: 300000
+          ZEC_USDT: 200000
+          XRP_USDT: 150000
+      sweep-idle-close-ms:                 # optional; venues absent close on the next trade only
+        MEXC_FUTURES: 1500
+      tick-interval-ms: 250
+  ```
+  MEXC spot needs no overrides at $10K. Futures at $30K plus the five overrides gives about 111
+  alerts/h (75–148 by hour).
+- **Alert id**: `VENUE:NATIVESYMBOL:firstTradeId` works unchanged (field 6 / `i`). It looks like
   `MEXC_FUTURES:BTC_USDT:17067813085`, which is fine because the contract calls the id opaque.
 - **`levels` is not `fills` on MEXC.** The contract's `levels` (§3.8.2) is "price levels taken", and
-  `TradeChannel` fills it from `alert.fills()`. That is right on Binance, where one aggTrade is one
-  level, and wrong on MEXC, where 5 resting orders filled at one price are 5 fills on 1 level.
-  - `TradeState` counts levels, incremented when the price changes, next to fills.
-  - `TradeAlert` gains `levels`, and `TradeChannel` sends it.
-  - The fills-per-sweep metric stays on fills.
-  - `coalescedOnly` (no single fill would have alerted) is also true for one large order split
-    across several resting orders at one price. Decide in slice 2 whether to judge it per level on
-    MEXC.
-- The `TRADE` message shape does not change. The frontend contract already lists `MEXC` as an
-  `exchange` (§3.6). §3.8 needs its text updated: "Binance spot and futures" becomes the actual list,
-  and the §3.8.2 limits paragraph gains the MEXC notes (spot sweeps are exact by order id; futures
-  rule from slice 0).
-- Health log: MEXC rows appear by themselves. `dec/s` exceeds frames/s on MEXC (batched frames),
-  and a `filt` column shows dropped deals.
+  `TradeChannel` fills it from `alert.fills()`. That is right on Binance, where each event of a sweep
+  has its own price. It is wrong on MEXC, where 5 resting orders filled at one price are 5 fills on 1
+  level (the capture saw up to 35 fills on 23 levels). Traders care about levels.
+  - `TradeState.levels` starts at 1 and is incremented when a continuing fill's price differs from
+    `lastPrice`. Both counts are kept: `fills` stays for the fills-per-sweep metric.
+  - `TradeAlert` gains `levels`, and `TradeChannel` sends it. The `TRADE` message shape does not
+    change.
+- **`coalescedOnly` is judged per level**: true when no single price level's summed notional
+  reached the threshold. `TradeState` sums the notional of the current level (`levelNotional`, reset
+  when the price changes) and keeps the maximum (`maxLevelNotional`). On Binance a level is one fill,
+  so the flag is unchanged there. On MEXC it stops calling one large order "coalescing-only" just
+  because it filled against several resting orders at one price.
+- The frontend contract already lists `MEXC` as an `exchange` (§3.6). §3.8 needs its text updated:
+  "Binance spot and futures" becomes the actual list, and the §3.8.2 limits paragraph gains the MEXC
+  notes (spot sweeps are exact by order id; futures uses rule A, so same-millisecond orders with
+  consecutive ids merge).
+- Health log: MEXC rows appear by themselves. `dec/s` exceeds frames/s on MEXC (batched frames). A
+  `filt` column shows dropped deals (slice 2) and an `isplit` column shows idle splits (slice 3).
 
 ---
 
@@ -172,145 +248,175 @@ Working decisions, to be confirmed or changed by slice 0 (Q1, Q2):
 
 **Capture: built.** `C:\git\trade-capture\capture_mexc.py`:
 - whole MEXC universe, `MexcInstrumentSource` filters;
-- data in `C:\git\trade-capture\data-mexc\`, the same line format as the Binance capture, with spot
-  frames base64-encoded;
+- data in `C:\git\trade-capture\data-mexc\`, the same line format as the Binance capture
+  (`r` = local receive time, `v` = venue, `d` = the frame), with spot frames base64-encoded;
 - `mexc_frames.py` decodes both venues and prints a sanity summary of an hour file.
-
-**Duration**: several hours, including the US open and an Asia session if possible. Thin symbols
-need hours to show anything.
 
 **Questions**:
 
-1. **Spot `X0_X0`.**
-   - Does the 500 ms clock pattern hold over hours and across symbols?
-   - Do any large `X0_X0` deals fall off the clock?
-   - What share of alerts at candidate thresholds would they make?
-   - Decision: drop or keep.
-2. **Futures `M=1`.**
-   - Split by clock / off-clock and by `O`.
-   - Do the large off-clock ones cluster across symbols within milliseconds and follow sharp moves
-     (liquidations)? How large are they?
-   - Decision: the 2.5 filter.
-3. **Futures continuation rule.**
-   - Candidates: side + `t` + consecutive `i` + non-strict price (the 2.4 rule); the same with
-     `|Δt| ≤ 1 ms`; side + `t` + non-strict price without ids.
-   - Calibrate on spot taker fills, where the order id gives the ground truth: apply each id-free
-     rule to spot fills and measure recall and precision against the exact grouping. Then report
-     how often the rules disagree on futures alerts.
-4. **Notional per symbol and thresholds**, after the Q1/Q2 filters.
-   - Same policy as Binance: floor $30K, cap ~10 alerts/h per symbol, the ladder.
-   - Is $30K too high a floor for MEXC's thin symbols? Report alert counts at 10K/20K/30K floors.
+1. **Spot `X0_X0`.** Does the 500 ms clock pattern hold over hours and across symbols? Do any large
+   `X0_X0` deals fall off the clock? What share of alerts at candidate thresholds would they make?
+   Drop or keep?
+2. **Futures `M=1`.** Split by clock / off-clock and by `O`. Do the large off-clock ones cluster across
+   symbols (liquidations)? How large are they? Which filter?
+3. **Futures continuation rule.** Candidates: side + `t` + consecutive `i` + non-strict price; the
+   same with `|Δt| ≤ 1 ms`; no ids. Calibrate on spot taker fills, where the order id gives the ground
+   truth, then report how often the rules disagree on futures alerts.
+4. **Notional per symbol and thresholds**, after the Q1/Q2 filters. Same policy as Binance (floor,
+   ~10 alerts/h per symbol cap, the ladder). Alert counts at 10K/20K/30K floors.
 5. **Close delay** (last fill → the symbol's next deal) for alerting sweeps, by liquidity bucket.
-   This decides whether slice 4 of the detection plan (shard tick, idle-sweep flush) has to come
-   with MEXC.
 6. **Rates**: frames/s and deals/s per venue, deals per frame, for health baselines.
-7. **Replay fixtures**, about 1 MB each:
-   - `src/test/resources/trade/mexc-spot-deals-replay.jsonl` and
-     `mexc-futures-deal-replay.jsonl`, each with an `-expected.json` in the Binance fixture's format
-     (`trade-detection-plan.md` §3.3).
-   - Each should include multi-fill sweeps with equal prices, a filtered deal that would alert
-     without the filter, and the futures newest-first ordering.
-
-**Output**: a "Capture findings" section appended here, `mexc-trades-empirical.md` updated with the
-long-run numbers, and the YAML threshold block.
-
-The analysis scripts go in `C:\git\trade-capture\analysis\` (MEXC modules next to the Binance ones,
-built on `mexc_frames.py`).
-
----
+7. **Replay fixtures**: built in slices 2 and 3 (§5, §6), once the close mechanisms were decided.
 
 ### Capture findings
 
 The first 4.0 h of the capture (2026-11-18 07:39–11:40 UTC, no US open) is analyzed. The numbers are
 in `external-docs/mexc/mexc-trades-empirical.md`; re-run with `python mexc_analyze.py` in
-`C:\git\trade-capture\analysis\`. Answers, and what each one changes in §2:
+`C:\git\trade-capture\analysis\`.
 
 | Q | Answer | Design consequence |
 |---|---|---|
-| 1 | `X0_X0` deals are synthetic paired orders on a per-symbol 500 ms clock: maker id = taker id + 1, no trade sequence, never in a real fill. 93.5% of spot notional. Unfiltered, 198 spot alerts instead of 10. | 2.5 confirmed: drop them all. |
-| 2 | `M` is **self-trade** (MEXC REST docs: "self-transact"). 99.9% `O=3`. Large `M=1` deals are off the clock and do not cluster across symbols: self-trades, not liquidations. Unfiltered, +16% futures alerts. `M` belongs to the taker order (it changes inside 133 of 110K sweep steps). | 2.5: drop every `M=1` deal. `O` is not needed, so the decoder requires only `p, v, T, M, t, i`. |
-| 3 | Spot: an order's fills always share `t`, ids are contiguous, and the price is non-strict (equal on 32% of steps). Binance's strict rule would split 38% of multi-fill orders. Rule A (2.4 as written) recovers 99.4% of them on spot. Futures shows extra Δt = 1 ms steps (~4,000 in 4 h). Allowing them changes ~25% of the alert set (+74 / −42 of 445). | 2.4 confirmed, with exact `t`. The 1 ms tolerance is left open: it is not provable from the stream, and exact `t` matches spot and Binance. |
-| 4 | Real spot taker flow is $1.4M/h. Largest order in 4 h: $96K. Futures `M=2`: $180M/h. | **Spot needs its own floor**: $30K gives 2.5 alerts/h on 4 pairs, $10K gives 8/h, $5K gives 24/h, with no overrides needed. Futures: $30K floor + 5 overrides → 111/h. `TradeAlertProperties` needs a per-venue default (today one global `default-min-notional`). |
-| 5 | Close delay is long on MEXC. Futures alerts on contracts with < 0.1 real deals/s are 38% of all futures alerts: p90 76 s, max 12 min. Spot sweeps never span frames (0.04% of orders, no alert). | **Slice 4 of the detection plan comes with MEXC**: an idle timer (~1 s; a sweep's fills are ≤ 213 ms apart by `ts`). Spot can instead close a sweep at the end of its frame, which makes its delay zero. |
+| 1 | `X0_X0` deals are synthetic paired orders on a per-symbol 500 ms clock: maker id = taker id + 1, no trade sequence, never in a real fill. 93.5% of spot notional. Unfiltered, 198 spot alerts instead of 10. | 2.5: drop them all. |
+| 2 | `M` is **self-trade** (MEXC REST docs: "self-transact"). 99.9% `O=3`. Large `M=1` deals are off the clock and do not cluster across symbols: self-trades, not liquidations. Unfiltered, +16% futures alerts. `M` belongs to the taker order (it changes inside 133 of 110K sweep steps). | 2.5: drop every `M=1` deal. The decoder requires `p, v, T, t, i, M`. |
+| 3 | Spot: an order's fills always share `t`, ids are contiguous, and the price is non-strict (equal on 32% of steps). Binance's strict rule would split 38% of multi-fill orders. Rule A recovers 99.4% of them on spot. Futures shows extra Δt = 1 ms steps (~4,000 in 4 h). Allowing them changes ~25% of the alert set (+74 / −42 of 445). | 2.4: rule A with exact `t`. |
+| 4 | Real spot taker flow is $1.4M/h. Largest order in 4 h: $96K. Futures `M=2`: $180M/h. | 2.8: spot floor $10K (8 alerts/h, no overrides); futures $30K + 5 overrides → 111/h. A per-venue default in `TradeAlertProperties`. |
+| 5 | Close delay is long on MEXC. Futures alerts on contracts with < 0.1 real deals/s are 38% of all futures alerts: p90 76 s, max 12 min. Spot sweeps almost never span frames (0.04% of orders, no alert). Futures sweeps span frames in 59% of multi-fill sweeps, pieces ≤ 213 ms apart by `ts`. | 2.6: spot closes at frame end; futures gets the idle timer (slice 3). |
 | 6 | Spot 25 frames/s, 41 deals/s (35 filtered). Futures 61 frames/s, 69 deals/s (50 filtered). | `filt` exceeds real deals on both venues. |
-| 7 | Not built yet. It waits for the floor and the close mechanism above, because both change the expected alerts. | — |
+| 7 | — | Fixtures in slices 2 and 3. |
 
-Thresholds at the floors above (spot $10K floor, futures $30K), derived by `mexc_analyze.py --floor`:
+---
 
-```yaml
-MEXC_FUTURES:
-  BTC_USDT: 750000
-  ETH_USDT: 500000
-  SOL_USDT: 300000
-  ZEC_USDT: 200000
-  XRP_USDT: 150000
-```
+## 4. Slice 1 — transport (done)
 
-## 4. Slice 1 — transport
+Both stream protocols are parameterized by channel (2.3), the YAML blocks and `MexcAdapterConfig`
+stream bindings exist, and the streams are off by default. Commit `3e1623c`.
 
-**Goal**: both MEXC `TRADE` streams connect, subscribe and route. With no decoder bound yet, the
-handler counts the events as unhandled.
+---
 
-1. Parameterize both stream protocols (2.3). Depth behaviour must not change.
-2. Add the YAML blocks (2.3, off by default) and the `MexcAdapterConfig` stream bindings.
+## 5. Slice 2 — decode, detect, spot frame-end close (done)
 
-**Tests**: protocol tests for both channel names (subscribe frame, routing of a captured deal
-frame, ack and reject handling); `MexcAdapterConfigTest` with the trade bindings; existing depth
-protocol tests unchanged.
+Built as below. The spot fixture is 08:10–08:18 UTC of the capture on XRPUSDT, BTCUSDT, ETHUSDT and
+SOLUSDT (1,692 frames, 827 KB), at test thresholds $300 and XRPUSDT $600: 34 alerts (22 multi-fill,
+17 with equal-price fills, 10 multi-level, among them the $96K BTC order of 12 fills over 7 levels),
+4,154 filtered `X0_X0` deals of which 851 would alert unfiltered, and one XRP order spanning two
+frames whose first frame alerts alone. Built with `make_mexc_fixture.py` in
+`C:\git\trade-capture\analysis\`. The local verify below is still open.
 
-**Verify (local, both TRADE streams on)**: about 17 spot + 2 futures trade connections; per-kind
-frame rates near the capture's (~25 and ~60 frames/s); no rejected subscriptions; depth rates and
-ring headroom unchanged.
+**Goal**: MEXC spot and futures deals are decoded, filtered and coalesced. Spot alerts fire at the
+end of the frame. Futures alerts are correct but still wait for the next deal; slice 3 removes the
+wait.
 
-## 5. Slice 2 — decode and detect
-
-1. SPI changes (2.2) and the handler's overload choice. Binance decoder: `takerOrderId = -1`,
-   `reportsMakerFills()` false.
-2. `MexcProtobufWire` extraction; `MexcSpotFrameReader` rebased on it, depth tests unchanged.
-3. `MexcSpotDealsDecoder`, `MexcFuturesDealDecoder`, filters as slice 0 decided (2.5, 2.6); decoder
-   bindings for both venues.
-4. `TradeDetector` continuation rule (2.4); `TradeState` fields, including the level count (2.7).
-   `TradeAlert.levels` and `TradeChannel` sends it; on Binance it equals `fills`.
-5. Metrics: filtered count per venue, `filt` column in the health log.
+1. **Spot replay fixture** (`C:\git\trade-capture\analysis\`, Python, before the Java test):
+   - A `make_mexc_fixture.py` next to `make_fixture.py`, built on `mexccap.py`. It cuts a window of
+     about 1 MB from the capture into `src/test/resources/trade/mexc-spot-deals-replay.jsonl`
+     (capture lines unchanged, spot frames base64) and writes
+     `mexc-spot-deals-replay-expected.json` in the Binance fixture's format (`trade-detection-plan.md`
+     §10.6).
+   - The expected alerts follow this plan's semantics exactly: drop `X0_X0`, group by taker id,
+     close at the end of each frame, test thresholds chosen for the fixture (independent of
+     `application.yml`).
+   - The window must contain multi-fill orders with equal prices and multi-level orders. It must
+     also contain an `X0_X0` deal that would alert without the filter, and, if one exists nearby, an
+     order spanning two frames.
+2. **SPI changes** (2.2) and the handler's overload choice and `onFrameEnd` call. The Binance decoder
+   keeps the defaults: `takerOrderId = -1`, `reportsMakerFills()` and `closesSweepAtFrameEnd()` false.
+3. **`MexcProtobufWire`** extraction; `MexcSpotFrameReader` rebased on it, depth tests unchanged.
+4. **`MexcSpotDealsDecoder`**, **`MexcFuturesDealDecoder`** (2.7) with the filters (2.5); a
+   `VenueTradeDecoderBinding` for each venue in `MexcAdapterConfig`.
+5. **`TradeDetector`**: continuation rule (2.4); `onFrameEnd` (2.6); `TradeState` fields; `levels`
+   and per-level `coalescedOnly` (2.8); the clock. `TradeAlert.levels`, and `TradeChannel` sends it.
+6. **Metrics**: filtered count per venue, `filt` column in the health log.
 
 **Tests**:
 
 | Test | Covers |
 |---|---|
 | `MexcSpotDealsDecoderTest` | A captured frame decodes to the right prices, quantities, sides, times, trade ids and taker-order ids. `X0_X0` deals go to `onFiltered`. A truncated or malformed item returns `false` with no sink call. The frame buffer's `position` and `limit` are unchanged. |
-| `MexcFuturesDealDecoderTest` | A multi-deal frame is reported oldest first. `v` is multiplied by `contractSize`. The filter is applied. A bad item returns `false` with no sink call. |
-| `TradeDetectorTest` | Equal taker ids continue across an equal price. Different taker ids close the sweep even with the same `t`. With `makerFills`, an equal price continues and a reversal still closes. Without it, the Binance behaviour is unchanged. `levels` counts distinct prices: 5 fills at one price give `levels = 1`, `fills = 5`. |
+| `MexcFuturesDealDecoderTest` | A multi-deal frame is reported oldest first. `v` is multiplied by `contractSize`. `M=1` deals go to `onFiltered`. A bad item or a missing required field returns `false` with no sink call. |
+| `TradeDetectorTest` | Equal taker ids continue across an equal price. Different taker ids close the sweep even with the same `t`. With `makerFills`, an equal price continues and a reversal still closes; a 1 ms time step closes. Without it, the Binance behaviour is unchanged. `levels` counts distinct prices: 5 fills at one price give `levels = 1`, `fills = 5`. `coalescedOnly` is per level: one $40K order filled as four $10K fills at one price, threshold $30K, is not coalescing-only. `onFrameEnd` closes the open sweep only when `closeAtFrameEnd` is set. |
 | `TradeChannelTest` | `levels` comes from `alert.levels()`, not `fills()`. |
-| `TradeReplayTest` | Binance fixture unchanged. Both MEXC fixtures find exactly their expected alerts. |
-| `MarketEventHandlerTest` | A binary `TRADE` event reaches the `ByteBuffer` overload, a text one the `String` overload. |
+| `TradeReplayTest` | The Binance fixture is unchanged. The MEXC spot fixture finds exactly its expected alerts in order, through decoder → detector with `onFrameEnd` after each frame. |
+| `MarketEventHandlerTest` | A binary `TRADE` event reaches the `ByteBuffer` overload, a text one the `String` overload; `onFrameEnd` follows each decode. |
 
-## 6. Slice 3 — thresholds and live check
+**Verify (local, both TRADE streams on)**: MEXC spot alerts appear in
+`/api/monitoring/trade-alerts` with `levels ≤ fills`. None of them is an `X0_X0` deal. `filt` is
+near 35/s spot and 50/s futures. Binance alert rates are unchanged.
 
-1. The MEXC threshold blocks from slice 0 in `application.yml`; the YAML binding test.
-2. Check the frontend contract for MEXC trade alerts (2.7).
+---
+
+## 6. Slice 3 — idle close (shard tick)
+
+**Goal**: a MEXC futures sweep is judged about 1.5 s after its last fill, not when the next real deal
+arrives. Replaces slice 4 of `trade-detection-plan.md`.
+
+1. **Futures replay fixture** (Python, as in slice 2): `mexc-futures-deal-replay.jsonl` and its
+   `-expected.json`.
+   - The expected alerts follow this plan exactly: drop `M=1`, rule A with exact `t`, oldest first,
+     and the idle close modelled on the records' `r`. Before each record, every open sweep with
+     `r − lastFill_r ≥ idle` is closed.
+   - The window must contain newest-first multi-deal frames, a sweep split across frames, an `M=1`
+     deal that would alert without the filter, a 1 ms step that closes a sweep, and an alert on a
+     thin contract that only the idle close emits before the window ends.
+2. **Config**: `sweep-idle-close-ms` (per venue) and `tick-interval-ms` in `TradeAlertProperties`,
+   validated > 0; YAML values from 2.6.
+3. **Tick**: `EventSource.TICK`, the scheduler in `DisruptorShardManager`, and the handler's tick
+   branch (2.6).
+4. **Detector**: `lastFillAtMs`, `closeIfIdle`, `closedByIdle` and the idle-split count (2.6).
+5. **Metrics**: `isplit` column in the health log, per venue.
+
+**Tests**:
+
+| Test | Covers |
+|---|---|
+| `TradeDetectorTest` | With an idle close configured, `closeIfIdle` closes a sweep idle for ≥ the limit and not before. A venue without one is never closed by it. A deal that would have continued an idle-closed sweep counts one idle split and opens a new sweep. |
+| `MarketEventHandlerTest` | A `TICK` event visits exactly this shard's slots and never touches the slot lookup. |
+| `DisruptorShardManagerTest` (or the publisher's) | Ticks reach every shard. A full ring skips the tick without blocking. No scheduler runs when no venue has an idle close. |
+| `TradeReplayTest` | The MEXC futures fixture finds exactly its expected alerts. The clock is set to each record's `r`, and `closeIfIdle` runs on every slot before the record. |
+
+**Verify (local)**: `detectedAtMs − tradeTimeMs` for MEXC futures alerts stays under about 2 s outside
+lag spikes. `isplit` stays near zero. If it isn't, raise the idle.
+
+---
+
+## 7. Slice 4 — thresholds and live check
+
+1. `venue-default-min-notional` in `TradeAlertProperties` and `TradeThresholds` (2.8); the MEXC
+   blocks in `application.yml`; the YAML binding test and a `TradeThresholdsTest` case for the lookup
+   order (symbol, then venue, then global).
+2. Update the frontend contract's §3.8 for MEXC (2.8).
 3. Turn both `TRADE` streams on by default once the check below passes.
 
 **Verify**: after an hour, compare alerts/hour per venue and the top symbols in
-`/api/monitoring/trade-alerts/summary` with slice 0's simulation for a similar time of day. Spot
-check a few multi-fill alerts against the MEXC trade list, and confirm that no alert is an
-`X0_X0` deal.
+`/api/monitoring/trade-alerts/summary` with slice 0's simulation for a similar time of day (spot about
+8/h on XRP, BTC, ETH, ZEC, SOL, NEAR, LTC; futures 75–148/h). Spot check a few multi-fill alerts
+against the MEXC trade list, including `levels`. Confirm that no alert is an `X0_X0` or `M=1` deal.
 
-## 7. Docs (as the code lands)
+---
+
+## 8. Docs (as the code lands)
 
 - `CLAUDE.md`:
-  - Module Map: MEXC trade decoders.
+  - Module Map: MEXC trade decoders; the shard tick.
   - The Streams bullet: `TRADE` bound for Binance and MEXC, plus the MEXC deal channels.
   - The `StreamKind` note "bound for Binance only".
-- `.claude/docs/market-data-pipeline-architecture.md` §12 and §13: binary trade decoders,
-  maker-fill venues.
+  - The Disruptor bullet: `EventSource.TICK`.
+- `.claude/docs/market-data-pipeline-architecture.md` §12 and §13: binary trade decoders, maker-fill
+  venues, frame-end and idle close, the tick.
+- `.claude/docs/how-large-trades-are-detected-on-mexc.md`: status, and any number the code or the live
+  check changes.
+- `.claude/docs/how-large-trades-are-detected.md`: §6.3 and §7.4 (the idle timer exists, configured
+  per venue), §6.4 "Binance only".
+- `.claude/plans/trade-detection-plan.md` §7: points here.
 - `.claude/plans/trade-alerts-plan.md`: Phase 5 row.
-- `.claude/docs/for-frontend/websocket-feed-api.md` §3.8, if venues are listed there.
+- `.claude/docs/for-frontend/websocket-feed-api.md` §3.8 (slice 4).
 
-## 8. Out of scope
+## 9. Out of scope
 
 - Bybit (`publicTrade`), the next venue in Phase 5. The 2.2 SPI changes are shaped for it: its
   trades are also maker fills with string ids.
-- Slice 4 of the detection plan, unless slice 0's Q5 says MEXC needs it.
+- An idle close for Binance. The mechanism allows it by config; its close delays were acceptable
+  (`trade-detection-plan.md` §10.4).
+- The 1 ms time tolerance on futures (2.4).
 - Showing filtered deals to users. They are counted and never judged.
 - The `10ms` spot variant. 100 ms adds at most ~100 ms of latency against futures' ~0, which is
   fine for a screener. Revisit if users notice.

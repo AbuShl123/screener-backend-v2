@@ -4,10 +4,13 @@ import dev.abu.screener_backend.config.TradeAlertProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.adapter.binance.BinanceAggTradeDecoder;
+import dev.abu.screener_backend.marketdata.adapter.mexc.MexcSpotDealsDecoder;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
+import dev.abu.screener_backend.marketdata.spi.TradeDecoder;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -16,8 +19,10 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -26,134 +31,277 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Replays real captured Binance aggTrade frames through {@link BinanceAggTradeDecoder} and
- * {@link TradeDetector} and checks that exactly the alerts the slice 0 analysis script found are
- * raised: the Java code against an independent implementation, on real data.
+ * Replays real captured trade frames through a venue's decoder and {@link TradeDetector} and checks
+ * that exactly the alerts an independent analysis script found are raised: the Java code against an
+ * independent implementation, on real data.
  *
- * <p>The fixture and its expected alerts are produced by the analysis
- * ({@code .claude/plans/trade-detection-plan.md} §3.3, which also specifies both file formats). The
- * test skips itself while the fixture is absent. The thresholds come from the expected-alerts file,
- * never from the shipped YAML, so retuning production thresholds does not break the replay.
+ * <p>Each fixture and its expected alerts come from the analysis scripts in
+ * {@code C:\git\trade-capture\analysis\} ({@code make_fixture.py} for Binance,
+ * {@code make_mexc_fixture.py} for MEXC spot). A test skips itself while its fixture is absent. The
+ * thresholds come from the expected-alerts file, never from the shipped YAML, so retuning
+ * production thresholds does not break the replay.
  */
 class TradeReplayTest {
 
-    private static final String FIXTURE = "trade/binance-aggtrade-replay.jsonl";
-    private static final String EXPECTED = "trade/binance-aggtrade-replay-expected.json";
     private static final double REL_TOLERANCE = 1e-9;
-
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
-    private static List<String> lines;
-    private static JsonNode expected;
+    /**
+     * Binance aggTrade: sweeps close on the instrument's next trade. Format:
+     * {@code .claude/plans/trade-detection-plan.md} §3.3.
+     */
+    @Nested
+    class Binance {
 
-    @BeforeAll
-    static void load() throws IOException {
-        ClassLoader cl = TradeReplayTest.class.getClassLoader();
-        if (cl.getResource(FIXTURE) == null || cl.getResource(EXPECTED) == null) return;
-        try (InputStream in = cl.getResourceAsStream(FIXTURE);
-             BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
-            lines = reader.lines().filter(l -> !l.isBlank()).toList();
+        private static Fixture fixture;
+
+        @BeforeAll
+        static void load() throws IOException {
+            fixture = Fixture.load("trade/binance-aggtrade-replay.jsonl", "trade/binance-aggtrade-replay-expected.json");
         }
-        try (InputStream in = cl.getResourceAsStream(EXPECTED)) {
-            expected = JSON.readTree(in);
+
+        @Test
+        @DisplayName("coalescing sweeps, the fixture raises exactly the analysis's coalesced alerts")
+        void coalescedAlerts() {
+            Replay replay = replay();
+
+            assertEquals(0, replay.failures(), "every fixture frame decodes");
+            assertTrue(fixture.expected().required("coalescedOpenAtEnd").isEmpty(),
+                    "the fixture is meant to close every sweep it opens");
+            List<Alert> want = alerts(fixture.expected().required("coalesced"));
+            assertMatches(want, replay.view());
+            assertEquals(want.stream().map(Alert::key).toList(), replay.view().stream().map(Alert::key).toList(),
+                    "a sweep is judged when the instrument's next trade arrives, so emission order matches too");
         }
-    }
 
-    @Test
-    @DisplayName("coalescing sweeps, the fixture raises exactly the analysis's coalesced alerts")
-    void coalescedAlerts() {
-        assumeFixture();
-        List<Alert> actual = replay();
+        /**
+         * Under the same thresholds, an alert is coalescing-only exactly when no single-trade alert
+         * falls inside its id range: the expected {@code singleTrade} list is the independent check
+         * of the flag. On Binance every fill of a sweep is its own price level.
+         */
+        @Test
+        @DisplayName("an alert is coalescing-only exactly when none of its fills alerts on its own")
+        void coalescedOnlyFlag() {
+            List<Alert> single = alerts(fixture.expected().required("singleTrade"));
+            Replay replay = replay();
 
-        assertEquals(0, failures, "every fixture frame decodes");
-        assertTrue(expected.required("coalescedOpenAtEnd").isEmpty(),
-                "the fixture is meant to close every sweep it opens");
-        List<Alert> want = alerts(expected.required("coalesced"));
-        assertMatches(want, actual);
-        assertEquals(want.stream().map(Alert::key).toList(), actual.stream().map(Alert::key).toList(),
-                "a sweep is judged when the instrument's next trade arrives, so emission order matches too");
+            int coalescedOnly = 0;
+            for (TradeAlert a : replay.alerts()) {
+                String venue = a.instrument().venue().name();
+                String symbol = a.instrument().nativeSymbol();
+                boolean fillAlone = single.stream().anyMatch(s -> s.venue().name().equals(venue)
+                        && s.symbol().equals(symbol)
+                        && s.firstTradeId() >= a.firstTradeId() && s.lastTradeId() <= a.lastTradeId());
+                assertEquals(!fillAlone, a.coalescedOnly(), a.id());
+                assertEquals(a.fills(), a.levels(), a.id() + ": one level per fill on Binance");
+                if (a.coalescedOnly()) coalescedOnly++;
+            }
+            assertTrue(coalescedOnly > 0, "the fixture is meant to hold alerts that exist only because of coalescing");
+        }
+
+        @Test
+        @DisplayName("alert ids are unique and follow VENUE:SYMBOL:firstTradeId")
+        void stableIds() {
+            assertStableIds(replay().alerts());
+        }
+
+        private Replay replay() {
+            assumeTrue(fixture != null, "Binance replay fixture not present");
+            BinanceAggTradeDecoder decoder = new BinanceAggTradeDecoder();
+            return Replay.run(fixture, (rec, slots) -> {
+                Venue venue = Venue.valueOf(rec.required("v").asString());
+                JsonNode frame = rec.required("d");
+                String symbol = frame.required("s").asString();
+                InstrumentSlot slot = slots.slot(venue, symbol, decoder);
+                return decoder.decode(slot, frame.toString(), slots.detector());
+            });
+        }
     }
 
     /**
-     * Under the same thresholds, an alert is coalescing-only exactly when no single-trade alert falls
-     * inside its id range: the expected {@code singleTrade} list is the independent check of the flag.
+     * MEXC spot deals: {@code X0_X0} deals filtered, sweeps grouped by taker-order id and closed at
+     * the end of each frame ({@code .claude/plans/trade-mexc-plan.md} §5).
      */
-    @Test
-    @DisplayName("an alert is coalescing-only exactly when none of its fills alerts on its own")
-    void coalescedOnlyFlag() {
-        assumeFixture();
-        List<Alert> single = alerts(expected.required("singleTrade"));
-        replay();
+    @Nested
+    class MexcSpot {
 
-        int coalescedOnly = 0;
-        for (TradeAlert a : alerted) {
-            String venue = a.instrument().venue().name();
-            String symbol = a.instrument().nativeSymbol();
-            boolean fillAlone = single.stream().anyMatch(s -> s.venue().name().equals(venue)
-                    && s.symbol().equals(symbol)
-                    && s.firstTradeId() >= a.firstTradeId() && s.lastTradeId() <= a.lastTradeId());
-            assertEquals(!fillAlone, a.coalescedOnly(), a.id());
-            if (a.coalescedOnly()) coalescedOnly++;
+        private static Fixture fixture;
+
+        @BeforeAll
+        static void load() throws IOException {
+            fixture = Fixture.load("trade/mexc-spot-deals-replay.jsonl", "trade/mexc-spot-deals-replay-expected.json");
         }
-        assertTrue(coalescedOnly > 0, "the fixture is meant to hold alerts that exist only because of coalescing");
-    }
 
-    @Test
-    @DisplayName("alert ids are unique and follow VENUE:SYMBOL:firstTradeId")
-    void stableIds() {
-        assumeFixture();
-        replay();
+        @Test
+        @DisplayName("the fixture raises exactly the analysis's alerts, in order, with levels and per-level coalescedOnly")
+        void expectedAlerts() {
+            Replay replay = replay();
 
-        assertEquals(alerted.size(), alerted.stream().map(TradeAlert::id).distinct().count());
-        for (TradeAlert a : alerted) {
-            assertEquals(a.instrument().venue().name() + ":" + a.instrument().nativeSymbol() + ":"
-                    + a.firstTradeId(), a.id());
+            assertEquals(0, replay.failures(), "every fixture frame decodes");
+            List<Alert> want = alerts(fixture.expected().required("coalesced"));
+            assertMatches(want, replay.view());
+            assertEquals(want.stream().map(Alert::key).toList(), replay.view().stream().map(Alert::key).toList(),
+                    "a sweep is judged at the end of its frame, so emission order matches too");
+            assertTrue(want.stream().anyMatch(a -> a.levels() < a.fills()), "the fixture holds equal-price fills");
+            assertTrue(want.stream().anyMatch(a -> a.levels() > 1), "the fixture holds multi-level orders");
         }
-    }
 
-    /** Skips, visibly, until the analysis delivers the fixture. */
-    private static void assumeFixture() {
-        assumeTrue(lines != null && expected != null,
-                "replay fixture not present yet (" + FIXTURE + ", produced by the slice 0 analysis)");
+        @Test
+        @DisplayName("X0_X0 deals are filtered: counted, never alerting, though many would")
+        void filtered() {
+            Replay replay = replay();
+
+            assertEquals(fixture.expected().required("filteredDeals").asLong(),
+                    replay.metrics().tradesFiltered(Venue.MEXC_SPOT));
+            assertTrue(fixture.expected().required("x0DealsThatWouldAlert").asLong() > 0,
+                    "the fixture holds X0_X0 deals at or above their threshold");
+            for (TradeAlert a : replay.alerts()) assertTrue(a.firstTradeId() >= 0, a.id() + " is a real fill");
+        }
+
+        @Test
+        @DisplayName("an order whose fills span two frames alerts on the first frame's fills alone")
+        void orderSpanningFrames() {
+            JsonNode cross = fixture.expected().required("crossFrameOrders");
+            assertFalse(cross.isEmpty(), "the fixture holds an order spanning two frames");
+            Replay replay = replay();
+
+            for (JsonNode order : cross) {
+                long taker = order.required("takerOrderId").asLong();
+                JsonNode alert = null;
+                for (JsonNode a : fixture.expected().required("coalesced")) {
+                    if (a.required("takerOrderId").asLong() == taker) alert = a;
+                }
+                if (alert == null) continue;
+                long first = alert.required("firstTradeId").asLong();
+                TradeAlert got = replay.alerts().stream().filter(a -> a.firstTradeId() == first).findFirst().orElseThrow();
+                assertEquals(alert.required("fills").asInt(), got.fills());
+            }
+        }
+
+        @Test
+        @DisplayName("alert ids are unique and follow VENUE:SYMBOL:firstTradeId")
+        void stableIds() {
+            assertStableIds(replay().alerts());
+        }
+
+        private Replay replay() {
+            assumeTrue(fixture != null, "MEXC spot replay fixture not present");
+            MexcSpotDealsDecoder decoder = new MexcSpotDealsDecoder();
+            return Replay.run(fixture, (rec, slots) -> {
+                byte[] frame = Base64.getDecoder().decode(rec.required("d").asString());
+                InstrumentSlot slot = slots.slot(Venue.MEXC_SPOT, spotSymbol(frame), decoder);
+                boolean decoded = decoder.decode(slot, ByteBuffer.wrap(frame), slots.detector());
+                slots.detector().onFrameEnd(slot);
+                return decoded;
+            });
+        }
+
+        /** The wrapper's {@code symbol} (field 3), read with a minimal Protobuf walk. */
+        private static String spotSymbol(byte[] frame) {
+            int pos = 0;
+            while (pos < frame.length) {
+                long tag = 0;
+                for (int shift = 0; ; shift += 7) {
+                    byte b = frame[pos++];
+                    tag |= (long) (b & 0x7F) << shift;
+                    if (b >= 0) break;
+                }
+                int wireType = (int) (tag & 7);
+                if (wireType == 0) {
+                    while (frame[pos++] < 0) { }
+                    continue;
+                }
+                if (wireType != 2) throw new IllegalStateException("unexpected wire type " + wireType);
+                int length = 0;
+                for (int shift = 0; ; shift += 7) {
+                    byte b = frame[pos++];
+                    length |= (b & 0x7F) << shift;
+                    if (b >= 0) break;
+                }
+                if (tag >>> 3 == 3) return new String(frame, pos, length, StandardCharsets.US_ASCII);
+                pos += length;
+            }
+            throw new IllegalStateException("frame without symbol");
+        }
     }
 
     // ---- replay ----
 
-    private int failures;
-    /** The alerts as raised, oldest first; set by {@link #replay()}. */
-    private List<TradeAlert> alerted;
+    private record Fixture(List<String> lines, JsonNode expected) {
 
-    private List<Alert> replay() {
-        TradeAlertProperties props = thresholds(expected.required("thresholds"), lines.size() + 1);
-        TradeAlertStore store = new TradeAlertStore(props);
-        TradeDetector detector = new TradeDetector(new PipelineMetrics(), new TradeThresholds(props), store);
-        BinanceAggTradeDecoder decoder = new BinanceAggTradeDecoder();
-        Map<String, InstrumentSlot> slots = new HashMap<>();
+        /** {@code null} when either file is missing. */
+        static Fixture load(String lines, String expected) throws IOException {
+            ClassLoader cl = TradeReplayTest.class.getClassLoader();
+            if (cl.getResource(lines) == null || cl.getResource(expected) == null) return null;
+            List<String> read;
+            try (InputStream in = cl.getResourceAsStream(lines);
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                read = reader.lines().filter(l -> !l.isBlank()).toList();
+            }
+            try (InputStream in = cl.getResourceAsStream(expected)) {
+                return new Fixture(read, JSON.readTree(in));
+            }
+        }
+    }
 
-        for (String line : lines) {
-            JsonNode rec = JSON.readTree(line);
-            Venue venue = Venue.valueOf(rec.required("v").asString());
-            JsonNode frame = rec.required("d");
-            String symbol = frame.required("s").asString();
-            InstrumentSlot slot = slots.computeIfAbsent(venue + "/" + symbol,
-                    k -> new InstrumentSlot(Instrument.of(slots.size(), venue, symbol,
-                            symbol.substring(0, symbol.length() - 4), "USDT"), null, null, null, decoder));
-            if (!decoder.decode(slot, frame.toString(), detector)) failures++;
+    /** Slots by {@code (venue, symbol)}, created on first sight, and the detector they report into. */
+    private static final class Slots {
+        private final Map<String, InstrumentSlot> byKey = new HashMap<>();
+        private final TradeDetector detector;
+
+        Slots(TradeDetector detector) {
+            this.detector = detector;
         }
 
-        alerted = store.recent(null, null, Integer.MAX_VALUE).reversed();
-        List<Alert> out = new ArrayList<>();
-        for (TradeAlert a : alerted) {
-            out.add(new Alert(a.instrument().venue(), a.instrument().nativeSymbol(),
-                    a.aggressorBuy() ? "BUY" : "SELL", a.firstTradeId(), a.lastTradeId(), a.fills(),
-                    a.tradeTimeMs(), a.qty(), a.notional()));
+        TradeDetector detector() {
+            return detector;
         }
-        return out;
+
+        InstrumentSlot slot(Venue venue, String symbol, TradeDecoder decoder) {
+            return byKey.computeIfAbsent(venue + "/" + symbol, k -> new InstrumentSlot(
+                    Instrument.of(byKey.size(), venue, symbol, symbol.substring(0, symbol.length() - 4), "USDT"),
+                    null, null, null, decoder));
+        }
+    }
+
+    @FunctionalInterface
+    private interface LineReplayer {
+        /** Replays one fixture line; {@code false} if its frame failed to decode. */
+        boolean replay(JsonNode record, Slots slots);
+    }
+
+    /**
+     * @param alerts as raised, oldest first
+     */
+    private record Replay(int failures, List<TradeAlert> alerts, PipelineMetrics metrics) {
+
+        static Replay run(Fixture fixture, LineReplayer replayer) {
+            TradeAlertProperties props = thresholds(fixture.expected().required("thresholds"), fixture.lines().size() + 1);
+            TradeAlertStore store = new TradeAlertStore(props);
+            PipelineMetrics metrics = new PipelineMetrics();
+            Slots slots = new Slots(new TradeDetector(metrics, new TradeThresholds(props), store));
+            int failures = 0;
+            for (String line : fixture.lines()) {
+                if (!replayer.replay(JSON.readTree(line), slots)) failures++;
+            }
+            return new Replay(failures, store.recent(null, null, Integer.MAX_VALUE).reversed(), metrics);
+        }
+
+        List<Alert> view() {
+            List<Alert> out = new ArrayList<>();
+            for (TradeAlert a : alerts) {
+                out.add(new Alert(a.instrument().venue(), a.instrument().nativeSymbol(),
+                        a.aggressorBuy() ? "BUY" : "SELL", a.firstTradeId(), a.lastTradeId(), a.fills(),
+                        a.levels(), a.coalescedOnly(), a.tradeTimeMs(), a.qty(), a.notional()));
+            }
+            return out;
+        }
     }
 
     private static TradeAlertProperties thresholds(JsonNode node, int capacity) {
@@ -172,9 +320,13 @@ class TradeReplayTest {
 
     // ---- comparison ----
 
-    /** One alert as the expected-alerts file spells it. */
+    /**
+     * One alert as the expected-alerts file spells it. {@code levels} and {@code coalescedOnly} are
+     * in the MEXC file only: {@code levels} defaults to {@code fills} (one level per fill on Binance),
+     * and a missing {@code coalescedOnly} is not compared.
+     */
     record Alert(Venue venue, String symbol, String side, long firstTradeId, long lastTradeId, int fills,
-                 long tradeTimeMs, double qty, double notional) {
+                 int levels, Boolean coalescedOnly, long tradeTimeMs, double qty, double notional) {
 
         /** Identity of the alert: which trades it covers. */
         String key() {
@@ -185,9 +337,11 @@ class TradeReplayTest {
     private static List<Alert> alerts(JsonNode array) {
         List<Alert> out = new ArrayList<>();
         for (JsonNode a : array) {
+            int fills = a.required("fills").asInt();
             out.add(new Alert(Venue.valueOf(a.required("venue").asString()), a.required("symbol").asString(),
                     a.required("side").asString(), a.required("firstTradeId").asLong(),
-                    a.required("lastTradeId").asLong(), a.required("fills").asInt(),
+                    a.required("lastTradeId").asLong(), fills, a.path("levels").asInt(fills),
+                    a.has("coalescedOnly") ? a.get("coalescedOnly").asBoolean() : null,
                     a.required("tradeTimeMs").asLong(), a.required("qty").asDouble(),
                     a.required("notional").asDouble()));
         }
@@ -210,6 +364,8 @@ class TradeReplayTest {
             String ctx = e.getKey();
             assertEquals(w.side(), g.side(), ctx + " side");
             assertEquals(w.fills(), g.fills(), ctx + " fills");
+            assertEquals(w.levels(), g.levels(), ctx + " levels");
+            if (w.coalescedOnly() != null) assertEquals(w.coalescedOnly(), g.coalescedOnly(), ctx + " coalescedOnly");
             assertEquals(w.tradeTimeMs(), g.tradeTimeMs(), ctx + " tradeTimeMs");
             assertEquals(w.qty(), g.qty(), Math.abs(w.qty()) * REL_TOLERANCE, ctx + " qty");
             assertEquals(w.notional(), g.notional(), Math.abs(w.notional()) * REL_TOLERANCE, ctx + " notional");
@@ -221,5 +377,13 @@ class TradeReplayTest {
         return alerts.stream()
                 .sorted(Comparator.comparing(Alert::key))
                 .collect(Collectors.toMap(Alert::key, Function.identity(), (a, b) -> a));
+    }
+
+    private static void assertStableIds(List<TradeAlert> alerts) {
+        assertEquals(alerts.size(), alerts.stream().map(TradeAlert::id).distinct().count());
+        for (TradeAlert a : alerts) {
+            assertEquals(a.instrument().venue().name() + ":" + a.instrument().nativeSymbol() + ":"
+                    + a.firstTradeId(), a.id());
+        }
     }
 }

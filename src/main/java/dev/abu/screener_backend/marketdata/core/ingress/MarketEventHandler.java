@@ -6,8 +6,8 @@ import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
+import dev.abu.screener_backend.marketdata.core.trade.TradeDetector;
 import dev.abu.screener_backend.marketdata.spi.TradeDecoder;
-import dev.abu.screener_backend.marketdata.spi.TradeSink;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -29,7 +29,7 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     private final int shardIndex;
     private final InstrumentSlotTable slots;
     private final OrderBookClassifier classificationModule;
-    private final TradeSink tradeSink;
+    private final TradeDetector tradeDetector;
     private final PipelineMetrics metrics;
 
     /**
@@ -44,14 +44,16 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     private long processed;
 
     /**
-     * @param tradeSink the shared core {@code TradeDetector}; one instance serves every shard
+     * @param tradeDetector the shared core detector; one instance serves every shard. The decoder
+     *                      reports into it as a {@code TradeSink}, and the handler calls its
+     *                      frame-end close, which is core's, not part of the decoder SPI.
      */
     public MarketEventHandler(int shardIndex, InstrumentSlotTable slots, OrderBookClassifier classificationModule,
-                              TradeSink tradeSink, PipelineMetrics metrics) {
+                              TradeDetector tradeDetector, PipelineMetrics metrics) {
         this.shardIndex = shardIndex;
         this.slots = slots;
         this.classificationModule = classificationModule;
-        this.tradeSink = tradeSink;
+        this.tradeDetector = tradeDetector;
         this.metrics = metrics;
     }
 
@@ -99,8 +101,11 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     }
 
     /**
-     * Decodes the frame and hands its trades to the core sink. Independent of the book's sync
-     * state: a trade is processed whether or not the book is {@code SYNCED}.
+     * Decodes the frame and hands its trades to the core detector, then tells the detector the frame
+     * is over, whether it decoded or not. Independent of the book's sync state: a trade is processed
+     * whether or not the book is {@code SYNCED}.
+     *
+     * <p>The payload picks the overload: a binary frame ({@code rawBytes}, MEXC spot) or a text one.
      */
     private void onTrade(InstrumentSlot slot, MarketEvent event) {
         TradeDecoder decoder = slot.tradeDecoder();
@@ -109,9 +114,13 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
             noteUnhandledKind(event.stream);
             return;
         }
-        if (!decoder.decode(slot, event.rawJson, tradeSink)) {
+        boolean decoded = event.rawBytes != null
+                ? decoder.decode(slot, event.rawBytes, tradeDetector)
+                : decoder.decode(slot, event.rawJson, tradeDetector);
+        if (!decoded) {
             metrics.recordTradeParseFailure(slot.instrument().venue());
         }
+        tradeDetector.onFrameEnd(slot);
     }
 
     private void noteMissingSlot(int instrumentId) {
