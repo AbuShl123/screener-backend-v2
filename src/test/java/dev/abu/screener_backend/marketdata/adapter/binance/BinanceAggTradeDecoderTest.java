@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -45,6 +47,16 @@ class BinanceAggTradeDecoderTest {
         assertEquals(1794857964129L, t.tradeTimeMs());
         assertEquals(6870090619L, t.firstTradeId());
         assertEquals(6870090619L, t.lastTradeId());
+        assertEquals(-1, t.takerOrderId(), "Binance publishes no taker-order id");
+    }
+
+    @Test
+    @DisplayName("an aggTrade already sums a taker order's fills at one price: no maker fills, no frame-end close, no binary frames")
+    void spiDefaults() {
+        assertFalse(decoder.reportsMakerFills());
+        assertFalse(decoder.closesSweepAtFrameEnd());
+        assertFalse(decoder.decode(spotSlot, ByteBuffer.wrap(SPOT.getBytes(StandardCharsets.UTF_8)), sink));
+        assertTrue(sink.trades.isEmpty());
     }
 
     @Test
@@ -175,15 +187,20 @@ class BinanceAggTradeDecoderTest {
     }
 
     private record Trade(InstrumentSlot slot, double price, double qty, boolean aggressorBuy,
-                         long tradeTimeMs, long firstTradeId, long lastTradeId) { }
+                         long tradeTimeMs, long firstTradeId, long lastTradeId, long takerOrderId) { }
 
     private static final class RecordingSink implements TradeSink {
         final List<Trade> trades = new ArrayList<>();
 
         @Override
         public void onTrade(InstrumentSlot slot, double price, double qty, boolean aggressorBuy,
-                            long tradeTimeMs, long firstTradeId, long lastTradeId) {
-            trades.add(new Trade(slot, price, qty, aggressorBuy, tradeTimeMs, firstTradeId, lastTradeId));
+                            long tradeTimeMs, long firstTradeId, long lastTradeId, long takerOrderId) {
+            trades.add(new Trade(slot, price, qty, aggressorBuy, tradeTimeMs, firstTradeId, lastTradeId, takerOrderId));
+        }
+
+        @Override
+        public void onFiltered(InstrumentSlot slot) {
+            throw new AssertionError("Binance filters nothing");
         }
 
         Trade only() {

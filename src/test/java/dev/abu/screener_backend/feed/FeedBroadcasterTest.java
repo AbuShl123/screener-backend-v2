@@ -187,14 +187,14 @@ class FeedBroadcasterTest {
 
     /** Replaces the fake-channel broadcaster with one serving a real {@link TradeChannel}. */
     private TradeAlertStore tradeBroadcaster() {
-        TradeAlertProperties props = new TradeAlertProperties(1, null, 10, 10);
+        TradeAlertProperties props = new TradeAlertProperties(1, null, null, 10, 10, null, 250);
         TradeAlertStore store = new TradeAlertStore(props);
         broadcaster = new FeedBroadcaster(List.of(new TradeChannel(store, props)));
         return store;
     }
 
     private static TradeAlert tradeAlert() {
-        return new TradeAlert(SOL_FUT, true, 140, 1000, 140_000, 100_000, 140, 140, 1, false,
+        return new TradeAlert(SOL_FUT, true, 140, 1000, 140_000, 100_000, 140, 140, 1, 1, false,
                 42, 42, 1_794_931_200_123L, 1_794_931_200_300L);
     }
 }

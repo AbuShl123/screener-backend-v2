@@ -13,6 +13,8 @@ open.
 **Detailed sources**: `.claude/plans/trade-alerts-plan.md` (vision, phases, decisions D1–D6),
 `.claude/plans/trade-detection-plan.md` (implementation plan; §10 holds every measured number).
 This document summarizes them and adds the reasoning from the design discussions.
+**MEXC**: `how-large-trades-are-detected-on-mexc.md` covers how MEXC differs, plus general trading
+mechanics (why orders sweep, levels vs price impact).
 
 ---
 
@@ -138,7 +140,7 @@ Phase 2 is split into slices (`trade-detection-plan.md`):
 | 1 | `BinanceAggTradeDecoder`: parse frames on the shard thread, count them | done |
 | 2 | Judge each frame alone against a threshold; alert store; admin endpoint | done, with the real thresholds in `application.yml` |
 | 3 | Sweep coalescing: judge whole sweeps instead of single frames | done; live comparison with the capture open |
-| 4 | Timer that closes idle sweeps | deferred (§6.3) |
+| 4 | Timer that closes idle sweeps | built with MEXC (`trade-mexc-plan.md` slice 3); off for Binance (§6.3) |
 
 ### 3.1 Why we captured data first (slice 0)
 
@@ -223,23 +225,29 @@ Coalescing matters **more** on futures, not less (see 4.5).
 
 ### 4.4 Thresholds
 
-Each instrument has one minimum notional: `screener.trade-alerts` in `application.yml`, bound to
-`TradeAlertProperties` and looked up by `TradeThresholds`. A $30K default, plus per-symbol overrides
-for busy symbols (7 spot, 28 futures).
+Each instrument has one minimum notional: `screener.trade-alerts` in
+`src/main/resources/trade-thresholds.yml` (imported by `application.yml`; a file of that name in the
+server's working directory overrides it), bound to `TradeAlertProperties` and looked up by
+`TradeThresholds`: the symbol's override, else the venue's own default
+(`venue-default-min-notional`: $100K on Binance and MEXC futures), else the global $30K. Busy
+symbols have per-symbol overrides (Binance 10 spot, 13 futures; MEXC 5 futures).
 
-**How the values were chosen** (`trade-detection-plan.md` §10.2): a flat $30K is unusable. It
-produces ~630 spot and **~10,600 futures alerts per hour**, mostly on BTC and ETH. So we set an
-**alert budget**:
+**How the values were chosen** (`trade-mexc-plan.md` §2.8; Binance's first list in
+`trade-detection-plan.md` §10.2): a flat $30K is unusable. On Binance it produces ~630 spot and
+**~10,600 futures alerts per hour**, mostly on BTC and ETH. Every alert goes to every user, so the
+whole feed gets an **alert budget of about 120 per hour**:
 
-- The floor is $30K for every symbol.
-- If a symbol would fire more than **10 alerts per hour** at $30K, raise it to the next step of a
-  fixed ladder (50K, 75K, 100K, 150K, 200K, 300K, 500K, … 5M) until it fires 10/h or less.
-- Result: about **55 spot and 223 futures alerts per hour** over 5.1 h of data. Examples: BTC
-  futures $5M, ETH futures $3M, BTC spot $500K, SOL futures $500K.
-- The list was computed from the first 1.8 h and checked against 5.1 h, which added only
-  PENGUUSDT futures. Re-deriving it over all 5.1 h would lower about half the overrides by one
-  step, only because most of that time is quiet. That would add ~40% more alerts in busy hours, so
-  the list was kept.
+- **A floor that means "large" in absolute terms**, the same on every exchange: $30K on spot, $100K
+  on futures (leveraged, and far more volume). A thin symbol keeps the floor and alerts only when a
+  large trade happens; it is never given a lower floor to produce alerts.
+- **A cap of 3 alerts per hour per symbol**: a symbol that would fire more is raised to the next
+  step of a fixed ladder (50K, 75K, 100K, 150K, 200K, 300K, 500K, … 5M) until it averages 3/h or
+  less and stays at or under 7.5 in every full hour.
+- Result: Binance spot 39, Binance futures 52, MEXC spot 2.5 and MEXC futures 18 alerts per hour,
+  **about 111 in total**. Examples: BTC and ETH futures on Binance $5M, BTC spot on Binance $750K,
+  BTC futures on MEXC $2M.
+- A static list swings with the market: in a 25-minute Binance sell-off the same thresholds gave
+  about 400 alerts/h. `trade-capture/analysis/thresholds.py` re-derives the list from a capture.
 
 **Thresholds and coalescing are independent in code.** Coalescing decides what counts as one trade.
 The threshold decides whether it is big enough. The sweep's summed notional is compared with the
@@ -321,7 +329,7 @@ Why it is valuable:
 - Built-in traps: the fixture uses its own test thresholds ($20K floor, $100K for SOLUSDT
   **futures** only). SOLUSDT **spot** alerts at $20K, so an override wrongly leaking across venues
   fails the test. The §2.1 XRP example is in the fixture too.
-- Test thresholds are independent of `application.yml`, so retuning production never breaks it.
+- Test thresholds are independent of `trade-thresholds.yml`, so retuning production never breaks it.
 
 The test checks that the detector raises exactly the `coalesced` alerts, in the same order. The
 `singleTrade` list is the independent check of the coalescing-only flag: an alert is
@@ -370,8 +378,9 @@ alerted at once under slice 2:
 - Thin symbols (< 0.1 trades/s) alerted 3 times at $30K in 5 hours. At $10K, 6% of their sweeps
   would wait over 10 s; at $5K 12%, sometimes over a minute.
 
-At the shipped thresholds this is acceptable, so the idle timer (slice 4) is deferred. The real
-delay is measurable live as `detectedAtMs − tradeTimeMs`. On futures there is an additional
+At the shipped thresholds this is acceptable, so Binance has no idle close configured. The idle
+timer exists (§7.4) and is configured per venue; MEXC futures, where real deals are sparse, uses it.
+The real delay is measurable live as `detectedAtMs − tradeTimeMs`. On futures there is an additional
 unavoidable ~150 ms, because Binance sends a sweep's last fragment only when its window closes.
 
 ### 6.4 Other limitations
@@ -386,8 +395,10 @@ unavoidable ~150 ms, because Binance sends a sweep's last fragment only when its
 - **Data loss on disconnect**: trades missed during a WebSocket reconnect are lost. Locally, Binance
   connections drop occasionally (163 s of futures outage in the capture). On the server this is
   rare.
-- **Binance only**: Bybit and MEXC come in Phase 5. The decoder SPI already allows several trades
-  per frame and missing numeric ids.
+- **Binance and MEXC**: MEXC's decoders are built and its streams are off by default until its
+  live check (`how-large-trades-are-detected-on-mexc.md`); Bybit comes later in Phase 5. The decoder
+  SPI allows several trades per frame, binary frames, missing numeric ids, a venue taker-order id,
+  and deals dropped by venue policy.
 - **In memory only**: the alert store holds the last 500 alerts and is lost on restart.
 
 ---
@@ -465,10 +476,11 @@ per-user thresholds.
 
 ### 7.4 Idle-sweep timer (slice 4)
 
-A per-shard tick (starting idea: every 250 ms) closes sweeps that have received nothing for ~1 s,
-bounding the delay of §6.3. The idle time must stay well above the futures window, or futures
-sweeps get split. Planned together with Phase 4, whose burst windows need the same tick, or earlier
-if per-user thresholds let users alert on thin coins.
+**Built with MEXC** (`trade-mexc-plan.md` §2.6, slice 3). A shard tick (`tick-interval-ms`, 250 ms)
+closes sweeps that have received nothing for `sweep-idle-close-ms`, configured per venue under
+`screener.trade-alerts`. Only `MEXC_FUTURES` has one (1500 ms). Giving Binance one is a config change;
+the idle time must stay well above the futures window (§6.3), or futures sweeps get split. The
+health log's `isplit` column counts such splits. Phase 4's burst windows can reuse the same tick.
 
 ### 7.5 Burst detection (Phase 4)
 
@@ -542,7 +554,7 @@ Plan: ship the budget-based thresholds as v1 and use real user feedback to steer
 | decoder | `marketdata/adapter/binance/BinanceAggTradeDecoder` |
 | SPI | `marketdata/spi/TradeDecoder`, `TradeSink`, `VenueTradeDecoderBinding`, `TradeDecoderRegistry` |
 | detection | `marketdata/core/trade/`: `TradeDetector`, `TradeState` (the open sweep, held in the instrument's slot), `TradeThresholds`, `TradeAlert`, `TradeAlertStore` |
-| config | `screener.trade-alerts` in `application.yml` → `config/TradeAlertProperties` |
+| config | `screener.trade-alerts`: thresholds in `trade-thresholds.yml`, behaviour in `application.yml` → `config/TradeAlertProperties` |
 | delivery | `feed/trade/TradeChannel` (`TRADE` messages, replay of `screener.trade-alerts.replay-size`); contract `.claude/docs/for-frontend/websocket-feed-api.md` §3.8 |
 | admin endpoints | `GET /api/monitoring/trade-alerts?venue=&symbol=&limit=` (each alert with `id`, `threshold` and `coalescedOnly`), `GET /api/monitoring/trade-alerts/summary` |
 | health log | trades table in `PipelineHealthLogger`: decoded/s, failures, alerts, coalescing-only alerts (`coal`) and alerts by fills per sweep, per 30 s |

@@ -36,21 +36,21 @@ class TradeChannelTest {
     private static final int CAPACITY = 5;
     private static final int REPLAY = 3;
 
-    private final TradeAlertProperties props = new TradeAlertProperties(1, null, CAPACITY, REPLAY);
+    private final TradeAlertProperties props = new TradeAlertProperties(1, null, null, CAPACITY, REPLAY, null, 250);
     private final TradeAlertStore store = new TradeAlertStore(props);
     private final TradeChannel channel = new TradeChannel(store, props);
 
     @Test
-    @DisplayName("one alert is one TRADE envelope: normalized symbol, data fields in contract order, notional at 2 dp")
+    @DisplayName("one alert is one TRADE envelope: normalized symbol, data fields in contract order, notional at 2 dp, levels not fills")
     void bodyShape() {
-        store.add(new TradeAlert(MEXC_SOL, false, 139.83, 4380.0, 612_455.4049, 500_000, 139.91, 139.74, 7,
+        store.add(new TradeAlert(MEXC_SOL, false, 139.83, 4380.0, 612_455.4049, 500_000, 139.91, 139.74, 7, 5,
                 true, 3_653_778_376L, 3_653_778_390L, T, T + 200));
         channel.drain();
 
         assertEquals(List.of("{\"type\":\"TRADE\",\"exchange\":\"MEXC\",\"market\":\"FUTURES\",\"symbol\":\"SOLUSDT\","
                         + "\"data\":{\"id\":\"MEXC_FUTURES:SOL_USDT:3653778376\",\"side\":\"SELL\",\"time\":1794931200123,"
                         + "\"notional\":612455.4,\"qty\":4380.0,\"avgPrice\":139.83,\"firstPrice\":139.91,"
-                        + "\"lastPrice\":139.74,\"levels\":7,\"threshold\":500000.0}}"),
+                        + "\"lastPrice\":139.74,\"levels\":5,\"threshold\":500000.0}}"),
                 updates(session()));
     }
 
@@ -176,6 +176,6 @@ class TradeChannelTest {
     }
 
     private static TradeAlert alert(Instrument instrument, long id, boolean buy) {
-        return new TradeAlert(instrument, buy, 100, 1000, 100_000, 30_000, 100, 100, 1, false, id, id, T, T);
+        return new TradeAlert(instrument, buy, 100, 1000, 100_000, 30_000, 100, 100, 1, 1, false, id, id, T, T);
     }
 }

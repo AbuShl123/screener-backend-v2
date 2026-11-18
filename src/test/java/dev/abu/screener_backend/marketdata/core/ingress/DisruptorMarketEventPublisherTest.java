@@ -25,7 +25,7 @@ class DisruptorMarketEventPublisherTest {
     @BeforeEach
     void setUp() {
         ring = RingBuffer.createMultiProducer(new MarketEventFactory(), 1);
-        DisruptorShardManager shards = new DisruptorShardManager(null, null, null, null, null, null, null) {
+        DisruptorShardManager shards = new DisruptorShardManager(null, null, null, null, null, null, null, null) {
             @Override
             public RingBuffer<MarketEvent> getRingBuffer(int instrumentId) {
                 return ring;

@@ -110,10 +110,13 @@ screener:
     recent-capacity: 500                 # alerts kept in TradeAlertStore
 ```
 
-- Bound to a `TradeAlertProperties` record in `config/`. The values above only show the shape;
-  `application.yml` ships the default and per-symbol entries from the slice 0 analysis (§10.2, Q1).
-- `TradeThresholds.minNotional(Instrument)` does two map lookups (`EnumMap<Venue, Map<String,
-  Double>>`, then the default). At under 1K trades/s that costs nothing, and Phase 6's per-user
+- Bound to a `TradeAlertProperties` record in `config/`. The values above only show the shape. The
+  thresholds ship in `src/main/resources/trade-thresholds.yml` (the default and per-symbol entries
+  from the slice 0 analysis, §10.2, Q1), which `application.yml` imports into this prefix; the
+  behaviour settings stay in `application.yml`. A per-venue `venue-default-min-notional` sits
+  between the two (`trade-mexc-plan.md` §2.8).
+- `TradeThresholds.minNotional(Instrument)` does up to three map lookups (the symbol override in
+  `EnumMap<Venue, Map<String, Double>>`, the venue default, then the global default). At under 1K trades/s that costs nothing, and Phase 6's per-user
   overrides layer onto one central lookup rather than a value copied into every slot.
 
 ### 2.6 Alerts and the store (slice 2)
@@ -359,8 +362,9 @@ multi-fill alerts against the Binance trade list.
 
 ## 7. Slice 4 — shard tick and stale-sweep flush (deferred, §10.4)
 
-Not part of Phase 2. Build it with Phase 4, whose burst windows need the same tick, or earlier if
-Phase 6 lets users set thresholds low enough to alert on thin symbols.
+Not part of Phase 2. **Built with MEXC instead**: `trade-mexc-plan.md` §2.6 and slice 3 hold the
+design, with the idle close configured per venue (Binance stays off). The sketch below is what it
+started from.
 
 - A scheduler publishes one `TICK` event per shard every `tick-interval` (starting idea 250 ms).
   `MarketEventHandler` handles it before the slot lookup (no instrument).
@@ -488,6 +492,14 @@ ladder steps across the quieter hours. In the sell-off it rises 1–4 steps (spo
 futures HYPE 150K → 750K). Any static list therefore swings about 5–8× in alert volume with the
 market. Revisit the list once the capture covers an Asia session and a weekend.
 
+**Replaced in `trade-mexc-plan.md` slice 4.** With MEXC added, every alert of both exchanges goes to
+every user, so the thresholds were re-derived for a whole-feed budget of ~120 alerts/h (that plan's
+§2.8): a $30K spot floor, a $100K futures floor, and a cap of 3 alerts/h per symbol (at most 7.5 in
+any full hour). On this capture that gives Binance spot 39/h and futures 52/h (10 and 13 overrides),
+and 176 / 224 during the sell-off, against 231 / 757 with the list below. The current values live in
+`src/main/resources/trade-thresholds.yml`, printed by `trade-capture/analysis/thresholds.py`. The
+slice 2 list was:
+
 ```yaml
 screener:
   trade-alerts:
@@ -535,7 +547,7 @@ screener:
 Other policies, derived over all 5.1 h (alerts/h spot / futures, overrides in brackets): floor 30K
 cap 10/h → 77 / 309 (4 / 22); floor 20K → 108 / 433 (7 / 31); cap 5/h → 53 / 191 (8 / 31); floor
 50K → 42 / 197 (3 / 12). `analyze.py --floor --cap` prints any other combination, and
-`analyze.py --thresholds <application.yml>` evaluates a configured list.
+`analyze.py --thresholds <trade-thresholds.yml>` evaluates a configured list.
 
 ### 10.3 Slice 3 continuation rule
 

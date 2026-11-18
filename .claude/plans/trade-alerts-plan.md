@@ -124,7 +124,7 @@ Each phase is shippable and builds on the one before. The first phases ship behi
 | 2 | **Decode and large-trade detection** | **Done** (slice 3's live comparison with the capture still open). Trade decoder SPI. Trade logic in the `TRADE` arm: side, notional, single static threshold, sweep coalescing (D3 layer 1). Fired alerts go to the recent-trades store. Metrics for trade rate and alert rate. Plan: `.claude/plans/trade-detection-plan.md`. |
 | 3 | **Delivery** | **Done.** `TradeChannel` bean; last-N replay on connect; entitlement gate; contract doc under `.claude/docs/for-frontend/`. First end-to-end release. Plan: `.claude/plans/trade-delivery-plan.md`; contract: `websocket-feed-api.md` §3.8. |
 | 4 | **Burst detection** | Per-instrument same-side window (D3 layer 2); burst alerts with a re-alert rule; burst tunables. |
-| 5 | **More venues** | Bybit and MEXC trade protocols and decoders, one venue at a time. |
+| 5 | **More venues** | Bybit and MEXC trade protocols and decoders, one venue at a time. **MEXC first** (trade alerts matter most on smaller exchanges): plan `.claude/plans/trade-mexc-plan.md`; transport, decoding and the futures idle close done (slices 1–3); slice 4 moved the thresholds to `trade-thresholds.yml` with a per-venue default, the MEXC values are provisional (4 h, no US open) until re-derived over busy hours, then the live check; streams off by default until then. Contract and reconnaissance: `external-docs/mexc/mexc-trades-empirical.md`. MEXC deals are fills against individual resting orders, not per-price aggregates, and include clock-driven deals that must be filtered. |
 | 6 | **Per-user thresholds** | Per ticker per exchange user override (D6), with live updates to connected sessions. |
 
 Possible later ideas, not committed: correlating trades with depth to label a vanished wall as
@@ -139,7 +139,9 @@ streams as a related signal.
   SOL. The per-symbol override map in D2 (or a multiplier for the high-liquidity set) is the likely
   answer. The default value and which symbols get overrides are decided from live data in Phase 2.
   *Starting values*: a $30K default plus overrides that cap each symbol at ~10 alerts/h (7 spot,
-  27 futures symbols; BTC futures $5M). See `trade-detection-plan.md` §10.2. A threshold scaled from
+  27 futures symbols; BTC futures $5M). See `trade-detection-plan.md` §10.2. *Current values*
+  (`trade-mexc-plan.md` §2.8): a ~120 alerts/h budget for the whole feed; floors $30K spot and
+  $100K futures; overrides cap each symbol at 3 alerts/h. A threshold scaled from
   each symbol's rolling volume fits those overrides closely (§10.5).
 - **Q2. Is the burst threshold the same as the single-trade threshold?** Probably higher, since a
   busy ticker accumulates $30K in seconds. Decide in Phase 4 from data.

@@ -9,6 +9,7 @@ import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.analysis.UserClassificationContext;
 import dev.abu.screener_backend.config.DisruptorProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
+import dev.abu.screener_backend.config.TradeAlertProperties;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
@@ -34,11 +35,14 @@ public class DisruptorShardManager {
     private final ExchangesProperties       exchangesProps;
     private final TradeDetector             tradeDetector;
     private final PipelineMetrics           metrics;
+    private final TradeAlertProperties      tradeAlertProps;
 
     private Disruptor<MarketEvent>[]  disruptors;
     private RingBuffer<MarketEvent>[] ringBuffers;
     private OrderBookClassifier[]     classifiers;
     private MarketEventHandler[]      handlers;
+    /** {@code null} when no venue has an idle close: then no tick is published at all. */
+    private ShardTicker               ticker;
 
     /** {@code shardCount - 1}; valid only because shardCount is validated as a power of two. */
     private int shardMask;
@@ -68,7 +72,7 @@ public class DisruptorShardManager {
                     new BlockingWaitStrategy()
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule, maxVisibleDistances);
-            handlers[i]    = new MarketEventHandler(i, slots, classifiers[i], tradeDetector, metrics);
+            handlers[i]    = new MarketEventHandler(i, shardCount, slots, classifiers[i], tradeDetector, metrics);
             disruptor.handleEventsWith(handlers[i]);
 
             ringBuffers[i] = disruptor.start();
@@ -76,6 +80,18 @@ public class DisruptorShardManager {
         }
         log.info("Disruptor pipeline started — {} shards, {} slots each, visibility caps {}",
                 shardCount, props.ringBufferSize(), maxVisibleDistances);
+
+        if (tradeAlertProps.idleCloseEnabled()) {
+            ticker = new ShardTicker(ringBuffers, metrics);
+            ticker.start(tradeAlertProps.tickIntervalMs());
+            log.info("Shard tick every {} ms for idle sweep closes {}",
+                    tradeAlertProps.tickIntervalMs(), tradeAlertProps.sweepIdleCloseMs());
+        }
+    }
+
+    /** Whether the shard tick runs: only when some venue has an idle close. For tests. */
+    boolean tickerRunning() {
+        return ticker != null && ticker.running();
     }
 
     /**
@@ -91,8 +107,8 @@ public class DisruptorShardManager {
     }
 
     /**
-     * Maps an instrument to its shard. Both producers — the WebSocket reader thread and the
-     * snapshot queue's Reactor thread — must route through this one expression: an instrument's
+     * Maps an instrument to its shard. Both producers of instrument events — the WebSocket reader
+     * thread and the snapshot queue's Reactor thread — must route through this one expression: an instrument's
      * events splitting across shards would mean two threads mutating one non-thread-safe book.
      *
      * <p>Dense ids make this a mask instead of {@code Math.abs(hashCode()) % n}, which distributes
@@ -138,6 +154,8 @@ public class DisruptorShardManager {
 
     @PreDestroy
     public void shutdown() {
+        // Stop the ticker first: it must not publish into a ring whose consumer is gone.
+        if (ticker != null) ticker.stop();
         for (Disruptor<MarketEvent> d : disruptors) {
             d.shutdown();
         }

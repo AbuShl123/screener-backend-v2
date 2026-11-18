@@ -5,9 +5,20 @@ import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 
 import java.nio.ByteBuffer;
 
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.WIRE_LEN;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.fieldNumber;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.lengthDelimited;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.malformed;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.next;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.range;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.readVarint32;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.skipScalar;
+import static dev.abu.screener_backend.marketdata.adapter.mexc.MexcProtobufWire.wireType;
+
 /**
  * Hand-written Protobuf wire reader for MEXC spot's {@code aggre.depth} push frames. Static and
- * allocation-free: no generated classes, no {@code String} per price (plan decision 2).
+ * allocation-free: no generated classes, no {@code String} per price (plan decision 2). The wire
+ * primitives live in {@link MexcProtobufWire}, shared with {@link MexcSpotDealsDecoder}.
  *
  * <h3>What a frame looks like</h3>
  * Measured on every push of the Phase 0 runs ({@code external-docs/mexc/mexc-spot-depth-empirical.md} §1):
@@ -57,13 +68,8 @@ final class MexcSpotFrameReader {
     static final int ITEM_PRICE = 1;
     static final int ITEM_QUANTITY = 2;
 
-    private static final int WIRE_VARINT = 0;
-    private static final int WIRE_I64 = 1;
-    private static final int WIRE_LEN = 2;
-    private static final int WIRE_I32 = 5;
-
     /** Returned by {@link #symbolRange} when the frame carries no routing key. */
-    static final long NO_RANGE = -1;
+    static final long NO_RANGE = MexcProtobufWire.NO_RANGE;
 
     /** 18 digits always fit a {@code long}; a version longer than that is not a version. */
     private static final int MAX_VERSION_DIGITS = 18;
@@ -89,9 +95,9 @@ final class MexcSpotFrameReader {
 
         while (pos < limit) {
             long tag = readVarint32(frame, pos, limit);
-            pos = lo(tag);
-            int field = fieldNumber(hi(tag));
-            int wireType = hi(tag) & 7;
+            pos = next(tag);
+            int field = fieldNumber(tag);
+            int wireType = wireType(tag);
 
             if (wireType != WIRE_LEN) {
                 pos = skipScalar(frame, wireType, pos, limit);
@@ -131,9 +137,9 @@ final class MexcSpotFrameReader {
 
         while (pos < limit) {
             long tag = readVarint32(frame, pos, limit);
-            pos = lo(tag);
-            int field = fieldNumber(hi(tag));
-            int wireType = hi(tag) & 7;
+            pos = next(tag);
+            int field = fieldNumber(tag);
+            int wireType = wireType(tag);
 
             if (wireType != WIRE_LEN) {
                 pos = skipScalar(frame, wireType, pos, limit);
@@ -180,9 +186,9 @@ final class MexcSpotFrameReader {
 
         while (pos < limit) {
             long tag = readVarint32(frame, pos, limit);
-            pos = lo(tag);
-            int field = fieldNumber(hi(tag));
-            int wireType = hi(tag) & 7;
+            pos = next(tag);
+            int field = fieldNumber(tag);
+            int wireType = wireType(tag);
 
             if (wireType != WIRE_LEN) {
                 pos = skipScalar(frame, wireType, pos, limit);
@@ -207,9 +213,9 @@ final class MexcSpotFrameReader {
 
         while (pos < limit) {
             long tag = readVarint32(frame, pos, limit);
-            pos = lo(tag);
-            int field = fieldNumber(hi(tag));
-            int wireType = hi(tag) & 7;
+            pos = next(tag);
+            int field = fieldNumber(tag);
+            int wireType = wireType(tag);
 
             if (wireType != WIRE_LEN) {
                 pos = skipScalar(frame, wireType, pos, limit);
@@ -241,9 +247,9 @@ final class MexcSpotFrameReader {
 
         while (pos < limit) {
             long tag = readVarint32(frame, pos, limit);
-            pos = lo(tag);
-            int field = fieldNumber(hi(tag));
-            int wireType = hi(tag) & 7;
+            pos = next(tag);
+            int field = fieldNumber(tag);
+            int wireType = wireType(tag);
 
             if (wireType != WIRE_LEN) {
                 pos = skipScalar(frame, wireType, pos, limit);
@@ -275,98 +281,13 @@ final class MexcSpotFrameReader {
         return value;
     }
 
-    // --- Wire primitives -----------------------------------------------------------------------
-
-    /**
-     * Reads a varint that must fit a non-negative {@code int} — a tag or a length.
-     *
-     * @return {@code (value << 32) | next}, {@code next} being the index after the varint
-     */
-    private static long readVarint32(ByteBuffer buf, int pos, int limit) {
-        long value = 0;
-        for (int shift = 0; shift < 35; shift += 7) {
-            if (pos >= limit) {
-                throw malformed("truncated varint");
-            }
-            byte b = buf.get(pos++);
-            value |= (long) (b & 0x7F) << shift;
-            if (b >= 0) {
-                if (value > Integer.MAX_VALUE) {
-                    throw malformed("varint " + value + " exceeds int");
-                }
-                return (value << 32) | pos;
-            }
-        }
-        throw malformed("varint longer than 5 bytes");
-    }
-
-    /** Reads a length prefix at {@code pos}, checks the field fits its enclosing message, and returns its range. */
-    private static long lengthDelimited(ByteBuffer buf, int pos, int limit) {
-        long length = readVarint32(buf, pos, limit);
-        int start = lo(length);
-        if (hi(length) > limit - start) {
-            throw malformed("field of " + hi(length) + " bytes runs past its message");
-        }
-        return range(start, start + hi(length));
-    }
-
-    /** Skips a field that is not length-delimited, returning the index after it. */
-    private static int skipScalar(ByteBuffer buf, int wireType, int pos, int limit) {
-        int next = switch (wireType) {
-            case WIRE_VARINT -> skipVarint64(buf, pos, limit);
-            case WIRE_I64 -> pos + 8;
-            case WIRE_I32 -> pos + 4;
-            default -> throw malformed("unsupported wire type " + wireType);
-        };
-        if (next > limit) {
-            throw malformed("fixed-width field runs past its message");
-        }
-        return next;
-    }
-
-    private static int skipVarint64(ByteBuffer buf, int pos, int limit) {
-        for (int i = 0; i < 10; i++) {
-            if (pos >= limit) {
-                throw malformed("truncated varint");
-            }
-            if (buf.get(pos++) >= 0) {
-                return pos;
-            }
-        }
-        throw malformed("varint longer than 10 bytes");
-    }
-
-    private static int fieldNumber(int key) {
-        int field = key >>> 3;
-        if (field == 0) {
-            throw malformed("field number 0");
-        }
-        return field;
-    }
-
-    // --- Packed ranges -------------------------------------------------------------------------
+    // --- Packed ranges (MexcProtobufWire) ------------------------------------------------------
 
     static int start(long range) {
-        return hi(range);
+        return MexcProtobufWire.start(range);
     }
 
     static int end(long range) {
-        return lo(range);
-    }
-
-    private static long range(int start, int end) {
-        return ((long) start << 32) | end;
-    }
-
-    private static int hi(long packed) {
-        return (int) (packed >>> 32);
-    }
-
-    private static int lo(long packed) {
-        return (int) packed;
-    }
-
-    private static IllegalStateException malformed(String what) {
-        return new IllegalStateException("MEXC spot frame: " + what);
+        return MexcProtobufWire.end(range);
     }
 }

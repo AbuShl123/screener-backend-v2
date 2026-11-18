@@ -15,6 +15,7 @@ import dev.abu.screener_backend.marketdata.spi.InstrumentSource;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
 import dev.abu.screener_backend.marketdata.spi.VenueStrategyBinding;
 import dev.abu.screener_backend.marketdata.spi.VenueStreamBinding;
+import dev.abu.screener_backend.marketdata.spi.VenueTradeDecoderBinding;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -106,14 +107,44 @@ public class MexcAdapterConfig {
     VenueStreamBinding mexcSpotStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.MEXC_SPOT, StreamKind.DEPTH);
         return new VenueStreamBinding(depth,
-                new MexcSpotStreamProtocol(Venue.MEXC_SPOT, exchanges.stream(depth)));
+                MexcSpotStreamProtocol.depth(Venue.MEXC_SPOT, exchanges.stream(depth)));
     }
 
     @Bean
     VenueStreamBinding mexcFuturesStreamBinding(ExchangesProperties exchanges) {
         StreamKey depth = new StreamKey(Venue.MEXC_FUTURES, StreamKind.DEPTH);
         return new VenueStreamBinding(depth,
-                new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, exchanges.stream(depth)));
+                MexcFuturesStreamProtocol.depth(Venue.MEXC_FUTURES, exchanges.stream(depth)));
+    }
+
+    /** Spot deals: {@code spot@public.aggre.deals.v3.api.pb@100ms@<SYMBOL>}, binary Protobuf. */
+    @Bean
+    VenueStreamBinding mexcSpotTradeStreamBinding(ExchangesProperties exchanges) {
+        StreamKey trade = new StreamKey(Venue.MEXC_SPOT, StreamKind.TRADE);
+        return new VenueStreamBinding(trade,
+                MexcSpotStreamProtocol.deals(Venue.MEXC_SPOT, exchanges.stream(trade)));
+    }
+
+    /** Futures deals: {@code sub.deal}, JSON. */
+    @Bean
+    VenueStreamBinding mexcFuturesTradeStreamBinding(ExchangesProperties exchanges) {
+        StreamKey trade = new StreamKey(Venue.MEXC_FUTURES, StreamKind.TRADE);
+        return new VenueStreamBinding(trade,
+                MexcFuturesStreamProtocol.deal(Venue.MEXC_FUTURES, exchanges.stream(trade)));
+    }
+
+    /**
+     * The two venues' deal frames share nothing (binary Protobuf vs JSON, different filters and
+     * sweep closing), so each has its own decoder.
+     */
+    @Bean
+    VenueTradeDecoderBinding mexcSpotTradeDecoderBinding() {
+        return new VenueTradeDecoderBinding(Venue.MEXC_SPOT, new MexcSpotDealsDecoder());
+    }
+
+    @Bean
+    VenueTradeDecoderBinding mexcFuturesTradeDecoderBinding() {
+        return new VenueTradeDecoderBinding(Venue.MEXC_FUTURES, new MexcFuturesDealDecoder());
     }
 
     @Bean

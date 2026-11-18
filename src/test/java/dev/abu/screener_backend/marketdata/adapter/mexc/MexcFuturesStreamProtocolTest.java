@@ -4,7 +4,6 @@ import dev.abu.screener_backend.config.ExchangesProperties.StreamProperties;
 import dev.abu.screener_backend.config.TestVenueProps;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.Venue;
-import dev.abu.screener_backend.marketdata.adapter.mexc.MexcFuturesStreamProtocol;
 import dev.abu.screener_backend.marketdata.spi.Heartbeat;
 import dev.abu.screener_backend.marketdata.spi.StreamProtocol;
 import dev.abu.screener_backend.marketdata.core.stream.SubscriptionIndex;
@@ -21,8 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * {@link MexcFuturesStreamProtocol} against MEXC frame shapes as actually delivered
- * ({@code external-docs/mexc/mexc-depth-versioning-empirical.md}) — notably {@code channel}
- * <em>last</em> in a depth push, unlike the docs.
+ * ({@code external-docs/mexc/mexc-depth-versioning-empirical.md}, {@code mexc-trades-empirical.md} §2)
+ * — notably {@code channel} <em>last</em> in a push, unlike the docs.
  */
 class MexcFuturesStreamProtocolTest {
 
@@ -35,7 +34,9 @@ class MexcFuturesStreamProtocolTest {
     }
 
     private static final MexcFuturesStreamProtocol PROTOCOL =
-            new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, props(1));
+            MexcFuturesStreamProtocol.depth(Venue.MEXC_FUTURES, props(1));
+    private static final MexcFuturesStreamProtocol DEAL =
+            MexcFuturesStreamProtocol.deal(Venue.MEXC_FUTURES, props(1));
 
     private static final SubscriptionIndex INDEX = new SubscriptionIndex(List.of(BTC, ETH), PROTOCOL::routingKey);
 
@@ -47,10 +48,63 @@ class MexcFuturesStreamProtocolTest {
     }
 
     @Test
-    @DisplayName("a chunk size other than 1 fails at construction: sub.depth takes one symbol")
+    @DisplayName("a chunk size other than 1 fails at construction: sub.depth and sub.deal take one symbol")
     void chunkSizeMustBeOne() {
         assertThrows(IllegalArgumentException.class,
-                () -> new MexcFuturesStreamProtocol(Venue.MEXC_FUTURES, props(2)));
+                () -> MexcFuturesStreamProtocol.depth(Venue.MEXC_FUTURES, props(2)));
+        assertThrows(IllegalArgumentException.class,
+                () -> MexcFuturesStreamProtocol.deal(Venue.MEXC_FUTURES, props(2)));
+    }
+
+    // --- deal channel ----------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("the deal protocol subscribes with a single-symbol sub.deal")
+    void dealSubscribeFrame() {
+        assertEquals("{\"method\":\"sub.deal\",\"param\":{\"symbol\":\"ETH_USDT\"}}",
+                DEAL.subscribeFrame(List.of(ETH), 4));
+    }
+
+    @Test
+    @DisplayName("a deal push in the delivered order (symbol first, channel last) routes to its instrument")
+    void dealRoutesDeliveredOrder() {
+        String frame = "{\"symbol\":\"BTC_USDT\",\"data\":["
+                + "{\"p\":64670.8,\"v\":1,\"T\":1,\"O\":1,\"M\":2,\"t\":1794983337848,\"i\":\"17067813085\",\"cts\":\"1794983337848\"},"
+                + "{\"p\":64670.8,\"v\":1,\"T\":1,\"O\":1,\"M\":2,\"t\":1794983337847,\"i\":\"17067813084\",\"cts\":\"1794983337847\"}],"
+                + "\"channel\":\"push.deal\",\"ts\":1794983337848}";
+
+        assertEquals(11, DEAL.route(frame, INDEX));
+    }
+
+    @Test
+    @DisplayName("a deal push in the documented order (channel first) still routes")
+    void dealRoutesDocumentedOrder() {
+        String frame = "{\"channel\":\"push.deal\",\"data\":[{\"p\":3450.1,\"v\":2,\"T\":2,\"O\":3,\"M\":2,"
+                + "\"t\":1,\"i\":\"5\"}],\"symbol\":\"ETH_USDT\",\"ts\":1}";
+
+        assertEquals(12, DEAL.route(frame, INDEX));
+    }
+
+    @Test
+    @DisplayName("each protocol routes only its own channel's channel-led pushes")
+    void channelLedPushOfTheOtherChannelIgnored() {
+        String depth = "{\"channel\":\"push.depth\",\"data\":{},\"symbol\":\"BTC_USDT\",\"ts\":1}";
+        String deal = "{\"channel\":\"push.deal\",\"data\":[],\"symbol\":\"BTC_USDT\",\"ts\":1}";
+
+        assertEquals(StreamProtocol.IGNORED, DEAL.route(depth, INDEX));
+        assertEquals(StreamProtocol.IGNORED, PROTOCOL.route(deal, INDEX));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"channel\":\"rs.sub.deal\",\"data\":\"success\",\"ts\":1794983318045}",
+            "{\"channel\":\"rs.sub.deal\",\"data\":\"Contract does not exist\",\"ts\":1794983318045}",
+            "{\"channel\":\"pong\",\"data\":1794983318045,\"ts\":1794983318045}",
+            "{\"channel\":\"rs.error\",\"data\":\"invalid method\",\"ts\":1794983318045}"
+    })
+    @DisplayName("the deal protocol ignores acks, pongs and errors")
+    void dealControlFramesIgnored(String frame) {
+        assertEquals(StreamProtocol.IGNORED, DEAL.route(frame, INDEX));
     }
 
     @Test
@@ -111,8 +165,10 @@ class MexcFuturesStreamProtocolTest {
     }
 
     @Test
-    @DisplayName("heartbeat is a lower-case text ping at the configured interval")
+    @DisplayName("heartbeat is a lower-case text ping at the configured interval, on either channel")
     void heartbeat() {
-        assertEquals(new Heartbeat.TextPing(Duration.ofSeconds(15), "{\"method\":\"ping\"}"), PROTOCOL.heartbeat());
+        Heartbeat ping = new Heartbeat.TextPing(Duration.ofSeconds(15), "{\"method\":\"ping\"}");
+        assertEquals(ping, PROTOCOL.heartbeat());
+        assertEquals(ping, DEAL.heartbeat());
     }
 }

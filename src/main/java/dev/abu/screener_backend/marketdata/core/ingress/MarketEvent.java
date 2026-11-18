@@ -18,6 +18,9 @@ import java.nio.ByteBuffer;
  * binary frame in {@link #rawBytes}, and {@code REST_FAILED} carries neither. Which one a venue's
  * {@code WS_MSG} uses is fixed by its wire protocol, so the stream's handler reads the right field
  * without checking.
+ *
+ * <p>A {@link EventSource#TICK} event carries neither payload, no stream kind and
+ * {@code instrumentId = -1}.
  */
 public class MarketEvent {
     public EventSource source;

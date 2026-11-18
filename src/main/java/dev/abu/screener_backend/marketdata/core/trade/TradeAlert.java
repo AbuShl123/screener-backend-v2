@@ -16,17 +16,22 @@ import dev.abu.screener_backend.marketdata.Instrument;
  * @param notional       executed quote amount, the sum of {@code price × qty} over the fills
  * @param minNotional    the threshold the sweep was judged against ({@link TradeThresholds#minNotional});
  *                       {@code notional ≥ minNotional} always
- * @param firstPrice    price of the first fill
+ * @param firstPrice     price of the first fill
  * @param lastPrice      price of the last fill
  * @param fills          number of {@code TradeSink.onTrade} calls folded in; {@code 1} for a single
  *                       trade
- * @param coalescedOnly  {@code true} when no single fill reached the threshold on its own: the alert
- *                       exists only because the fills were summed. Always {@code false} for one fill.
+ * @param levels         price levels taken, {@code 1 ≤ levels ≤ fills}. Equal to {@code fills} on
+ *                       Binance, where each fill of a sweep has its own price; fewer on venues that
+ *                       report one fill per resting order (MEXC), where several fills share a level.
+ * @param coalescedOnly  {@code true} when no single price level's summed notional reached the
+ *                       threshold: the alert exists only because the levels were summed. Always
+ *                       {@code false} for one level.
  * @param firstTradeId   first venue trade id, or {@code -1} when the venue has none
  * @param lastTradeId    last venue trade id, or {@code -1}
  * @param tradeTimeMs    venue trade time, epoch millis
- * @param detectedAtMs   local time the alert was raised, epoch millis. A sweep is judged when the
- *                       instrument's next trade closes it, so this includes that wait.
+ * @param detectedAtMs   local time the alert was raised, epoch millis. It includes the wait for the
+ *                       sweep to close: the instrument's next trade, the end of the frame on a venue
+ *                       that closes sweeps there, or the idle close on a venue that has one.
  */
 public record TradeAlert(
         Instrument instrument,
@@ -38,6 +43,7 @@ public record TradeAlert(
         double firstPrice,
         double lastPrice,
         int fills,
+        int levels,
         boolean coalescedOnly,
         long firstTradeId,
         long lastTradeId,

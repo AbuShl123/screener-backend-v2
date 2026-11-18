@@ -9,7 +9,8 @@ import org.springframework.stereotype.Component;
 import java.nio.ByteBuffer;
 
 /**
- * The single fill-and-publish site for both producers.
+ * The single fill-and-publish site for both instrument-event producers. The shard tick, which has
+ * no instrument and must never block, publishes from {@link ShardTicker} instead.
  *
  * <p>Claims with the blocking {@code rb.next()}: a full ring stalls the calling thread — for
  * {@code WS_MSG}, a WebSocket reader thread and so its whole connection. This class is the one

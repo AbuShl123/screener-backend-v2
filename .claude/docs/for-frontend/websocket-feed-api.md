@@ -292,8 +292,8 @@ One **taker order** (a market order, or a limit order that crossed the spread) e
 least the symbol's threshold. Someone actually paid this much; unlike a depth level, it cannot be
 cancelled. A trade alert is an **event, not state**: it is never updated or removed later.
 
-Trade alerts exist today for **Binance spot and futures**. Other exchanges will follow with the
-same shape. Every session receives every alert: there is no per-user filtering on the server yet,
+Trade alerts exist for **Binance spot and futures** and **MEXC spot and futures** (MEXC rolling
+out). Other exchanges will follow with the same shape. Every session receives every alert: there is no per-user filtering on the server yet,
 so filters (exchange, market, symbol, size) are applied in the UI. Custom classification rules do
 not affect trades.
 
@@ -330,7 +330,7 @@ An order bigger than the best level eats it and continues to the next price, the
 **sweep**. The exchange reports each price level as a separate trade; the server joins them back
 into one alert.
 
-- `levels` is the number of price levels taken. Each is a different price, moving in the taker's
+- `levels` is the number of distinct price levels taken. Each is a different price, moving in the taker's
   direction: for `BUY` `lastPrice > firstPrice`, for `SELL` `lastPrice < firstPrice`.
 - `levels: 1` is one large fill at one price: the order hit one level big enough to absorb it (a
   wall, or hidden size). `firstPrice == lastPrice == avgPrice`.
@@ -345,15 +345,26 @@ into one alert.
   It is how far the one order moved the price. A large `levels` with a small impact means a dense
   book; few levels with a large impact means a thin one.
 
-Limits of what the exchange reports: on futures, Binance merges same-price fills over about 100ms,
-so rarely an alert is two or more orders the exchange itself merged. On spot, two orders at the same
-price in the same millisecond (one algorithm's child orders) arrive as two alerts. Neither can be
-told apart from the data.
+`levels` counts price levels, not fills. On MEXC one order often fills against several resting
+orders at the same price; those count as one level.
+
+Limits of what the exchange reports:
+
+- **Binance futures** merges same-price fills over about 100ms, so rarely an alert is two or more
+  orders the exchange itself merged. On **Binance spot**, two orders at the same price in the same
+  millisecond (one algorithm's child orders) arrive as two alerts. Neither can be told apart from
+  the data.
+- **MEXC spot** reports which order each fill belongs to, so a sweep is exactly one order. MEXC
+  spot also publishes synthetic and self-matched trades; the server drops them and never alerts on
+  them.
+- **MEXC futures** does not identify the order, so fills of the same side in the same millisecond
+  with consecutive trade ids are joined: rarely, two orders placed in the same millisecond become
+  one alert. Self-trades (one account on both sides) are dropped.
 
 #### 3.8.3 Size: `notional`, `threshold`
 
-Thresholds differ per symbol, from $30K on most coins to $5M on BTC futures, so that each symbol
-alerts at a readable rate. Raw `notional` therefore doesn't compare across symbols: $600K is routine
+Thresholds differ per symbol: at least $30K on spot and $100K on futures, up to $5M on BTC futures,
+so that each symbol alerts at a readable rate. Raw `notional` therefore doesn't compare across symbols: $600K is routine
 on BTC and huge on a small coin. Use the **relative size** for emphasis, the way `tier` drives
 emphasis for depth:
 
@@ -371,9 +382,14 @@ user's own value. Always read it from the alert, never hardcode it.
 #### 3.8.4 Time, delay and order
 
 - `time` is the exchange's execution time. Show age from it (`Date.now() - time`).
-- **Delay**: an alert usually arrives a few hundred ms after `time`. A sweep is only known to be
-  over when that symbol trades again, and Binance futures sends the last part of a sweep up to
-  ~150ms late. On a rarely traded symbol the delay can be several seconds.
+- **Delay**: it depends on how the exchange reports a sweep's end.
+  - **Binance**: a sweep is only known to be over when that symbol trades again, so an alert
+    usually arrives a few hundred ms after `time`; Binance futures sends the last part of a sweep up
+    to ~150ms late. On a rarely traded symbol the delay can be several seconds.
+  - **MEXC spot**: an order's fills arrive together in one 100ms batch, so the alert follows
+    within about 100–200ms.
+  - **MEXC futures**: a sweep is judged once no fill has arrived for ~1.5s, so expect about
+    1.5–2s.
 - **Arrival order is detection order, not execution order.** A futures alert can arrive after a spot
   alert that executed later. Keep your list sorted by `time` (then `id` to break ties), don't just
   prepend.
@@ -390,15 +406,16 @@ right after a server restart: alerts are kept in memory only).
   `TRADE` messages may trigger a toast or sound. Otherwise every reconnect, rule edit or
   `SNAPSHOT_REQUEST` would replay up to 100 notifications.
 - Alerts that fired while you were disconnected are recovered only if they are still among the
-  latest 100. In a quiet market that covers roughly the last 20–40 minutes, in a volatile one a few
+  latest 100. In a normal market that covers roughly the last hour, in a volatile one about 15
   minutes.
 - Cap your own list (e.g. a few hundred alerts, or by age). The server never tells you to remove an
   alert.
 
 #### 3.8.6 Presentation notes (suggestions, not contract)
 
-- **Rate**: measured over one afternoon, roughly 150–250 alerts/hour in total in quiet hours and
-  ~1,000/hour in a sell-off, arriving in bursts during sharp moves. About 80% are futures.
+- **Rate**: the thresholds aim at about 120 alerts/hour in total across all exchanges, about 60%
+  of them futures. Quiet hours are lower; a sell-off can briefly reach ~400/hour, arriving in
+  bursts during sharp moves.
   A list or tape absorbs that; toasts need a user-set minimum (relative size or notional), a mute
   switch and client-side rate limiting.
 - **Prices**: `firstPrice` and `lastPrice` are exchange prices and print cleanly. Format `avgPrice`

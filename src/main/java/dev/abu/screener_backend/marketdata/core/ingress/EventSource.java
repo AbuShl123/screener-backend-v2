@@ -15,6 +15,8 @@ package dev.abu.screener_backend.marketdata.core.ingress;
  * it, and losing it strands that requester with nothing in flight (for a depth snapshot, the book
  * stays in {@code RECOVERING}). When {@code WS_MSG} moves to a non-blocking {@code tryNext()}
  * claim (P3), both REST sources keep the blocking one.
+ *
+ * <p>{@link #TICK} is the one source with no venue behind it: core's own timer.
  */
 public enum EventSource {
     /**
@@ -29,5 +31,12 @@ public enum EventSource {
      * {@code rawBytes} are {@code null}. Still provenance: it says the call ended with nothing to
      * apply, not why.
      */
-    REST_FAILED
+    REST_FAILED,
+    /**
+     * Core's shard tick ({@code ShardTicker}): a signal to the shard's consumer that time has passed,
+     * with no instrument ({@code instrumentId = -1}), no stream kind and no payload. The consumer
+     * handles it before any slot lookup. Unlike the REST sources it may be dropped: a tick that does
+     * not fit a full ring is skipped, because the next one follows.
+     */
+    TICK
 }
