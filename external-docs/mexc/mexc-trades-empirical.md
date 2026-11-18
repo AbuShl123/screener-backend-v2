@@ -193,6 +193,39 @@ fires ≤ 10/h):
   contracts with < 0.1 real deals/s. Examples: SUI 39 alerts at 0.09 deals/s, DOT 18 at 0.03, ADA 9 at
   0.05. Real `M=2` flow on MEXC is sparse and lumpy even on large caps.
 
+### 5.1 Over 10.7 h, through the US open, and the shipped thresholds
+
+The tables above are the first 4 h. Over the capture to 2026-11-18 17:31 UTC (10.7 h, three hours past
+the US open), the $30K futures floor with the 10/h cap gives **143 alerts/h on average and 282 in the
+busiest hour**, more than the 4 h estimate. Futures volume is driven by the busy contracts: at cap 10,
+ETH, HYPE, XRP and DOGE each fire ~8/h, so a higher floor alone barely helps (still 34/h at $150K).
+
+The shipped thresholds follow a different policy, set for a whole-feed budget of ~120 alerts/h across
+Binance and MEXC (`trade-mexc-plan.md` §2.8): a floor that is large in absolute terms ($30K spot, $100K
+futures, the same on every exchange), and a cap of **3 alerts/h** per symbol on average and at most 7.5
+in any full hour. Derived by `trade-capture/analysis/thresholds.py`:
+
+| venue | floor | alerts/h | worst full hour | symbols alerting | overrides |
+|---|---|---|---|---|---|
+| spot | $30K | 2.5 | 5 | 5 | 0 |
+| futures | $100K | 18 | 38 | 31 | 5 |
+
+- Futures overrides: `BTC_USDT` 2M, `ETH_USDT` 1.5M, `SOL_USDT` 500K, `XRP_USDT` 500K, `ZEC_USDT` 300K.
+  The most frequent: ZEC 2.4/h, SOL 2.1, BTC 1.7, SUI 1.2, DOGE 1.1.
+- Spot alerts on ETH, BTC, NEAR, SOL and XRP; a thin market is not pushed to a lower floor just to
+  produce alerts.
+- The cost: futures contracts with an alert drop from 55 (at $30K) to 31. A `MEXC_FUTURES` default of
+  $50K would add ~22 alerts/h.
+
+Floor × cap, futures (average alerts/h, worst full hour in brackets):
+
+| floor | cap 10 | cap 5 | cap 3 | cap 2 |
+|---|---|---|---|---|
+| $30K | 138 (243) | 79 (137) | 51 (93) | 35 (63) |
+| $50K | 78 (142) | 52 (96) | 41 (74) | 31 (58) |
+| $100K | 35 (74) | 22 (50) | **18 (38)** | 13 (30) |
+| $150K | 29 (62) | 15 (37) | 12 (24) | 8 (16) |
+
 Rates (whole universe):
 
 | venue | frames/s | deals/s | deals per frame p50 / p99 / max | filtered deals/s |

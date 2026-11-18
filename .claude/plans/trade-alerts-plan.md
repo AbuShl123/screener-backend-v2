@@ -139,7 +139,9 @@ streams as a related signal.
   SOL. The per-symbol override map in D2 (or a multiplier for the high-liquidity set) is the likely
   answer. The default value and which symbols get overrides are decided from live data in Phase 2.
   *Starting values*: a $30K default plus overrides that cap each symbol at ~10 alerts/h (7 spot,
-  27 futures symbols; BTC futures $5M). See `trade-detection-plan.md` §10.2. A threshold scaled from
+  27 futures symbols; BTC futures $5M). See `trade-detection-plan.md` §10.2. *Current values*
+  (`trade-mexc-plan.md` §2.8): a ~120 alerts/h budget for the whole feed; floors $30K spot and
+  $100K futures; overrides cap each symbol at 3 alerts/h. A threshold scaled from
   each symbol's rolling volume fits those overrides closely (§10.5).
 - **Q2. Is the burst threshold the same as the single-trade threshold?** Probably higher, since a
   busy ticker accumulates $30K in seconds. Decide in Phase 4 from data.

@@ -492,7 +492,13 @@ ladder steps across the quieter hours. In the sell-off it rises 1–4 steps (spo
 futures HYPE 150K → 750K). Any static list therefore swings about 5–8× in alert volume with the
 market. Revisit the list once the capture covers an Asia session and a weekend.
 
-The block lives in `src/main/resources/trade-thresholds.yml` (imported by `application.yml`):
+**Replaced in `trade-mexc-plan.md` slice 4.** With MEXC added, every alert of both exchanges goes to
+every user, so the thresholds were re-derived for a whole-feed budget of ~120 alerts/h (that plan's
+§2.8): a $30K spot floor, a $100K futures floor, and a cap of 3 alerts/h per symbol (at most 7.5 in
+any full hour). On this capture that gives Binance spot 39/h and futures 52/h (10 and 13 overrides),
+and 176 / 224 during the sell-off, against 231 / 757 with the list below. The current values live in
+`src/main/resources/trade-thresholds.yml`, printed by `trade-capture/analysis/thresholds.py`. The
+slice 2 list was:
 
 ```yaml
 screener:

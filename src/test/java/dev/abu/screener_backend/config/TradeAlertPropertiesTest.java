@@ -42,29 +42,30 @@ class TradeAlertPropertiesTest {
         assertEquals(30_000, props.defaultMinNotional());
         assertEquals(100, props.recentCapacity());
         assertEquals(100, props.replaySize());
-        assertEquals(Map.of(Venue.MEXC_SPOT, 10_000.0), props.venueDefaultMinNotional());
+        assertEquals(Map.of(Venue.BINANCE_FUTURES, 100_000.0, Venue.MEXC_FUTURES, 100_000.0),
+                props.venueDefaultMinNotional());
         assertEquals(Set.of(Venue.BINANCE_SPOT, Venue.BINANCE_FUTURES, Venue.MEXC_FUTURES),
                 props.minNotional().keySet());
 
         // Symbol keys keep their case: overrides are matched against Instrument.nativeSymbol.
         Map<String, Double> spot = props.minNotional().get(Venue.BINANCE_SPOT);
-        assertEquals(7, spot.size(), String.valueOf(spot));
-        assertEquals(500_000, spot.get("BTCUSDT"));
-        assertEquals(50_000, spot.get("ZECUSDT"));
+        assertEquals(10, spot.size(), String.valueOf(spot));
+        assertEquals(750_000, spot.get("BTCUSDT"));
+        assertEquals(75_000, spot.get("ZECUSDT"));
 
         Map<String, Double> futures = props.minNotional().get(Venue.BINANCE_FUTURES);
-        assertEquals(28, futures.size(), String.valueOf(futures));
+        assertEquals(13, futures.size(), String.valueOf(futures));
         assertEquals(5_000_000, futures.get("BTCUSDT"));
-        assertEquals(3_000_000, futures.get("ETHUSDT"));
+        assertEquals(5_000_000, futures.get("ETHUSDT"));
         // A key starting with a digit binds unchanged.
         assertEquals(150_000, futures.get("1000PEPEUSDT"));
-        assertEquals(50_000, futures.get("WLDUSDT"));
+        assertEquals(150_000, futures.get("SUIUSDT"));
 
         // MEXC futures native symbols carry an underscore, which binds unchanged.
         Map<String, Double> mexcFutures = props.minNotional().get(Venue.MEXC_FUTURES);
         assertEquals(5, mexcFutures.size(), String.valueOf(mexcFutures));
-        assertEquals(750_000, mexcFutures.get("BTC_USDT"));
-        assertEquals(150_000, mexcFutures.get("XRP_USDT"));
+        assertEquals(2_000_000, mexcFutures.get("BTC_USDT"));
+        assertEquals(500_000, mexcFutures.get("XRP_USDT"));
 
         // Every override raises the floor; none is at or below its venue's default.
         props.minNotional().forEach((venue, symbols) -> symbols.forEach((symbol, value) ->
@@ -86,9 +87,9 @@ class TradeAlertPropertiesTest {
                 .run("--spring.main.web-application-type=none")) {
             TradeAlertProperties props = ctx.getBean(TradeAlertProperties.class);
             assertEquals(30_000, props.defaultMinNotional());
-            assertEquals(10_000, props.venueDefaultMinNotional().get(Venue.MEXC_SPOT));
+            assertEquals(100_000, props.venueDefaultMinNotional().get(Venue.MEXC_FUTURES));
             assertEquals(5_000_000, props.minNotional().get(Venue.BINANCE_FUTURES).get("BTCUSDT"));
-            assertEquals(750_000, props.minNotional().get(Venue.MEXC_FUTURES).get("BTC_USDT"));
+            assertEquals(2_000_000, props.minNotional().get(Venue.MEXC_FUTURES).get("BTC_USDT"));
             assertEquals(250, props.tickIntervalMs());
         }
     }

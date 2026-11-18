@@ -197,13 +197,23 @@ accepted. Spot's close delay becomes zero.
 
 ### 2.8 Thresholds, alerts, delivery
 
-- **Per-venue floor.** Real spot flow is tiny: a $30K floor gives 2.5 spot alerts/h, $10K gives 8/h.
-  `TradeAlertProperties` gains `venue-default-min-notional`, a per-venue default between the symbol
-  overrides and the global default. `TradeThresholds` looks up the symbol override, then the venue
-  default, then the global default.
-- **Futures keeps the $30K floor on thin contracts.** 38% of futures alerts come from contracts with
-  < 0.1 real deals/s. A $30K order is large for them, and self-trades are already dropped. Revisit
-  only if users ask.
+- **A budget for the whole feed.** `TradeChannel` sends every alert to every session, so Binance and
+  MEXC share one budget of about **120 alerts/h**. The policy is the same on every exchange:
+  - **A floor that is large in absolute terms**: $30K on spot, $100K on futures (leveraged, and far
+    more volume). A thin market keeps the floor and alerts only when a large trade happens. It is
+    never given a lower floor to produce alerts: an alert is worth showing for its size, not its
+    frequency. MEXC spot is therefore rare (2.5/h).
+  - **A cap of 3 alerts/h per symbol**: a busy symbol gets the lowest ladder step at which it
+    averages at most 3/h over the capture and stays at or under 7.5 in every full hour.
+  - With a $30K futures floor the budget can't be met: Binance futures alone is 105/h even at a 2/h
+    cap. At cap 10 the busy contracts dominate (ETH, HYPE, XRP, DOGE ~8/h each on MEXC), so a
+    higher floor alone barely helps.
+- **Per-venue floor.** `TradeAlertProperties` gains `venue-default-min-notional`, a per-venue default
+  between the symbol overrides and the global default. `TradeThresholds` looks up the symbol
+  override, then the venue default, then the global default. The global default is the spot floor;
+  both futures venues set $100K.
+- **Thin futures contracts lose the $30K–100K band.** Contracts with an alert drop from 55 to 31 on
+  MEXC futures. A `MEXC_FUTURES` default of $50K would add ~22 alerts/h. Revisit when users report.
 - **Thresholds live in their own file.** The thresholds are data derived from the captures, and they
   make up most of the `trade-alerts` block. They move to `src/main/resources/trade-thresholds.yml`,
   which keeps the `screener.trade-alerts` prefix. `application.yml` imports it:
@@ -223,22 +233,24 @@ accepted. Spot's close delay becomes zero.
   - The analysis scripts print their venues' blocks in this file's exact format, so a re-derived block
     replaces the old one as a whole and the change is reviewed as a diff.
   ```yaml
-  # trade-thresholds.yml (MEXC part; values from the first 4 h, re-derived in slice 4)
+  # trade-thresholds.yml (MEXC part; derived over 10.7 h, 2026-11-18 07:39–17:31 UTC)
   screener:
     trade-alerts:
-      default-min-notional: 30000
+      default-min-notional: 30000          # spot, every exchange
       venue-default-min-notional:          # optional; a venue's own default
-        MEXC_SPOT: 10000
+        BINANCE_FUTURES: 100000
+        MEXC_FUTURES: 100000
       min-notional:                        # optional; per venue, native symbols
         MEXC_FUTURES:
-          BTC_USDT: 750000
-          ETH_USDT: 500000
-          SOL_USDT: 300000
-          ZEC_USDT: 200000
-          XRP_USDT: 150000
+          BTC_USDT: 2000000
+          ETH_USDT: 1500000
+          SOL_USDT: 500000
+          XRP_USDT: 500000
+          ZEC_USDT: 300000
   ```
-  MEXC spot needs no overrides at $10K. Futures at $30K plus the five overrides gives about 111
-  alerts/h (75–148 by hour) over the first 4 h.
+  Alerts/h over the captures (average, worst full hour): MEXC spot 2.5 (5), MEXC futures 18 (38),
+  Binance spot 39 (46), Binance futures 52 (50); about 111 in total. Binance's capture is 5.1 h of
+  US session on 2026-11-17; in its 25-minute sell-off the same thresholds gave about 400/h.
 - **Alert id**: `VENUE:NATIVESYMBOL:firstTradeId` works unchanged (field 6 / `i`). It looks like
   `MEXC_FUTURES:BTC_USDT:17067813085`, which is fine because the contract calls the id opaque.
 - **`levels` is not `fills` on MEXC.** The contract's `levels` (§3.8.2) is "price levels taken", and
@@ -298,7 +310,7 @@ in `external-docs/mexc/mexc-trades-empirical.md`; re-run with `python mexc_analy
 | 1 | `X0_X0` deals are synthetic paired orders on a per-symbol 500 ms clock: maker id = taker id + 1, no trade sequence, never in a real fill. 93.5% of spot notional. Unfiltered, 198 spot alerts instead of 10. | 2.5: drop them all. |
 | 2 | `M` is **self-trade** (MEXC REST docs: "self-transact"). 99.9% `O=3`. Large `M=1` deals are off the clock and do not cluster across symbols: self-trades, not liquidations. Unfiltered, +16% futures alerts. `M` belongs to the taker order (it changes inside 133 of 110K sweep steps). | 2.5: drop every `M=1` deal. The decoder requires `p, v, T, t, i, M`. |
 | 3 | Spot: an order's fills always share `t`, ids are contiguous, and the price is non-strict (equal on 32% of steps). Binance's strict rule would split 38% of multi-fill orders. Rule A recovers 99.4% of them on spot. Futures shows extra Δt = 1 ms steps (~4,000 in 4 h). Allowing them changes ~25% of the alert set (+74 / −42 of 445). | 2.4: rule A with exact `t`. |
-| 4 | Real spot taker flow is $1.4M/h. Largest order in 4 h: $96K. Futures `M=2`: $180M/h. | 2.8: spot floor $10K (8 alerts/h, no overrides); futures $30K + 5 overrides → 111/h. A per-venue default in `TradeAlertProperties`. |
+| 4 | Real spot taker flow is $1.4M/h. Largest order in 4 h: $96K. Futures `M=2`: $180M/h. | 2.8: a per-venue default in `TradeAlertProperties`. Values re-derived over 10.7 h in slice 4: spot $30K (2.5/h), futures $100K + 5 overrides (18/h). |
 | 5 | Close delay is long on MEXC. Futures alerts on contracts with < 0.1 real deals/s are 38% of all futures alerts: p90 76 s, max 12 min. Spot sweeps almost never span frames (0.04% of orders, no alert). Futures sweeps span frames in 59% of multi-fill sweeps, pieces ≤ 213 ms apart by `ts`. | 2.6: spot closes at frame end; futures gets the idle timer (slice 3). |
 | 6 | Spot 25 frames/s, 41 deals/s (35 filtered). Futures 61 frames/s, 69 deals/s (50 filtered). | `filt` exceeds real deals on both venues. |
 | 7 | — | Fixtures in slices 2 and 3. |
@@ -414,10 +426,9 @@ lag spikes. `isplit` stays near zero. If it isn't, raise the idle.
 **Goal**: thresholds live in their own file, MEXC gets thresholds derived from a capture that covers
 busy hours, and both `TRADE` streams are on by default.
 
-Built: steps 1, 2 and 4, their tests, and the docs of §8 that cover them. `trade-thresholds.yml`
-carries the 4 h MEXC values of 2.8 (spot venue default $10K, five futures overrides), marked
-provisional. A context test boots `TradeAlertProperties` alone to check that the import resolves.
-Open: step 3 (waits for the capture to cover busy hours), the verify below, then step 5.
+Built: steps 1–4, their tests, and the docs of §8 that cover them. `trade-thresholds.yml` carries
+the values of 2.8 for Binance and MEXC, derived for the whole-feed budget. A context test boots
+`TradeAlertProperties` alone to check that the import resolves. Open: the verify below, then step 5.
 
 1. **Thresholds file** (2.8). Create `trade-thresholds.yml` and add the import to `application.yml`.
    Move `default-min-notional` and the Binance `min-notional` block over with the values unchanged.
@@ -425,25 +436,19 @@ Open: step 3 (waits for the capture to cover busy hours), the verify below, then
 2. **Per-venue default** (2.8): `venue-default-min-notional` in `TradeAlertProperties`, validated
    > 0 like `min-notional`. `TradeThresholds` looks up symbol, then venue, then global, with no
    allocation.
-3. **Re-derive the MEXC thresholds** (`C:\git\trade-capture\analysis\`):
-   - Wait until the capture covers at least two busy hours after the US open (14:30 UTC), so at least
-     07:39–17:00 UTC 2026-11-18. Thresholds taken from quiet hours alone flood the feed in busy ones
-     (`trade-detection-plan.md` §10.2).
-   - Re-run `mexc_analyze.py` over the whole capture at floors $5K, $10K, $20K and $30K. The policy
-     stays: spot floor $10K, futures floor $30K, then the ladder up to 10 alerts/h per symbol.
-   - Add a per-hour, per-symbol check like `hourly.py`. A symbol over about 25 alerts/h in any full
-     hour moves one ladder step up.
-   - `mexc_analyze.py` prints the MEXC blocks in `trade-thresholds.yml`'s format. They go into the
-     file as they are.
-   - Compare with the 4 h list in 2.8. If the overrides barely move, the list is stable.
-   - Update `mexc-trades-empirical.md` §5 and the numbers in 2.8.
+3. **Re-derive the thresholds** (done). Over the MEXC capture to 17:31 UTC (10.7 h, three hours past
+   the US open) the 4 h policy gave 143 futures alerts/h, 282 in the busiest hour; with Binance that
+   is ~430/h for one shared feed. The policy changed to the whole-feed budget of 2.8, applied to
+   Binance too. `C:\git\trade-capture\analysis\thresholds.py` loads both captures, applies the
+   floors, the 3/h cap and the 7.5-per-hour check, and prints the `min-notional` blocks in
+   `trade-thresholds.yml`'s format (`--grid` prints floor × cap per venue).
+   `mexc-trades-empirical.md` §5.1 has the numbers.
 4. Update the frontend contract's §3.8 for MEXC (2.8).
 5. Turn both `TRADE` streams on by default once the check below passes.
 
-**Open, not blocking**: total feed volume. `TradeChannel` sends every alert to every session.
-Binance (about 55 spot + 223 futures/h) plus MEXC (about 120/h) is about 400 alerts/h, one every
-9 s, and the per-symbol cap does not bound the total. The owner decides later whether a venue, or
-the whole feed, gets a budget.
+**Open, not blocking**: the floors are a first guess at what users find large. User feedback may move
+the futures floor ($50K on both futures venues would be ~128/h for futures alone) or call for a
+per-user minimum in the frontend, which would let the shared feed stay more generous.
 
 **Tests**:
 
@@ -454,7 +459,8 @@ the whole feed, gets a budget.
 
 **Verify**: after an hour, compare alerts/hour per venue and the top symbols in
 `/api/monitoring/trade-alerts/summary` with the slice 4 re-derivation for a similar time of day
-(first 4 h: spot about 8/h on XRP, BTC, ETH, ZEC, SOL, NEAR, LTC; futures 75–148/h). Spot check a
+(spot about 2.5/h on ETH, BTC, NEAR, SOL, XRP; futures about 18/h, up to ~38 in busy hours; Binance
+39 spot + 52 futures). Spot check a
 few multi-fill alerts against the MEXC trade list, including `levels`. Confirm that no alert is an
 `X0_X0` or `M=1` deal. Check once that a `trade-thresholds.yml` next to the jar overrides a bundled
 value.

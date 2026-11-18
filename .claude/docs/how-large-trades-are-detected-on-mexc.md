@@ -14,8 +14,8 @@ design, thresholds, the replay fixture, future ideas). Read its §1–2 first if
 analysis), slice 1 (transport: both `TRADE` streams connect and route), slice 2 (decoding,
 filtering, sweep grouping, the spot frame-end close, `levels`) and slice 3 (the futures idle close
 on a shard tick) are done. Slice 4: the thresholds moved to `trade-thresholds.yml` with a per-venue
-default (MEXC spot $10K) and the provisional 4 h futures overrides. Still open: re-deriving the MEXC
-thresholds over busy hours, and the live check. Both streams stay off by default until then.
+default, and were re-derived over 10.7 h through the US open for a ~120 alerts/h budget across the
+whole feed (§6). Still open: the live check. Both streams stay off by default until then.
 
 **Detailed sources**: `external-docs/mexc/mexc-trades-empirical.md` (the wire contract and every
 measured number), `.claude/plans/trade-mexc-plan.md` (implementation plan; "Capture findings" holds
@@ -435,24 +435,30 @@ Notional per deal / per sweep (spot: real taker orders; futures: `M=2` sweeps un
 | spot | $9 / $11 | $981 / $1.3K | $5.0K / $6.3K | $26.9K / $36.3K | $67.8K / $95.9K |
 | futures | $100 / $225 | $44.3K / $67.2K | $259K / $406K | $763K / $957K | $1.88M / $2.07M |
 
-The same policy as Binance (a floor; a symbol firing more than ~10 alerts/h is raised up a ladder):
+The thresholds serve a budget of about **120 alerts/h for the whole feed**, Binance and MEXC
+together, since every alert goes to every user. The policy is the same on every exchange:
 
-| venue | floor | alerts/h with the cap | symbols alerting | overrides |
-|---|---|---|---|---|
-| spot | $5K | 24 | 14 | 0 |
-| spot | **$10K** | **8** | 7 | 0 |
-| spot | $30K | 2.5 | 4 | 0 |
-| futures | $30K | **111** (75–148 by hour) | 42 | 5 |
+- **A floor that means "large" in absolute terms**: $30K on spot, $100K on futures (leveraged, and
+  far more volume). A thin market keeps the floor and alerts only when a large trade really happens;
+  it is never given a lower floor just to produce alerts.
+- **A cap of 3 alerts/h per symbol** (and at most 7.5 in any full hour): a busy symbol's threshold is
+  raised up the ladder until it fires about once every 20 minutes.
 
-- **Spot needs its own floor.** Binance's $30K would make MEXC spot almost silent (2.5 alerts/h on 4
-  pairs). The plan takes $10K: XRP, BTC, ETH, ZEC, SOL, NEAR and LTC alert. Compare Binance, where a
-  flat $30K gave ~630 spot alerts per hour.
-- **Futures**: $30K plus overrides `BTC_USDT` 750K, `ETH_USDT` 500K, `SOL_USDT` 300K, `ZEC_USDT` 200K,
-  `XRP_USDT` 150K. Keys are native symbols (`BTC_USDT`, not `BTCUSDT`).
-- Spot's floor is a per-venue default, `venue-default-min-notional.MEXC_SPOT: 10000`, which sits
-  between the symbol overrides and the global $30K. All thresholds live in
-  `src/main/resources/trade-thresholds.yml`. The MEXC values there are the 4 h ones above,
-  provisional until they are re-derived over busy hours.
+Over 10.7 h of capture (2026-11-18 07:39–17:31 UTC, through the US open):
+
+| venue | floor | alerts/h | worst full hour | symbols alerting | overrides |
+|---|---|---|---|---|---|
+| spot | $30K | 2.5 | 5 | 5 | 0 |
+| futures | $100K | 18 | 38 | 31 | 5 |
+
+- **Spot is rare, by design.** Real taker flow is $1.4M/h across 505 pairs; ETH, BTC, NEAR, SOL and
+  XRP see orders of $30K or more.
+- **Futures**: $100K plus overrides `BTC_USDT` 2M, `ETH_USDT` 1.5M, `SOL_USDT` 500K, `XRP_USDT` 500K,
+  `ZEC_USDT` 300K. Keys are native symbols (`BTC_USDT`, not `BTCUSDT`). Contracts with an alert drop
+  from 55 at a $30K floor to 31; a $50K `MEXC_FUTURES` default would add ~22 alerts/h.
+- The futures floor is a per-venue default, `venue-default-min-notional.MEXC_FUTURES: 100000`; spot
+  uses the global $30K. All thresholds live in `src/main/resources/trade-thresholds.yml`, derived by
+  `trade-capture/analysis/thresholds.py` (`mexc-trades-empirical.md` §5.1 has the floor × cap grid).
 
 ---
 
@@ -494,15 +500,16 @@ Alert ids keep the Binance form `VENUE:NATIVESYMBOL:firstTradeId`, e.g.
 | Coalescing | rule: side, `T`, ids, strict price | **exact**, by taker order id | rule A: side, `t`, next id, non-strict price |
 | Noise dropped | none | `X0_X0` bot deals (93.5% of notional) | `M=1` self-trades (11% of notional) |
 | Real flow | large | tiny (largest order $96K in 4 h) | moderate, lumpy |
-| Floor | $30K | $10K | $30K |
+| Floor | $30K spot, $100K futures | $30K | $100K |
 | A sweep closes on | the next trade (comes fast) | end of its frame | idle timer (1.5 s) |
 
 ---
 
 ## 9. Limitations and open questions
 
-- **Short, calm capture**: 4 h, no US open, no sharp move, no liquidation cascade. Rates and
-  thresholds are a first calibration; re-run `mexc_analyze.py` on longer data.
+- **Short capture**: most numbers here come from the first 4 h (no US open); the thresholds come
+  from 10.7 h through the US open. One weekday, no sharp move, no liquidation cascade, no Asia
+  session or weekend. Re-derive with `thresholds.py` on longer data.
 - **Same-millisecond orders on futures** with consecutive ids merge into one sweep (~4% of rule A's
   continuations). The stream can't separate them.
 - **The 1 ms tolerance** on futures (§4.3) is unresolved; exact `t` is the conservative choice.

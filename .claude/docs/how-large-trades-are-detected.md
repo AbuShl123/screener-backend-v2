@@ -229,22 +229,25 @@ Each instrument has one minimum notional: `screener.trade-alerts` in
 `src/main/resources/trade-thresholds.yml` (imported by `application.yml`; a file of that name in the
 server's working directory overrides it), bound to `TradeAlertProperties` and looked up by
 `TradeThresholds`: the symbol's override, else the venue's own default
-(`venue-default-min-notional`, e.g. MEXC spot $10K), else the global $30K. Binance has per-symbol
-overrides for busy symbols (7 spot, 28 futures).
+(`venue-default-min-notional`: $100K on Binance and MEXC futures), else the global $30K. Busy
+symbols have per-symbol overrides (Binance 10 spot, 13 futures; MEXC 5 futures).
 
-**How the values were chosen** (`trade-detection-plan.md` §10.2): a flat $30K is unusable. It
-produces ~630 spot and **~10,600 futures alerts per hour**, mostly on BTC and ETH. So we set an
-**alert budget**:
+**How the values were chosen** (`trade-mexc-plan.md` §2.8; Binance's first list in
+`trade-detection-plan.md` §10.2): a flat $30K is unusable. On Binance it produces ~630 spot and
+**~10,600 futures alerts per hour**, mostly on BTC and ETH. Every alert goes to every user, so the
+whole feed gets an **alert budget of about 120 per hour**:
 
-- The floor is $30K for every symbol.
-- If a symbol would fire more than **10 alerts per hour** at $30K, raise it to the next step of a
-  fixed ladder (50K, 75K, 100K, 150K, 200K, 300K, 500K, … 5M) until it fires 10/h or less.
-- Result: about **55 spot and 223 futures alerts per hour** over 5.1 h of data. Examples: BTC
-  futures $5M, ETH futures $3M, BTC spot $500K, SOL futures $500K.
-- The list was computed from the first 1.8 h and checked against 5.1 h, which added only
-  PENGUUSDT futures. Re-deriving it over all 5.1 h would lower about half the overrides by one
-  step, only because most of that time is quiet. That would add ~40% more alerts in busy hours, so
-  the list was kept.
+- **A floor that means "large" in absolute terms**, the same on every exchange: $30K on spot, $100K
+  on futures (leveraged, and far more volume). A thin symbol keeps the floor and alerts only when a
+  large trade happens; it is never given a lower floor to produce alerts.
+- **A cap of 3 alerts per hour per symbol**: a symbol that would fire more is raised to the next
+  step of a fixed ladder (50K, 75K, 100K, 150K, 200K, 300K, 500K, … 5M) until it averages 3/h or
+  less and stays at or under 7.5 in every full hour.
+- Result: Binance spot 39, Binance futures 52, MEXC spot 2.5 and MEXC futures 18 alerts per hour,
+  **about 111 in total**. Examples: BTC and ETH futures on Binance $5M, BTC spot on Binance $750K,
+  BTC futures on MEXC $2M.
+- A static list swings with the market: in a 25-minute Binance sell-off the same thresholds gave
+  about 400 alerts/h. `trade-capture/analysis/thresholds.py` re-derives the list from a capture.
 
 **Thresholds and coalescing are independent in code.** Coalescing decides what counts as one trade.
 The threshold decides whether it is big enough. The sweep's summed notional is compared with the

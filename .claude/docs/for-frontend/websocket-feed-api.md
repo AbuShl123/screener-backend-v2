@@ -363,8 +363,8 @@ Limits of what the exchange reports:
 
 #### 3.8.3 Size: `notional`, `threshold`
 
-Thresholds differ per symbol, from $30K on most coins to $5M on BTC futures, so that each symbol
-alerts at a readable rate. Raw `notional` therefore doesn't compare across symbols: $600K is routine
+Thresholds differ per symbol: at least $30K on spot and $100K on futures, up to $5M on BTC futures,
+so that each symbol alerts at a readable rate. Raw `notional` therefore doesn't compare across symbols: $600K is routine
 on BTC and huge on a small coin. Use the **relative size** for emphasis, the way `tier` drives
 emphasis for depth:
 
@@ -406,15 +406,16 @@ right after a server restart: alerts are kept in memory only).
   `TRADE` messages may trigger a toast or sound. Otherwise every reconnect, rule edit or
   `SNAPSHOT_REQUEST` would replay up to 100 notifications.
 - Alerts that fired while you were disconnected are recovered only if they are still among the
-  latest 100. In a quiet market that covers roughly the last 20–40 minutes, in a volatile one a few
+  latest 100. In a normal market that covers roughly the last hour, in a volatile one about 15
   minutes.
 - Cap your own list (e.g. a few hundred alerts, or by age). The server never tells you to remove an
   alert.
 
 #### 3.8.6 Presentation notes (suggestions, not contract)
 
-- **Rate**: measured over one afternoon, roughly 150–250 alerts/hour in total in quiet hours and
-  ~1,000/hour in a sell-off, arriving in bursts during sharp moves. About 80% are futures.
+- **Rate**: the thresholds aim at about 120 alerts/hour in total across all exchanges, about 60%
+  of them futures. Quiet hours are lower; a sell-off can briefly reach ~400/hour, arriving in
+  bursts during sharp moves.
   A list or tape absorbs that; toasts need a user-set minimum (relative size or notional), a mute
   switch and client-side rate limiting.
 - **Prices**: `firstPrice` and `lastPrice` are exchange prices and print cleanly. Format `avgPrice`
