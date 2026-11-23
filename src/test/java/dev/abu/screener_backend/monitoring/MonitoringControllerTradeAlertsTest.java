@@ -22,7 +22,7 @@ class MonitoringControllerTradeAlertsTest {
     private static final Instrument ETH_SPOT = Instrument.of(8, Venue.BINANCE_SPOT, "ETHUSDT", "ETH", "USDT");
 
     private final TradeAlertStore store = new TradeAlertStore(new TradeAlertProperties(1, null, null, 5, 100, null, 250));
-    private final MonitoringController controller = new MonitoringController(null, null, null, null, store);
+    private final MonitoringController controller = new MonitoringController(null, null, null, null, store, null);
 
     @Test
     @DisplayName("an alert is shown with its stable id, by venue and native symbol, its side spelled out, its threshold and readable times")
