@@ -30,7 +30,7 @@ public class OrderClusterDetectorTest {
 
     /** The brief's proposed defaults (§8), with delivery left on: it does not matter to the detector. */
     public static ClusterDetectionProperties props() {
-        return new ClusterDetectionProperties(true, true, 750, 0.05, 8, 0.4, 3.0, 3.0, 0.8, 3000, 0.15, 3,
+        return new ClusterDetectionProperties(true, true, 750, 0.05, 8, 0.4, 3.0, 3.0, 0.8, 3000, 0.15, 3, 0.5, 200,
                 new ClusterDetectionProperties.MinTotalNotional(2_000_000, 300_000));
     }
 
@@ -276,6 +276,7 @@ public class OrderClusterDetectorTest {
         assertEquals(px(9_970, 10_000), bids.get(0).priceTo());
         assertEquals(px(9_961, 10_000), bids.get(0).priceFrom());
         assertEquals(px(9_950, 10_000), bids.get(1).priceTo());
+        assertEquals(px(9_941, 10_000), bids.get(1).priceFrom());
     }
 
     @Test
@@ -521,6 +522,158 @@ public class OrderClusterDetectorTest {
         assertEquals(3, bids.size());
         List<Double> totals = bids.stream().map(OrderCluster::totalNotional).sorted().toList();
         assertEquals(List.of(500_000.0, 600_000.0, 700_000.0), totals);
+    }
+
+    // ---- review findings -----------------------------------------------------------------------
+
+    @Test
+    @DisplayName("a ladder spaced 4 ticks apart in a 1-tick book is still one cluster (first step judged on similarity)")
+    void coarselySpacedLadderIsDetected() {
+        OrderBook ob = new OrderBook(0.1);
+        int t = 10_000;
+        for (int i = 0; i < 30; i++, t--) level(ob, true, px(t, 10_000), small(i));
+        for (int i = 0; i < 15; i++, t -= 4) level(ob, true, px(t, 10_000), 50_000);
+        for (int i = 0; i < 30; i++, t--) level(ob, true, px(t, 10_000), small(i + 2));
+        for (int a = 10_001; a <= 10_060; a++) level(ob, false, px(a, 10_000), small(a));
+        synced(ob);
+        runEverySecond(3, XYZ, ob);
+
+        assertEquals(1, sink.calls.size());
+        assertEquals(15, sink.calls.getFirst().bids.getFirst().levelCount());
+    }
+
+    @Test
+    @DisplayName("when a pending and an announced cluster merge, the announced one survives with its first-seen time")
+    void mergeKeepsTheAnnouncedCluster() {
+        // A: 10 levels at 9970..9961, separator 9960, B: 10 levels at 9959..9950
+        OrderBook ob = new OrderBook(0.1);
+        int t = 10_000;
+        for (int i = 0; i < 30; i++, t--) level(ob, true, px(t, 10_000), small(i));
+        for (int i = 0; i < 10; i++, t--) level(ob, true, px(t, 10_000), 50_000); // A
+        level(ob, true, px(t--, 10_000), small(1));                                // separator 9960
+        for (int i = 0; i < 10; i++, t--) level(ob, true, px(t, 10_000), 50_000); // B
+        for (int i = 0; i < 30; i++, t--) level(ob, true, px(t, 10_000), small(i + 4));
+        for (int a = 10_001; a <= 10_060; a++) level(ob, false, px(a, 10_000), small(a));
+        synced(ob);
+
+        runAt(0, XYZ, ob);                                   // A -> slot 0, B -> slot 1, both pending
+        for (int k = 9970; k > 9960; k--) level(ob, true, px(k, 10_000), small(k)); // A pulled
+        ob.computeDistance();
+        for (int s = 1; s <= 3; s++) runAt(s * 1000L, XYZ, ob); // B announced at 3 s, in slot 1
+        assertEquals(1, sink.calls.size());
+        for (int k = 9970; k > 9960; k--) level(ob, true, px(k, 10_000), 50_000); // A back: slot 0, pending
+        ob.computeDistance();
+        runAt(4000, XYZ, ob);
+        level(ob, true, px(9960, 10_000), 50_000);            // separator fills: A and B merge
+        ob.computeDistance();
+        runAt(5000, XYZ, ob);
+
+        assertEquals(0, sink.removals.size(), "the announced wall was never pulled");
+        OrderCluster merged = sink.calls.getLast().bids.getFirst();
+        assertEquals(21, merged.levelCount());
+        assertEquals(T0, merged.firstSeenMillis(), "B's first-seen time (both appeared at 0 s) is kept");
+        assertEquals(sink.calls.getFirst().bids.getFirst().firstSeenMillis(), merged.firstSeenMillis());
+        assertEquals(1, detector.activeClusters());
+    }
+
+    @Test
+    @DisplayName("a book with a run below min-levels allocates at most the TreeMap iterators per run")
+    void belowMinLevelsAllocatesAlmostNothing() {
+        OrderBook ob = gapBook(7, 0, 0);
+        int runs = 5_000;
+        Runnable calls = () -> {
+            for (int i = 0; i < runs; i++) {
+                clock.addAndGet(1000);
+                detector.process(XYZ, ob);
+            }
+        };
+        calls.run();
+        long bytes = allocatedBy(calls);
+
+        assertTrue(bytes / runs <= 100, "allocated " + bytes / runs + " bytes per run");
+        assertEquals(0, sink.calls.size());
+    }
+
+    @Test
+    @DisplayName("a deep uniform side (5,000 levels in one run) scans in well under a millisecond")
+    void deepUniformBookIsLinear() {
+        OrderBook ob = thickBook(11, 5_000, 1_000_000, 1_100_000);
+        for (int i = 0; i < 200; i++) { clock.addAndGet(1000); detector.process(BTC, ob); } // warm up
+        int runs = 200;
+        long started = System.nanoTime();
+        for (int i = 0; i < runs; i++) { clock.addAndGet(1000); detector.process(BTC, ob); }
+        long perRunMicros = (System.nanoTime() - started) / runs / 1000;
+
+        // both sides; quadratic insertion took ~6 ms here, a running median ~0.3 ms
+        assertTrue(perRunMicros < 2_000, perRunMicros + " us per run");
+    }
+
+    @Test
+    @DisplayName("a stray similar level 1.35% in front of a ladder is not pulled into it")
+    void strayLevelInFrontOfLadderIsDropped() {
+        OrderBook ob = new OrderBook(0.1);
+        for (int t = 775; t >= 751; t--) level(ob, true, px(t, 10_000), small(t));
+        level(ob, true, px(750, 10_000), 110_000);                       // the stray
+        for (int t = 740; t >= 700; t--) level(ob, true, px(t, 10_000), arbLevel(t));
+        for (int t = 776; t <= 815; t++) level(ob, false, px(t, 10_000), small(t));
+        synced(ob);
+        runEverySecond(3, ARB, ob);
+
+        assertEquals(1, sink.calls.size());
+        OrderCluster c = sink.calls.getFirst().bids.getFirst();
+        assertEquals(0.0740, c.priceTo());
+        assertEquals(41, c.levelCount());
+    }
+
+    @Test
+    @DisplayName("a run that only grazes an announced cluster cannot take it from the run that continues it")
+    void grazingRunDoesNotStealAnnouncedCluster() {
+        ClusterDetectionProperties p = props();
+        ClusterDetectionProperties lenient = new ClusterDetectionProperties(true, true, p.throttleMillis(),
+                p.maxDistance(), p.minLevels(), p.similarityTolerance(), p.gapFactor(), 0.1, p.exitFactor(),
+                p.minLifetimeMillis(), p.updateThreshold(), p.maxClustersPerSide(), p.sameClusterOverlap(),
+                p.maxClusterLevels(), p.minTotalNotional()); // stand-out is not what this test is about
+        OrderClusterDetector d = new OrderClusterDetector(lenient, new DefaultClassificationRule(), sink, metrics, clock::get);
+
+        // A: 0.0740..0.0720 at $110K, announced. Later B: 0.0750..0.0742 at $300K, pending.
+        OrderBook ob = new OrderBook(0.1);
+        for (int t = 760; t >= 751; t--) level(ob, true, px(t, 10_000), small(t));
+        for (int t = 740; t >= 720; t--) level(ob, true, px(t, 10_000), 110_000);
+        for (int t = 761; t <= 800; t++) level(ob, false, px(t, 10_000), small(t));
+        synced(ob);
+        for (int s = 0; s <= 3; s++) { clock.set(T0 + s * 1000L); d.process(ARB, ob); }
+        assertEquals(1, sink.calls.size(), "A announced");
+        for (int t = 750; t >= 742; t--) level(ob, true, px(t, 10_000), 300_000);
+        ob.computeDistance();
+        clock.set(T0 + 3_800); d.process(ARB, ob); // B tracked, pending
+
+        // B grows over the gap and A's upper part: X = 0.0750..0.0729 overlaps A by 0.55 and B by 1;
+        // A's lower part Y = 0.0728..0.0720 overlaps A by 1. A must continue as Y, not be taken by X.
+        for (int t = 741; t >= 729; t--) level(ob, true, px(t, 10_000), 300_000);
+        ob.computeDistance();
+        clock.set(T0 + 4_600); d.process(ARB, ob);
+
+        assertEquals(0, sink.removals.size());
+        List<OrderCluster> bids = sink.calls.getLast().bids;
+        OrderCluster a = bids.stream().filter(c -> c.priceFrom() == 0.0720).findFirst().orElseThrow();
+        assertEquals(0.0728, a.priceTo());
+        assertEquals(T0, a.firstSeenMillis(), "still the announced A");
+    }
+
+    @Test
+    @DisplayName("discard drops the clusters but keeps the throttle")
+    void discardKeepsThrottle() {
+        OrderBook ob = arbBook();
+        runEverySecond(3, ARB, ob);
+        assertEquals(1, detector.activeClusters());
+
+        detector.discard(ARB);
+        assertEquals(List.of(ARB), sink.removals);
+        assertEquals(0, detector.activeClusters());
+
+        long runs = detector.runs();
+        runAt(3_100, ARB, ob); // inside the throttle window of the 3 s run
+        assertEquals(runs, detector.runs());
     }
 
     // ---- recording sink ------------------------------------------------------------------------

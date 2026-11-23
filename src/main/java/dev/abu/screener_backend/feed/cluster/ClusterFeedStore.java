@@ -5,7 +5,6 @@ import dev.abu.screener_backend.analysis.cluster.OrderCluster;
 import dev.abu.screener_backend.marketdata.Instrument;
 import org.springframework.stereotype.Component;
 
-import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -56,18 +55,25 @@ public class ClusterFeedStore implements ClusterSink {
     }
 
     /**
-     * Appends one entry per instrument that changed since the previous drain: its current state, or
-     * a removal. Broadcaster thread only (one drainer).
+     * Puts one entry per instrument that changed since the previous drain into {@code out}, keyed by
+     * {@code feedKey}: its current state, or a removal. Keyed so an instrument is delivered at most
+     * once per tick: a shard may mark a key dirty again while the drain iterates, and the weakly
+     * consistent iterator can then return it twice; the later read wins. Broadcaster thread only
+     * (one drainer).
      */
-    void drainChanged(Collection<ClusterUpdate> out) {
+    void drainChanged(Map<String, ClusterUpdate> out) {
         for (String key : dirty) {
             dirty.remove(key);
             ClusterUpdate now = current.get(key);
-            out.add(now != null ? now : ClusterUpdate.removal(instruments.get(key)));
+            out.put(key, now != null ? now : ClusterUpdate.removal(instruments.get(key)));
         }
     }
 
-    /** Instruments that have clusters right now, by {@code feedKey}. A live, unmodifiable view. */
+    /**
+     * Instruments that have clusters right now, by {@code feedKey}. A live, unmodifiable view,
+     * possibly newer than the last drain: for monitoring. The feed's snapshot comes from
+     * {@link ClusterChannel}'s own drained state.
+     */
     public Map<String, ClusterUpdate> current() {
         return Collections.unmodifiableMap(current);
     }

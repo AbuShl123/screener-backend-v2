@@ -64,7 +64,7 @@ All code is under `src/main/java/dev/abu/screener_backend/`. Each package is a f
 
 ## Performance Rules: Hot Path vs. Everything Else
 
-The **`marketdata/core/` pipeline packages (`stream/`, `ingress/`, `slot/`, `book/`, `recovery/`, `trade/`), the adapters' sync strategies, stream protocols and trade decoders (`marketdata/adapter/*/`), `feed/`, and the `analysis/` classifier** are the hot path — they process the full depth firehose of every enabled venue on the Disruptor consumer threads and the 100ms broadcaster. Strict rules apply **there**:
+The **`marketdata/core/` pipeline packages (`stream/`, `ingress/`, `slot/`, `book/`, `recovery/`, `trade/`), the adapters' sync strategies, stream protocols and trade decoders (`marketdata/adapter/*/`), `feed/`, and the `analysis/` classifier and order-cluster detector (`analysis/cluster/`)** are the hot path — they process the full depth firehose of every enabled venue on the Disruptor consumer threads and the 100ms broadcaster. Strict rules apply **there**:
 
 - **No object allocation** in `onMessage` callbacks and Disruptor `onEvent` loops. Reuse mutable objects; parse in place.
 - **No `BigDecimal`** for market data. Prices/quantities are primitive `double` (parsed via fastdoubleparser). `double`'s precision is more than sufficient for a screener.

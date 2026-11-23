@@ -9,7 +9,10 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Layered order clusters ({@code websocket-feed-api.md} §3.9): one {@code CLUSTER} upsert per
@@ -19,9 +22,13 @@ import java.util.List;
  * <p>One global stream: there are no per-user cluster rules, so every session gets the same bodies
  * and there is no {@code ruleKey} filter. Entitlement is enforced at {@code @OnOpen}.
  *
- * <p>Clusters are state, so a snapshot entry may be newer than the last drain: the next tick then
- * repeats it as an upsert, or removes a cluster the snapshot no longer had. Both are harmless
- * (§3.7).
+ * <p><b>Snapshot as of the last drain.</b> Snapshot entries are the bodies built at the last
+ * {@link #drain()}, kept per instrument, not a fresh read of the store. So a snapshot is never
+ * newer than the live updates of its tick: a cluster announced after the drain reaches every session
+ * as a live upsert next tick (a session snapshotted in the very tick of the drain gets this tick's
+ * changes inside its snapshot instead, as for every channel). Each body is built once per change
+ * rather than once per snapshotting session, and the snapshot is exactly what
+ * {@link FeedChannel#collectSnapshot} asks for.
  *
  * <p>With {@code screener.clusters.delivery-enabled: false} (shadow mode) the store is still
  * drained every tick, so nothing builds up, but nothing is sent.
@@ -40,8 +47,10 @@ public class ClusterChannel implements FeedChannel {
     private final ClusterFeedStore store;
     private final boolean deliveryEnabled;
 
-    private final List<ClusterUpdate> changed = new ArrayList<>();
+    private final Map<String, ClusterUpdate> changed = new LinkedHashMap<>();
     private final List<String> tickBodies = new ArrayList<>();
+    /** Per {@code feedKey}, the body of every instrument that had clusters at the last drain. */
+    private final Map<String, String> snapshotBodies = new HashMap<>();
     private final StringBuilder sb = new StringBuilder(4096);
 
     public ClusterChannel(ClusterFeedStore store, ClusterDetectionProperties props) {
@@ -55,7 +64,15 @@ public class ClusterChannel implements FeedChannel {
         tickBodies.clear();
         store.drainChanged(changed);
         if (deliveryEnabled) {
-            for (ClusterUpdate update : changed) tickBodies.add(buildBody(update));
+            for (Map.Entry<String, ClusterUpdate> e : changed.entrySet()) {
+                String body = buildBody(e.getValue());
+                tickBodies.add(body);
+                if (e.getValue().removed()) {
+                    snapshotBodies.remove(e.getKey());
+                } else {
+                    snapshotBodies.put(e.getKey(), body);
+                }
+            }
         }
         changed.clear(); // don't keep clusters reachable between ticks
     }
@@ -67,8 +84,7 @@ public class ClusterChannel implements FeedChannel {
 
     @Override
     public void collectSnapshot(UserWebSocketSession session, List<String> out) {
-        if (!deliveryEnabled) return;
-        for (ClusterUpdate update : store.current().values()) out.add(buildBody(update));
+        out.addAll(snapshotBodies.values()); // empty while delivery is off
     }
 
     /** One {@code CLUSTER} envelope; live bodies and snapshot entries are byte-identical. */

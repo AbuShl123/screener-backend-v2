@@ -39,13 +39,19 @@ import java.util.function.LongSupplier;
  *
  * <h2>Per detection run</h2>
  * {@link SideScan} finds each side's candidate runs. Each candidate is matched to a tracked
- * cluster of the same side by price-range overlap (at least half of the shorter range): a match
- * is the same cluster, updated, and must only stay above the <b>exit</b> threshold; an unmatched
+ * cluster of the same side by price-range overlap (at least {@code same-cluster-overlap} of the
+ * shorter range, paired one to one by largest overlap; between equal overlaps, as when two
+ * clusters merge, an announced one wins over a pending one, then the oldest, so a merge never
+ * retires a wall the client holds): a match is the same cluster, updated, and must only stay above the <b>exit</b> threshold; an unmatched
  * candidate must reach the <b>enter</b> threshold to be tracked at all. A tracked cluster is
  * announced once it has lived {@code min-lifetime-millis}, and re-announced only when its total
  * moved by more than {@code update-threshold} or its price bounds changed. A tracked cluster no
  * candidate matched is gone. When anything announced changed, the sink receives the instrument's
  * whole announced set (clusters are state, not events).
+ *
+ * <h2>Clocks</h2>
+ * The throttle and the lifetime are measured on a monotonic clock, so a wall-clock step cannot
+ * stall detection; {@code firstSeenMillis} on the wire is wall time.
  *
  * <h2>Allocation</h2>
  * Nothing while scanning or when nothing changed (beyond the {@code TreeMap} iterators the
@@ -54,18 +60,17 @@ import java.util.function.LongSupplier;
  */
 public class OrderClusterDetector {
 
-    /** Two runs are the same cluster when they share at least this fraction of the shorter range. */
-    private static final double SAME_CLUSTER_OVERLAP = 0.5;
-
     private final DefaultClassificationRule liquidity;
     private final ClusterSink sink;
     private final PipelineMetrics metrics;
-    private final LongSupplier clock;
+    private final LongSupplier wallClock;
+    private final LongSupplier monotonicClock;
 
     private final long throttleMillis;
     private final double exitFactor;
     private final long minLifetimeMillis;
     private final double updateThreshold;
+    private final double sameClusterOverlap;
     private final int perSide;
     private final ClusterDetectionProperties.MinTotalNotional minTotal;
 
@@ -74,29 +79,48 @@ public class OrderClusterDetector {
     private final SideScan askScan;
     /** Per candidate of the side being reconciled: unmatched and above the enter threshold. */
     private final boolean[] isNew;
+    /** Per candidate of the side being reconciled: paired with a tracked cluster. */
+    private final boolean[] taken;
 
     private long runs;
     private int activeClusters;
 
-    /**
-     * @param liquidity the default rule, for its majors/everything-else split only
-     * @param clock     wall-clock millis; {@code System::currentTimeMillis} in production
-     */
+    /** Production: wall time from {@code System.currentTimeMillis}, monotonic time from {@code System.nanoTime}. */
+    public OrderClusterDetector(ClusterDetectionProperties props, DefaultClassificationRule liquidity,
+                                ClusterSink sink, PipelineMetrics metrics) {
+        this(props, liquidity, sink, metrics, System::currentTimeMillis, () -> System.nanoTime() / 1_000_000);
+    }
+
+    /** One clock for both wall and monotonic time. For tests, which drive it by hand. */
     public OrderClusterDetector(ClusterDetectionProperties props, DefaultClassificationRule liquidity,
                                 ClusterSink sink, PipelineMetrics metrics, LongSupplier clock) {
+        this(props, liquidity, sink, metrics, clock, clock);
+    }
+
+    /**
+     * @param liquidity      the default rule, for its majors/everything-else split only
+     * @param wallClock      epoch millis, stamped into {@code firstSeenMillis}
+     * @param monotonicClock millis that never go backwards, for the throttle and the lifetime
+     */
+    public OrderClusterDetector(ClusterDetectionProperties props, DefaultClassificationRule liquidity,
+                                ClusterSink sink, PipelineMetrics metrics,
+                                LongSupplier wallClock, LongSupplier monotonicClock) {
         this.liquidity = liquidity;
         this.sink = sink;
         this.metrics = metrics;
-        this.clock = clock;
+        this.wallClock = wallClock;
+        this.monotonicClock = monotonicClock;
         this.throttleMillis = props.throttleMillis();
         this.exitFactor = props.exitFactor();
         this.minLifetimeMillis = props.minLifetimeMillis();
         this.updateThreshold = props.updateThreshold();
+        this.sameClusterOverlap = props.sameClusterOverlap();
         this.perSide = props.maxClustersPerSide();
         this.minTotal = props.minTotalNotional();
         this.bidScan = new SideScan(props);
         this.askScan = new SideScan(props);
         this.isNew = new boolean[perSide];
+        this.taken = new boolean[perSide];
     }
 
     /** Entry point, called by the depth arm of MarketEventHandler after every depth event. */
@@ -109,7 +133,7 @@ public class OrderClusterDetector {
             return;
         }
 
-        long now = clock.getAsLong();
+        long now = monotonicClock.getAsLong();
         if (st == null) {
             st = new ClusterState(perSide);
             states.put(inst.feedKey(), st);
@@ -123,8 +147,9 @@ public class OrderClusterDetector {
         double exit = enter * exitFactor;
         bidScan.scan(bids, exit);
         askScan.scan(asks, exit);
-        boolean changed = reconcile(st.bids, bidScan, now, enter);
-        changed |= reconcile(st.asks, askScan, now, enter);
+        long wallNow = wallClock.getAsLong();
+        boolean changed = reconcile(st.bids, bidScan, now, wallNow, enter);
+        changed |= reconcile(st.asks, askScan, now, wallNow, enter);
         if (changed) publish(inst, st);
 
         runs++;
@@ -136,26 +161,30 @@ public class OrderClusterDetector {
         return runs;
     }
 
-    /** Announced clusters on this shard right now. */
-    public int activeClusters() {
+    /** Announced clusters on this shard right now. Shard thread only (tests); the gauge is in PipelineMetrics. */
+    int activeClusters() {
         return activeClusters;
+    }
+
+    /**
+     * Drops the instrument's clusters, reporting a removal if anything was announced. The recovery
+     * after {@link #process} threw for it: the tracked clusters may be half-updated. The state itself
+     * is kept, with its last run time, so the throttle still holds and a book that keeps failing
+     * costs one run per {@code throttle-millis}, not one per diff. Shard thread only.
+     */
+    public void discard(Instrument inst) {
+        ClusterState st = states.get(inst.feedKey());
+        if (st != null) dropAll(inst, st);
     }
 
     /**
      * Matches this run's candidates of one side to its tracked clusters, ages them, and decides
      * what must be (re-)announced. Returns whether the side's announced set changed.
      */
-    private boolean reconcile(TrackedCluster[] tracked, SideScan scan, long now, double enter) {
-        for (TrackedCluster t : tracked) t.matched = false;
-
+    private boolean reconcile(TrackedCluster[] tracked, SideScan scan, long now, long wallNow, double enter) {
+        matchCandidates(tracked, scan);
         for (int c = 0; c < scan.candidateCount; c++) {
-            TrackedCluster match = bestMatch(tracked, scan.candLow[c], scan.candHigh[c]);
-            if (match != null) {
-                match.update(scan.candLow[c], scan.candHigh[c], scan.candNotional[c], c);
-                isNew[c] = false;
-            } else {
-                isNew[c] = scan.candNotional[c] >= enter;
-            }
+            isNew[c] = !taken[c] && scan.candNotional[c] >= enter;
         }
 
         boolean changed = false;
@@ -169,13 +198,15 @@ public class OrderClusterDetector {
             }
         }
         for (int c = 0; c < scan.candidateCount; c++) {
-            if (isNew[c]) freeSlot(tracked).start(now, scan.candLow[c], scan.candHigh[c], scan.candNotional[c], c);
+            if (isNew[c]) {
+                freeSlot(tracked).start(now, wallNow, scan.candLow[c], scan.candHigh[c], scan.candNotional[c], c);
+            }
         }
 
         for (TrackedCluster t : tracked) {
             if (!t.active) continue;
             if (!t.announced()) {
-                t.republish = now - t.firstSeenMillis >= minLifetimeMillis;
+                t.republish = now - t.trackedSince >= minLifetimeMillis;
             } else {
                 OrderCluster last = t.published;
                 t.republish = Math.abs(t.notional - last.totalNotional()) > updateThreshold * last.totalNotional()
@@ -187,18 +218,48 @@ public class OrderClusterDetector {
         return changed;
     }
 
-    private TrackedCluster bestMatch(TrackedCluster[] tracked, double low, double high) {
-        TrackedCluster best = null;
-        double bestOverlap = 0;
-        for (TrackedCluster t : tracked) {
-            if (!t.active || t.matched) continue;
-            double overlap = t.overlap(low, high);
-            if (overlap >= SAME_CLUSTER_OVERLAP && overlap > bestOverlap) {
-                best = t;
-                bestOverlap = overlap;
+    /**
+     * Pairs this run's candidates with tracked clusters, one to one, greedily: the pair with the
+     * largest overlap first (at least {@code same-cluster-overlap} of the shorter range); between
+     * equal overlaps, an announced cluster before a pending one, then the oldest. Sets
+     * {@link TrackedCluster#matched} and {@link #taken}. At most {@code max-clusters-per-side}
+     * squared pairs, so the repeated scan is cheap and allocation-free.
+     *
+     * <p>Largest overlap first keeps each cluster on the run that is most clearly its continuation,
+     * so a run that only grazes an announced cluster cannot take it from the run that holds it. The
+     * tie-break settles merges: a merged run contains both old ranges (overlap exactly 1 with each),
+     * and keeping the announced one keeps the wall, and its first-seen time, that the client holds.
+     */
+    private void matchCandidates(TrackedCluster[] tracked, SideScan scan) {
+        for (TrackedCluster t : tracked) t.matched = false;
+        for (int c = 0; c < scan.candidateCount; c++) taken[c] = false;
+        while (true) {
+            TrackedCluster bestT = null;
+            int bestC = -1;
+            double bestOverlap = 0;
+            for (TrackedCluster t : tracked) {
+                if (!t.active || t.matched) continue;
+                for (int c = 0; c < scan.candidateCount; c++) {
+                    if (taken[c]) continue;
+                    double overlap = t.overlap(scan.candLow[c], scan.candHigh[c]);
+                    if (overlap < sameClusterOverlap) continue;
+                    if (bestT == null || better(t, overlap, bestT, bestOverlap)) {
+                        bestT = t;
+                        bestC = c;
+                        bestOverlap = overlap;
+                    }
+                }
             }
+            if (bestT == null) return;
+            bestT.update(scan.candLow[bestC], scan.candHigh[bestC], scan.candNotional[bestC], bestC);
+            taken[bestC] = true;
         }
-        return best;
+    }
+
+    private static boolean better(TrackedCluster a, double overlapA, TrackedCluster b, double overlapB) {
+        if (overlapA != overlapB) return overlapA > overlapB;
+        if (a.announced() != b.announced()) return a.announced();
+        return a.trackedSince < b.trackedSince;
     }
 
     /**
@@ -230,12 +291,14 @@ public class OrderClusterDetector {
         for (TrackedCluster t : tracked) {
             if (!t.active) continue;
             if (t.republish) {
-                if (!t.announced()) {
+                boolean first = !t.announced();
+                t.published = build(t, scan);
+                t.republish = false;
+                if (first) {
+                    // counted only once built, so a failing build cannot leave the gauge one too high
                     activeClusters++;
                     metrics.adjustActiveClusters(1);
                 }
-                t.published = build(t, scan);
-                t.republish = false;
                 metrics.recordClusterEmit();
             }
             if (t.published == null) continue;

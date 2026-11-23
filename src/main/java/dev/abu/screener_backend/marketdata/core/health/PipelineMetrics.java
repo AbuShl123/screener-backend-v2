@@ -47,6 +47,7 @@ public class PipelineMetrics {
     private final AtomicLong clusterRunMaxNanos = new AtomicLong();
     private final LongAdder activeClusters = new LongAdder();
     private final LongAdder clusterEmits = new LongAdder();
+    private final LongAdder clusterFailures = new LongAdder();
 
     /** Labels of the fills-per-alerted-sweep buckets: 1, 2–3, 4–10, more than 10. */
     public static final String[] FILL_BUCKETS = {"1", "2-3", "4-10", ">10"};
@@ -264,6 +265,16 @@ public class PipelineMetrics {
     /** Monotonic total of cluster (re-)announcements since startup. */
     public long clusterEmits() {
         return clusterEmits.sum();
+    }
+
+    /** One cluster detection run threw; the shard carried on. Zero in steady state. */
+    public void recordClusterFailure() {
+        clusterFailures.increment();
+    }
+
+    /** Monotonic total of failed detection runs since startup. */
+    public long clusterFailures() {
+        return clusterFailures.sum();
     }
 
     private static int fillBucket(int fills) {

@@ -11,6 +11,9 @@ package dev.abu.screener_backend.analysis.cluster;
 final class TrackedCluster {
 
     boolean active;
+    /** Monotonic millis when tracking began; the lifetime is measured from it. */
+    long trackedSince;
+    /** Wall-clock millis when tracking began; sent as {@code firstSeenMillis}. */
     long firstSeenMillis;
 
     // ---- as of the latest detection run ----
@@ -30,9 +33,10 @@ final class TrackedCluster {
         return published != null;
     }
 
-    void start(long now, double low, double high, double notional, int candidate) {
+    void start(long now, long wallNow, double low, double high, double notional, int candidate) {
         active = true;
-        firstSeenMillis = now;
+        trackedSince = now;
+        firstSeenMillis = wallNow;
         published = null;
         republish = false;
         update(low, high, notional, candidate);

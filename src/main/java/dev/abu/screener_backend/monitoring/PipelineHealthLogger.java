@@ -251,6 +251,8 @@ public class PipelineHealthLogger {
                 .append(" max=").append(maxNanos / 1000).append("us")
                 .append(" emits=").append(dEmits)
                 .append(" active=").append(metrics.activeClusters());
+        long failures = metrics.clusterFailures();
+        if (failures > 0) out.append(" failures=").append(failures);
     }
 
     private void appendRingFree(StringBuilder line) {

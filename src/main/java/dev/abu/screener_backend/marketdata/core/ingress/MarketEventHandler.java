@@ -22,6 +22,9 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     private final AtomicLong missingSlots = new AtomicLong();
     private final AtomicLong missingSlotsLoggedAt = new AtomicLong();
 
+    private static final long CLUSTER_FAILURE_LOG_INTERVAL_MS = 60_000;
+    private final AtomicLong clusterFailuresLoggedAt = new AtomicLong();
+
     private static final long UNHANDLED_KIND_LOG_INTERVAL_MS = 60_000;
     private final AtomicLong unhandledKinds = new AtomicLong();
     private final AtomicLong unhandledKindsLoggedAt = new AtomicLong();
@@ -127,7 +130,33 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
 
         // layered order clusters: throttled per instrument, a separate walk from the classifier's
         if (clusterDetector != null) {
+            detectClusters(slot);
+        }
+    }
+
+    /**
+     * Runs cluster detection, containing any failure: an exception escaping {@code onEvent} would
+     * halt this shard's consumer (the Disruptor's default fatal handler), and with it every book on
+     * the shard, for an optional feature. A failure is counted, logged at most once a minute, and
+     * the instrument's cluster state is dropped so the next run starts clean.
+     */
+    private void detectClusters(InstrumentSlot slot) {
+        try {
             clusterDetector.process(slot.instrument(), slot.book());
+        } catch (RuntimeException e) {
+            metrics.recordClusterFailure();
+            long now = System.currentTimeMillis();
+            long last = clusterFailuresLoggedAt.get();
+            if (now - last >= CLUSTER_FAILURE_LOG_INTERVAL_MS && clusterFailuresLoggedAt.compareAndSet(last, now)) {
+                log.warn("Cluster detection failed for {} ({} failures in total); its cluster state was dropped",
+                        slot.instrument().logName(), metrics.clusterFailures(), e);
+            }
+            try {
+                clusterDetector.discard(slot.instrument());
+            } catch (RuntimeException again) {
+                // a failing sink must not halt the shard either; the first failure is already counted
+                log.debug("Dropping the cluster state of {} failed too", slot.instrument().logName(), again);
+            }
         }
     }
 

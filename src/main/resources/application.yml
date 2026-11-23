@@ -281,6 +281,8 @@ screener:
     min-lifetime-millis: 3000      # announce only after the cluster has been present this long
     update-threshold: 0.15         # re-announce when the total moves more than 15% (or the bounds change)
     max-clusters-per-side: 3
+    same-cluster-overlap: 0.5      # same cluster, updated, when ranges overlap >= 50% of the shorter one
+    max-cluster-levels: 200        # a run closes at this many levels (bounds the wire ladder)
     min-total-notional:
       high-liquidity: 2000000      # BTC, ETH, SOL (DefaultClassificationRule's majors)
       default: 300000

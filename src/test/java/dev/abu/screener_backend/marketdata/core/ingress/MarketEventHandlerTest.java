@@ -96,6 +96,35 @@ class MarketEventHandlerTest {
     }
 
     @Test
+    @DisplayName("a throwing cluster detector does not escape onEvent: counted, its state discarded, the event cleared")
+    void clusterFailureIsContained() {
+        List<Integer> discarded = new ArrayList<>();
+        OrderClusterDetector failing = new OrderClusterDetector(OrderClusterDetectorTest.props(), null, null, metrics, () -> 0L) {
+            @Override
+            public void process(Instrument inst, OrderBook ob) {
+                throw new IllegalStateException("boom");
+            }
+
+            @Override
+            public void discard(Instrument inst) {
+                discarded.add(inst.id());
+            }
+        };
+        MarketEventHandler withClusters = new MarketEventHandler(0, 1, slots, classifier, failing, detector, metrics);
+        event.source = EventSource.WS_MSG;
+        event.stream = StreamKind.DEPTH;
+        event.instrumentId = ID;
+        event.rawJson = "{}";
+
+        withClusters.onEvent(event, 0, true);
+
+        assertEquals(1, metrics.clusterFailures());
+        assertEquals(List.of(ID), discarded);
+        assertEquals(1, classifier.instruments.size(), "classification still ran");
+        assertCleared();
+    }
+
+    @Test
     @DisplayName("a DEPTH event reaches the cluster detector after the classifier; a TRADE event does not")
     void depthEventReachesClusterDetectorAfterClassifier() {
         List<String> order = new ArrayList<>();

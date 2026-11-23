@@ -30,6 +30,8 @@ class ClusterDetectionPropertiesTest {
         m.put("screener.clusters.min-lifetime-millis", "3000");
         m.put("screener.clusters.update-threshold", "0.15");
         m.put("screener.clusters.max-clusters-per-side", "3");
+        m.put("screener.clusters.same-cluster-overlap", "0.5");
+        m.put("screener.clusters.max-cluster-levels", "200");
         m.put("screener.clusters.min-total-notional.high-liquidity", "2000000");
         m.put("screener.clusters.min-total-notional.default", "300000");
         return m;
@@ -50,8 +52,20 @@ class ClusterDetectionPropertiesTest {
         assertEquals(750, p.throttleMillis());
         assertEquals(8, p.minLevels());
         assertEquals(3, p.maxClustersPerSide());
+        assertEquals(0.5, p.sameClusterOverlap());
+        assertEquals(200, p.maxClusterLevels());
         assertEquals(2_000_000, p.minTotalNotional().forClass(true));
         assertEquals(300_000, p.minTotalNotional().forClass(false));
+    }
+
+    @Test
+    @DisplayName("a missing screener.clusters block binds to disabled and does not fail startup")
+    void missingBlockIsDisabled() {
+        ClusterDetectionProperties p = new Binder(new MapConfigurationPropertySource(Map.of("screener.clusters.enabled", "false")))
+                .bind("screener.clusters", ClusterDetectionProperties.class).get();
+
+        assertFalse(p.enabled());
+        assertFalse(p.deliveryEnabled());
     }
 
     @Test
@@ -64,5 +78,9 @@ class ClusterDetectionPropertiesTest {
         Map<String, String> n = yaml();
         n.put("screener.clusters.min-levels", "1");
         assertThrows(BindException.class, () -> bind(n));
+
+        Map<String, String> o = yaml();
+        o.put("screener.clusters.same-cluster-overlap", "0");
+        assertThrows(BindException.class, () -> bind(o));
     }
 }

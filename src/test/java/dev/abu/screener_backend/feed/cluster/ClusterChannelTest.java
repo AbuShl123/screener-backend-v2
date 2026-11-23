@@ -14,7 +14,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -34,7 +36,8 @@ class ClusterChannelTest {
         ClusterDetectionProperties p = OrderClusterDetectorTest.props();
         return new ClusterDetectionProperties(p.enabled(), delivery, p.throttleMillis(), p.maxDistance(),
                 p.minLevels(), p.similarityTolerance(), p.gapFactor(), p.standoutRatio(), p.exitFactor(),
-                p.minLifetimeMillis(), p.updateThreshold(), p.maxClustersPerSide(), p.minTotalNotional());
+                p.minLifetimeMillis(), p.updateThreshold(), p.maxClustersPerSide(), p.sameClusterOverlap(),
+                p.maxClusterLevels(), p.minTotalNotional());
     }
 
     private static OrderCluster cluster() {
@@ -110,6 +113,48 @@ class ClusterChannelTest {
         String live = updates().stream().filter(b -> b.contains("ARBUSDT")).findFirst().orElseThrow();
 
         assertEquals(List.of(live), snapshot());
+    }
+
+    @Test
+    @DisplayName("a cluster announced after the drain is in neither this tick's snapshot nor its updates: it arrives live next tick")
+    void snapshotIsAsOfTheLastDrain() {
+        channel.drain();
+        store.onClusters(ARB, List.of(cluster()), List.of()); // after this tick's drain
+
+        assertEquals(List.of(), snapshot());
+        assertEquals(List.of(), updates());
+
+        channel.drain();
+        assertEquals(1, updates().size());
+        assertEquals(updates(), snapshot());
+    }
+
+    @Test
+    @DisplayName("an instrument marked dirty twice in one drain is delivered once")
+    void oneBodyPerInstrumentPerTick() {
+        Map<String, ClusterUpdate> out = new LinkedHashMap<>();
+        store.onClusters(ARB, List.of(cluster()), List.of());
+        store.drainChanged(out);
+        store.onClustersRemoved(ARB);
+        store.drainChanged(out); // same map, as if the iterator met the key again
+
+        assertEquals(1, out.size());
+        assertTrue(out.get(ARB.feedKey()).removed(), "the later read wins");
+    }
+
+    @Test
+    @DisplayName("large and tiny numbers go out in Java's exponent notation, which is valid JSON")
+    void exponentNotation() throws Exception {
+        OrderCluster big = new OrderCluster(0.00007, 0.00008, 2, 2_240_000, 62_340_000, 0.00004, 1L,
+                new double[]{0.00007, 0.00008}, new double[]{16_000_000, 46_340_000});
+        store.onClusters(ARB, List.of(big), List.of());
+        channel.drain();
+        String body = updates().getFirst();
+
+        assertTrue(body.contains("\"totalQuantity\":6.234E7"), body);
+        assertTrue(body.contains("\"levels\":[[7.0E-5,1.6E7],[8.0E-5,4.634E7]]"), body);
+        assertTrue(body.contains("\"distance\":0.0,"), "rounded to 4 dp: " + body);
+        new tools.jackson.databind.ObjectMapper().readTree(body); // parses
     }
 
     @Test

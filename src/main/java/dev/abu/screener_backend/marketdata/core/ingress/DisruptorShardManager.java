@@ -80,7 +80,7 @@ public class DisruptorShardManager {
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule, maxVisibleDistances);
             OrderClusterDetector clusterDetector = clustersEnabled
-                    ? new OrderClusterDetector(clusterProps, defaultRule, clusterSink, metrics, System::currentTimeMillis)
+                    ? new OrderClusterDetector(clusterProps, defaultRule, clusterSink, metrics)
                     : null;
             handlers[i]    = new MarketEventHandler(i, shardCount, slots, classifiers[i], clusterDetector,
                     tradeDetector, metrics);

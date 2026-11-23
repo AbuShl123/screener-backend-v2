@@ -27,6 +27,10 @@ import org.springframework.boot.context.properties.bind.Name;
  * @param updateThreshold     an announced cluster is re-emitted when its total moved by more than this
  *                            fraction (or its price bounds changed)
  * @param maxClustersPerSide  at most this many clusters per side per instrument, the largest by total
+ * @param sameClusterOverlap  two runs are the same cluster, updated, when their price ranges overlap by
+ *                            at least this fraction of the shorter range
+ * @param maxClusterLevels    a run closes at this many levels: bounds the ladder a cluster carries on
+ *                            the wire and the walk past {@code maxDistance}
  * @param minTotalNotional    the enter threshold per liquidity class
  */
 @ConfigurationProperties(prefix = "screener.clusters")
@@ -43,6 +47,8 @@ public record ClusterDetectionProperties(
         long minLifetimeMillis,
         double updateThreshold,
         int maxClustersPerSide,
+        double sameClusterOverlap,
+        int maxClusterLevels,
         MinTotalNotional minTotalNotional
 ) {
 
@@ -62,7 +68,22 @@ public record ClusterDetectionProperties(
         }
     }
 
+    /**
+     * Validated only when {@code enabled}: with detection off nothing reads the thresholds, and a
+     * missing {@code screener.clusters} block binds to {@code enabled = false} with every other
+     * value zero, which must not stop the application from starting.
+     */
     public ClusterDetectionProperties {
+        if (enabled) validate(throttleMillis, maxDistance, minLevels, similarityTolerance, gapFactor, standoutRatio,
+                exitFactor, minLifetimeMillis, updateThreshold, maxClustersPerSide, sameClusterOverlap,
+                maxClusterLevels, minTotalNotional);
+    }
+
+    @SuppressWarnings("java:S107")
+    private static void validate(long throttleMillis, double maxDistance, int minLevels, double similarityTolerance,
+                                 double gapFactor, double standoutRatio, double exitFactor, long minLifetimeMillis,
+                                 double updateThreshold, int maxClustersPerSide, double sameClusterOverlap,
+                                 int maxClusterLevels, MinTotalNotional minTotalNotional) {
         if (throttleMillis < 0) fail("throttle-millis", throttleMillis, ">= 0");
         if (!(maxDistance > 0)) fail("max-distance", maxDistance, "> 0");
         if (minLevels < 2) fail("min-levels", minLevels, ">= 2");
@@ -73,6 +94,10 @@ public record ClusterDetectionProperties(
         if (minLifetimeMillis < 0) fail("min-lifetime-millis", minLifetimeMillis, ">= 0");
         if (!(updateThreshold >= 0)) fail("update-threshold", updateThreshold, ">= 0");
         if (maxClustersPerSide < 1) fail("max-clusters-per-side", maxClustersPerSide, ">= 1");
+        if (!(sameClusterOverlap > 0 && sameClusterOverlap <= 1)) {
+            fail("same-cluster-overlap", sameClusterOverlap, "in (0, 1]");
+        }
+        if (maxClusterLevels < minLevels) fail("max-cluster-levels", maxClusterLevels, ">= min-levels");
         if (minTotalNotional == null) {
             throw new IllegalArgumentException("screener.clusters.min-total-notional is required");
         }

@@ -15,12 +15,16 @@ import java.util.TreeMap;
  * <h2>The scan</h2>
  * <ol>
  *   <li>Copy every level within {@code maxDistance} of the mid into primitive arrays, nearest
- *       first (the <i>window</i>). Measure the side's median level notional and median relative
- *       price step inside it.</li>
+ *       first (the <i>window</i>). Measure the side's median level notional inside it.</li>
  *   <li>Walk the window, building runs: a level joins the current run while its notional is within
- *       {@code similarityTolerance} of the run's median notional and its relative price step is at
- *       most {@code gapFactor} times the run's median step (the side's median step while the run has
- *       no step yet). Otherwise the run closes and a new one starts at that level.</li>
+ *       {@code similarityTolerance} of the run's median notional, its relative price step is at
+ *       most {@code gapFactor} times the run's median step, and the run has fewer than
+ *       {@code maxClusterLevels} levels. Otherwise the run closes and a new one starts at that
+ *       level. The second level of a run is judged on similarity alone: with one level there is no
+ *       run step to compare with yet, and the book's typical step says nothing about a ladder
+ *       spaced more coarsely than the book. The third level repairs that: when the first step is
+ *       more than {@code gapFactor} times the step to the third, the first level was a stray in
+ *       front of the run and is dropped from it.</li>
  *   <li>A run still open at the window edge has started inside the window, so it may continue past
  *       it: levels are pulled from the same iterator until the run breaks. Only a run that already
  *       stands out is extended; a thick book's endless uniform run is not, which keeps the walk of a
@@ -34,9 +38,10 @@ import java.util.TreeMap;
  *
  * <h2>Allocation</h2>
  * None in steady state: all arrays are fields, grown (doubling) only when a book is larger than any
- * seen before. The run's median is kept by binary insertion into sorted arrays, so it is O(1) to
- * read; the side medians use an in-place selection on a scratch copy. The only per-scan object is
- * the {@code TreeMap} entry iterator, as in the classifier.
+ * seen before. The run's medians are {@link RunningMedian}s, O(log n) per level and O(1) to read,
+ * so a scan is O(n log n) even when a thick book is one long run; the side median uses an in-place
+ * selection on a scratch copy. The only per-scan object is the {@code TreeMap} entry iterator, as in
+ * the classifier.
  *
  * <p>Medians are upper medians ({@code sorted[n / 2]}), here and for the side.
  */
@@ -49,6 +54,7 @@ final class SideScan {
     private final double similarityTolerance;
     private final double gapFactor;
     private final double standoutRatio;
+    private final int maxClusterLevels;
     private final int maxCandidates;
 
     // ---- the scanned levels, nearest to the mid first ----
@@ -61,7 +67,6 @@ final class SideScan {
     private int windowCount;
 
     private double sideMedianNotional;
-    private double sideMedianStep;
     private double floor;
 
     // ---- the open run ----
@@ -69,8 +74,8 @@ final class SideScan {
     private int runCount;
     private double runNotional;
     private double runQuantity;
-    private double[] runSortedNotionals = new double[INITIAL_CAPACITY];
-    private double[] runSortedSteps = new double[INITIAL_CAPACITY];
+    private final RunningMedian runNotionals = new RunningMedian(INITIAL_CAPACITY);
+    private final RunningMedian runSteps = new RunningMedian(INITIAL_CAPACITY);
 
     // ---- candidates, sorted by total descending ----
     int candidateCount;
@@ -88,6 +93,7 @@ final class SideScan {
         this.similarityTolerance = props.similarityTolerance();
         this.gapFactor = props.gapFactor();
         this.standoutRatio = props.standoutRatio();
+        this.maxClusterLevels = props.maxClusterLevels();
         this.maxCandidates = props.maxClustersPerSide();
         candStart = new int[maxCandidates];
         candLevels = new int[maxCandidates];
@@ -149,12 +155,6 @@ final class SideScan {
     private void measureSide() {
         System.arraycopy(notionals, 0, work, 0, windowCount);
         sideMedianNotional = select(work, windowCount, windowCount / 2);
-        if (windowCount < 2) {
-            sideMedianStep = Double.POSITIVE_INFINITY;
-            return;
-        }
-        for (int i = 1; i < windowCount; i++) work[i - 1] = step(i);
-        sideMedianStep = select(work, windowCount - 1, (windowCount - 1) / 2);
     }
 
     /** Relative price step from level {@code i - 1} to level {@code i}. */
@@ -173,13 +173,18 @@ final class SideScan {
             return true;
         }
         double step = step(i);
-        double baseStep = runCount > 1 ? runSortedSteps[(runCount - 1) / 2] : sideMedianStep;
-        double median = runSortedNotionals[runCount / 2];
-        boolean joins = step <= gapFactor * baseStep
-                && Math.abs(notionals[i] - median) <= similarityTolerance * median;
+        if (runCount == 2 && gapFactor * step < runSteps.median()) {
+            // The second level joined without a gap check; the third shows the run's real step, and
+            // the first step was a gap: the first level was a stray in front of the run. Drop it.
+            startRun(i - 1);
+        }
+        double median = runNotionals.median();
+        boolean joins = runCount < maxClusterLevels
+                && Math.abs(notionals[i] - median) <= similarityTolerance * median
+                && (runCount == 1 || step <= gapFactor * runSteps.median());
         if (joins) {
-            insertSorted(runSortedSteps, runCount - 1, step);
-            insertSorted(runSortedNotionals, runCount, notionals[i]);
+            runSteps.add(step);
+            runNotionals.add(notionals[i]);
             runCount++;
             runNotional += notionals[i];
             runQuantity += quantities[i];
@@ -195,7 +200,9 @@ final class SideScan {
         runCount = 1;
         runNotional = notionals[i];
         runQuantity = quantities[i];
-        runSortedNotionals[0] = notionals[i];
+        runNotionals.clear();
+        runSteps.clear();
+        runNotionals.add(notionals[i]);
     }
 
     private boolean standsOut() {
@@ -255,18 +262,6 @@ final class SideScan {
         }
     }
 
-    /** Inserts {@code value} into {@code sorted[0..size)}, which has room for one more. */
-    private static void insertSorted(double[] sorted, int size, double value) {
-        int lo = 0;
-        int hi = size;
-        while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
-            if (sorted[mid] <= value) lo = mid + 1; else hi = mid;
-        }
-        if (lo < size) System.arraycopy(sorted, lo, sorted, lo + 1, size - lo);
-        sorted[lo] = value;
-    }
-
     /**
      * The {@code k}-th smallest of {@code a[0..n)}, reordering {@code a} in place (Wirth's
      * selection; copes with long runs of equal values, which uniform books are full of).
@@ -302,7 +297,5 @@ final class SideScan {
         notionals = Arrays.copyOf(notionals, cap);
         distances = Arrays.copyOf(distances, cap);
         work = Arrays.copyOf(work, cap);
-        runSortedNotionals = Arrays.copyOf(runSortedNotionals, cap);
-        runSortedSteps = Arrays.copyOf(runSortedSteps, cap);
     }
 }

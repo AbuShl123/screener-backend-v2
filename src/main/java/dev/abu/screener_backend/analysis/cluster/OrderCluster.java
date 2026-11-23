@@ -15,7 +15,7 @@ package dev.abu.screener_backend.analysis.cluster;
  * @param totalNotional   sum of {@code price × quantity}, quote currency
  * @param totalQuantity   sum of quantities, base asset
  * @param distance        fractional distance of the edge nearest the mid from the mid (0.031 = 3.1%)
- * @param firstSeenMillis when the detector first saw this cluster (local time), kept across updates
+ * @param firstSeenMillis when the detector first saw this cluster, epoch millis (wall clock), kept across updates
  * @param prices          level prices, ascending
  * @param quantities      level quantities, aligned with {@code prices}
  */

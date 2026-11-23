@@ -444,7 +444,7 @@ right after a server restart: alerts are kept in memory only).
   "data": {
     "bidClusters": [
       { "priceFrom": 0.07, "priceTo": 0.074, "levelCount": 41,
-        "totalNotional": 4512000.0, "totalQuantity": 62340000.0,
+        "totalNotional": 4512000.0, "totalQuantity": 6.234E7,
         "distance": 0.0269, "firstSeenMillis": 1759667423000,
         "levels": [[0.07, 1600000.0], [0.0701, 1569186.9], [0.0702, 1495726.5]] }
     ],
@@ -467,39 +467,50 @@ replaces whatever you held for it.
   `askClusters` (either may be empty, never both).
 - **Removal**: `"data": null`. The instrument has no clusters any more. Remove it (no-op if absent).
 
-`data.bidClusters` / `data.askClusters`: at most 3 clusters per side, **nearest to the mid first**.
-Each cluster:
+`data.bidClusters` / `data.askClusters`: a few clusters per side (currently at most 3, a server
+setting), **nearest to the mid first**. Each cluster:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `priceFrom` | number | Lowest price in the cluster. |
 | `priceTo` | number | Highest price in the cluster. |
-| `levelCount` | integer ≥ 8 | Number of levels, `levels.length`. |
+| `levelCount` | integer | Number of levels, `levels.length`. Currently 8–200 (server settings: don't validate against them). |
 | `totalNotional` | number | Sum of `price × quantity` over the levels, quote asset (USDT), 2 decimals. |
 | `totalQuantity` | number | Sum of the quantities, base asset. |
-| `distance` | number | Fractional distance of the edge **nearest the mid** from the mid price (0.0269 = 2.69%), 4 decimals, as for depth levels (§3.5.1). |
+| `distance` | number | Fractional distance of the edge **nearest the mid** from the mid price (0.0269 = 2.69%), 4 decimals, as for depth levels (§3.5.1). **As of the last update** of this cluster: it is not re-sent as the price moves (§3.9.2). |
 | `firstSeenMillis` | integer | When the server first saw this cluster, Unix epoch ms. Unchanged by updates; `now − firstSeenMillis` is its age. |
 | `levels` | `[price, quantity][]` | The full ladder, ordered from `priceFrom` to `priceTo` (ascending price) on **both** sides. `quantity` is in the base asset. |
+
+Numbers may use exponent notation (`6.234E7`, `7.0E-5`); `JSON.parse` handles it (§3.8.6). Large
+quantities are common on low-priced coins.
 
 New fields may be added to `data` or to a cluster later; ignore fields you don't know.
 
 #### 3.9.1 Cluster identity
 
 Clusters have no id. The server treats a cluster as "the same, updated" when its new price range
-overlaps the old one by at least half of the shorter range; do the same if you need to follow one
+overlaps the old one by at least half of the shorter range (a server setting). When two clusters
+merge, the merged one keeps the identity and `firstSeenMillis` of one you were already sent (of
+the older, the smaller `firstSeenMillis`, if you had both); do the same if you need to follow one
 across updates (for an open detail view, for example): match it to the cluster on the same side
-with the largest overlap. `firstSeenMillis` stays the same for the same cluster.
+with the largest overlap (on a tie, the smaller `firstSeenMillis`). `firstSeenMillis` stays the
+same for the same cluster.
 
 #### 3.9.2 How often it changes
 
-Clusters move slowly and the server damps the noise:
+Clusters move slowly and the server damps the noise. The numbers below are the current server
+settings, still being tuned; don't hard-code them:
 
-- A cluster is sent only after it has existed for about **3 s**.
+- A cluster is sent only after it has existed for about **3 s**; with detection running on book
+  updates, the first `CLUSTER` arrives about 3–5 s after the wall appears.
 - Detection runs at most every **~750 ms** per instrument.
 - An existing cluster is re-sent only when its total moved by more than **15%** or its price
-  bounds changed; small jitter in the levels is not sent. The `levels` you hold may therefore
-  differ slightly from the live book.
+  bounds changed. Small jitter in the levels is not sent, and neither is a change of `distance`
+  while the price moves: the `levels` and `distance` you hold are as of the cluster's last update
+  and may differ from the live book.
 - A cluster hovering around the threshold does not flicker: it stays until it falls clearly below.
+- A cluster has at most **200 levels**: a longer run is cut there. The rest becomes a cluster of
+  its own only if it starts close enough to the mid (currently within 5%).
 
 Clusters are being tuned: in the first phase the server may detect them without sending them, so
 receiving no `CLUSTER` messages at all is normal.
@@ -678,8 +689,8 @@ for `%`). 0–5 per side, ordered by importance.
 **Trades**: one large taker order. `side` is the aggressor's; `levels > 1` is a sweep from
 `firstPrice` to `lastPrice`; relative size is `notional / threshold`; sort by `time`, dedupe by `id`.
 
-**Clusters**: state per instrument; each message is the full set. Up to 3 per side, nearest the
-mid first; `levels` are `[price, quantity]` ascending from `priceFrom` to `priceTo`.
+**Clusters**: state per instrument; each message is the full set. A few per side (currently ≤ 3),
+nearest the mid first; `levels` are `[price, quantity]` ascending from `priceFrom` to `priceTo`.
 
 **Client → server**: `SNAPSHOT_REQUEST` (raw string) forces a resync.
 
@@ -737,16 +748,16 @@ interface TradeMessage extends InstrumentIdentity {
 interface OrderCluster {
   priceFrom: number;         // lowest price
   priceTo: number;           // highest price
-  levelCount: number;        // === levels.length
+  levelCount: number;        // === levels.length; don't validate a minimum
   totalNotional: number;     // quote asset (USDT), 2 dp
   totalQuantity: number;     // base asset
-  distance: number;          // nearest edge from mid, fraction, 4 dp
+  distance: number;          // nearest edge from mid, fraction, 4 dp, as of the last update
   firstSeenMillis: number;   // epoch ms; stable for the same cluster
   levels: [price: number, quantity: number][]; // ascending price
 }
 
 interface ClusterData {
-  bidClusters: OrderCluster[]; // 0–3, nearest the mid first
+  bidClusters: OrderCluster[]; // a few (currently ≤ 3), nearest the mid first
   askClusters: OrderCluster[];
 }
 
