@@ -91,6 +91,9 @@ public class PipelineHealthLogger {
     private final long[] lastTradeIdleCloses = new long[Venue.values().length];
     private final long[] lastTradeIdleSplits = new long[Venue.values().length];
     private long lastTicksSkipped;
+    private long lastClusterRuns;
+    private long lastClusterRunNanos;
+    private long lastClusterEmits;
     private long[] lastProcessed;
     private long lastSampleNanos;
 
@@ -104,6 +107,7 @@ public class PipelineHealthLogger {
         out.append("pipeline health:");
         appendVenueTable(out, elapsedSec);
         appendTradeTable(out, elapsedSec);
+        appendClusters(out);
         out.append(System.lineSeparator()).append("  shards  ");
         appendThroughput(out, elapsedSec);
         appendRingFree(out);
@@ -224,6 +228,29 @@ public class PipelineHealthLogger {
         }
         line.append(']');
         lastProcessed = processed;
+    }
+
+    /**
+     * Order-cluster detection over the interval: runs, mean and max time per run, (re-)announcements,
+     * and the announced clusters right now. Omitted while the detector has never run.
+     */
+    private void appendClusters(StringBuilder out) {
+        long runs = metrics.clusterRuns();
+        long nanos = metrics.clusterRunNanos();
+        long emits = metrics.clusterEmits();
+        long maxNanos = metrics.takeClusterRunMaxNanos();
+        long dRuns = runs - lastClusterRuns;
+        long dNanos = nanos - lastClusterRunNanos;
+        long dEmits = emits - lastClusterEmits;
+        lastClusterRuns = runs;
+        lastClusterRunNanos = nanos;
+        lastClusterEmits = emits;
+        if (runs == 0) return;
+        out.append(System.lineSeparator()).append("  clusters runs=").append(dRuns)
+                .append(" avg=").append(dRuns == 0 ? 0 : dNanos / dRuns / 1000).append("us")
+                .append(" max=").append(maxNanos / 1000).append("us")
+                .append(" emits=").append(dEmits)
+                .append(" active=").append(metrics.activeClusters());
     }
 
     private void appendRingFree(StringBuilder line) {

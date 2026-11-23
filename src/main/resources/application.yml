@@ -266,6 +266,25 @@ screener:
       MEXC_FUTURES: 1500
     tick-interval-ms: 250                # shard tick period; runs only when sweep-idle-close-ms names a venue
 
+  # Layered order-cluster detection (US3): runs of similar consecutive levels that together form a
+  # wall. Every number is a first-cut proposal; tune in shadow mode (delivery-enabled: false) first.
+  clusters:
+    enabled: true
+    delivery-enabled: false        # shadow mode until thresholds are tuned
+    throttle-millis: 750           # at most one detection run per instrument per this many ms
+    max-distance: 0.05             # a cluster starts within 5% of mid; also the side-median window
+    min-levels: 8
+    similarity-tolerance: 0.4      # each level within +-40% of the run's median notional
+    gap-factor: 3.0                # break the run past 3x its median relative price step
+    standout-ratio: 3.0            # run mean >= 3x the side's median level notional (keeps thick books quiet)
+    exit-factor: 0.8               # hysteresis: a tracked cluster survives down to 0.8 x the enter threshold
+    min-lifetime-millis: 3000      # announce only after the cluster has been present this long
+    update-threshold: 0.15         # re-announce when the total moves more than 15% (or the bounds change)
+    max-clusters-per-side: 3
+    min-total-notional:
+      high-liquidity: 2000000      # BTC, ETH, SOL (DefaultClassificationRule's majors)
+      default: 300000
+
   ticker:
     refresh-interval: PT4H
 

@@ -98,7 +98,7 @@ class DisruptorShardManagerTest {
             }
         };
         DisruptorShardManager m = new DisruptorShardManager(new DisruptorProperties(SHARDS, 64), slots, null, null,
-                new ExchangesProperties(null), detector, metrics, props);
+                new ExchangesProperties(null), detector, metrics, props, null, null);
         m.start();
         return m;
     }

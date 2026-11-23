@@ -2,6 +2,7 @@ package dev.abu.screener_backend.marketdata.core.ingress;
 
 import com.lmax.disruptor.EventHandler;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
+import dev.abu.screener_backend.analysis.cluster.OrderClusterDetector;
 import dev.abu.screener_backend.marketdata.StreamKind;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
@@ -31,6 +32,8 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     private final int shardCount;
     private final InstrumentSlotTable slots;
     private final OrderBookClassifier classificationModule;
+    /** {@code null} when {@code screener.clusters.enabled} is off. */
+    private final OrderClusterDetector clusterDetector;
     private final TradeDetector tradeDetector;
     private final PipelineMetrics metrics;
 
@@ -55,10 +58,21 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     public MarketEventHandler(int shardIndex, int shardCount, InstrumentSlotTable slots,
                               OrderBookClassifier classificationModule, TradeDetector tradeDetector,
                               PipelineMetrics metrics) {
+        this(shardIndex, shardCount, slots, classificationModule, null, tradeDetector, metrics);
+    }
+
+    /**
+     * @param clusterDetector this shard's own order-cluster detector, or {@code null} when cluster
+     *                        detection is disabled
+     */
+    public MarketEventHandler(int shardIndex, int shardCount, InstrumentSlotTable slots,
+                              OrderBookClassifier classificationModule, OrderClusterDetector clusterDetector,
+                              TradeDetector tradeDetector, PipelineMetrics metrics) {
         this.shardIndex = shardIndex;
         this.shardCount = shardCount;
         this.slots = slots;
         this.classificationModule = classificationModule;
+        this.clusterDetector = clusterDetector;
         this.tradeDetector = tradeDetector;
         this.metrics = metrics;
     }
@@ -110,6 +124,11 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
 
         // run default & per-user classification
         classificationModule.process(slot.instrument(), slot.book());
+
+        // layered order clusters: throttled per instrument, a separate walk from the classifier's
+        if (clusterDetector != null) {
+            clusterDetector.process(slot.instrument(), slot.book());
+        }
     }
 
     /**

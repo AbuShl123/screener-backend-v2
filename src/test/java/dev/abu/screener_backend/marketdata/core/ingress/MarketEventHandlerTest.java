@@ -3,6 +3,8 @@ package dev.abu.screener_backend.marketdata.core.ingress;
 import dev.abu.screener_backend.marketdata.StreamKind;
 
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
+import dev.abu.screener_backend.analysis.cluster.OrderClusterDetector;
+import dev.abu.screener_backend.analysis.cluster.OrderClusterDetectorTest;
 import dev.abu.screener_backend.config.OrderbookProperties;
 import dev.abu.screener_backend.config.TradeAlertProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
@@ -91,6 +93,35 @@ class MarketEventHandlerTest {
         assertEquals(1, handler.processed());
 
         assertCleared();
+    }
+
+    @Test
+    @DisplayName("a DEPTH event reaches the cluster detector after the classifier; a TRADE event does not")
+    void depthEventReachesClusterDetectorAfterClassifier() {
+        List<String> order = new ArrayList<>();
+        OrderBookClassifier orderedClassifier = new OrderBookClassifier(null, null, Map.of()) {
+            @Override
+            public void process(Instrument inst, OrderBook ob) {
+                order.add("classifier");
+            }
+        };
+        OrderClusterDetector clusters = new OrderClusterDetector(OrderClusterDetectorTest.props(), null, null, metrics, () -> 0L) {
+            @Override
+            public void process(Instrument inst, OrderBook ob) {
+                order.add("clusters:" + inst.id());
+            }
+        };
+        MarketEventHandler withClusters = new MarketEventHandler(0, 1, slots, orderedClassifier, clusters, detector, metrics);
+
+        event.source = EventSource.WS_MSG;
+        event.stream = StreamKind.DEPTH;
+        event.instrumentId = ID;
+        event.rawJson = "{}";
+        withClusters.onEvent(event, 0, true);
+        tradeEvent(ID, "{\"e\":\"aggTrade\"}");
+        withClusters.onEvent(event, 1, true);
+
+        assertEquals(List.of("classifier", "clusters:" + ID), order);
     }
 
     @Test

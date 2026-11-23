@@ -4,6 +4,7 @@ import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
 import org.springframework.stereotype.Component;
 
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -41,6 +42,11 @@ public class PipelineMetrics {
     private final LongAdder[] tradeIdleCloses = adders(Venue.values().length);
     private final LongAdder[] tradeIdleSplits = adders(Venue.values().length);
     private final LongAdder ticksSkipped = new LongAdder();
+    private final LongAdder clusterRuns = new LongAdder();
+    private final LongAdder clusterRunNanos = new LongAdder();
+    private final AtomicLong clusterRunMaxNanos = new AtomicLong();
+    private final LongAdder activeClusters = new LongAdder();
+    private final LongAdder clusterEmits = new LongAdder();
 
     /** Labels of the fills-per-alerted-sweep buckets: 1, 2–3, 4–10, more than 10. */
     public static final String[] FILL_BUCKETS = {"1", "2-3", "4-10", ">10"};
@@ -210,6 +216,54 @@ public class PipelineMetrics {
      */
     public long tradeAlertFills(Venue venue, int bucket) {
         return tradeAlertFills[venue.ordinal() * FILL_BUCKETS.length + bucket].sum();
+    }
+
+    /**
+     * One order-cluster detection run over one book took {@code nanos}. Throttled per instrument
+     * ({@code screener.clusters.throttle-millis}), so far rarer than depth events; allocation-free.
+     */
+    public void recordClusterRun(long nanos) {
+        clusterRuns.increment();
+        clusterRunNanos.add(nanos);
+        long max = clusterRunMaxNanos.get();
+        while (nanos > max && !clusterRunMaxNanos.compareAndSet(max, nanos)) {
+            max = clusterRunMaxNanos.get();
+        }
+    }
+
+    /** Monotonic total of detection runs since startup. */
+    public long clusterRuns() {
+        return clusterRuns.sum();
+    }
+
+    /** Monotonic total time spent in detection runs since startup. Divide deltas for a mean. */
+    public long clusterRunNanos() {
+        return clusterRunNanos.sum();
+    }
+
+    /** The slowest detection run since the previous call, then resets it. One reader: the health log. */
+    public long takeClusterRunMaxNanos() {
+        return clusterRunMaxNanos.getAndSet(0);
+    }
+
+    /** An announced cluster appeared ({@code +1}) or went away ({@code -1}). */
+    public void adjustActiveClusters(int delta) {
+        activeClusters.add(delta);
+    }
+
+    /** Announced clusters right now, over every shard. A gauge, not a total. */
+    public long activeClusters() {
+        return activeClusters.sum();
+    }
+
+    /** One cluster announced or re-announced (an upsert built). Monotonic total since startup. */
+    public void recordClusterEmit() {
+        clusterEmits.increment();
+    }
+
+    /** Monotonic total of cluster (re-)announcements since startup. */
+    public long clusterEmits() {
+        return clusterEmits.sum();
     }
 
     private static int fillBucket(int fills) {
