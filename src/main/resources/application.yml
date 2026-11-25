@@ -275,7 +275,7 @@ screener:
     throttle-millis: 750           # at most one detection run per instrument per this many ms
     max-distance: 0.05             # a cluster starts within 5% of mid; also the side-median window
     min-levels: 8
-    similarity-tolerance: 0.1      # each level within +-10% of the run's median notional
+    similarity-tolerance: 0.25     # each level within +-25% of the run's median notional
     gap-factor: 3.0                # break the run past 3x its median relative price step
     standout-ratio: 3.0            # run mean >= 3x the side's median level notional (keeps thick books quiet)
     exit-factor: 0.8               # hysteresis: a tracked cluster survives down to 0.8 x the enter threshold
