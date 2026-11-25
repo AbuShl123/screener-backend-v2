@@ -19,11 +19,13 @@ only listens.
   (`type`, instrument identity, `data`). `type` says how to read `data`.
 - On connect, and whenever a resync is needed, the server sends one **`SNAPSHOT`** holding the
   full current state and the most recent trade alerts. Live messages after it are applied on top.
-- Two data types:
+- Three data types:
   - **`DEPTH`**: classified order-book levels (state: a book is upserted and removed).
   - **`TRADE`**: a large executed trade (an event: it happened once and never changes) (§3.8).
-- Bursts (many same-side trades over seconds), spike alerts and order clusters will arrive later as
-  new `type`s on the same socket. **Clients must ignore types they don't know** (§4.2).
+  - **`CLUSTER`**: layered order clusters, one large order split across many consecutive levels
+    (state, like depth) (§3.9).
+- Bursts (many same-side trades over seconds) and spike alerts will arrive later as new `type`s on
+  the same socket. **Clients must ignore types they don't know** (§4.2).
 
 The depth feed only contains books that **currently have at least one notable level** (tier 1–4).
 A tracked instrument with nothing notable near its mid-price isn't in the feed at all, so the feed
@@ -134,10 +136,13 @@ that instrument. Run each one through the same per-type handler as live messages
   you had that isn't in the snapshot is gone.
 - **Trades**: **don't clear**. Trade alerts are history, not state: merge the snapshot's `TRADE`
   entries into your list by `id` and don't notify the user about them (§3.8.5).
+- **Clusters**: replace your cluster state, like depth. Clear all clusters, then handle each
+  `CLUSTER` entry, and don't raise cluster alerts for them (§3.9.3).
 
 Notes:
 
-- `data` may be an empty array (nothing notable anywhere right now, no recent trade alerts).
+- `data` may be an empty array (nothing notable anywhere right now, no recent trade alerts, no
+  clusters).
 - Entries come in no particular order and mix types. Sort trade alerts by `time` yourself.
 - Snapshot entries never have `"data": null`.
 
@@ -261,6 +266,9 @@ on every exchange. To relate a feed row to a rule, use `symbol` + `market` witho
 - **Redundant messages are possible and harmless.** Right after a `SNAPSHOT` you may receive a
   `DEPTH` repeating what the snapshot already showed, or a `DEPTH` with `data: null` for a book the
   snapshot didn't contain. Upsert and remove-if-present handle both; don't treat them as errors.
+- **At most one `CLUSTER` per instrument per tick**, with the same harmless redundancy as depth: a
+  `CLUSTER` repeating the snapshot, or a `CLUSTER` with `data: null` for an instrument you don't
+  hold.
 - **Trade alerts are never merged.** Each alert is sent live exactly once, in the tick after it is
   detected; several may arrive in one tick, including several for one symbol. A reconnect replays
   the most recent ones in the `SNAPSHOT` (§3.8.5). Merge by `id` anyway: it makes any repeat harmless.
@@ -425,6 +433,100 @@ right after a server restart: alerts are kept in memory only).
 - A useful row: side colour · `exchange` `market` `symbol` · notional · relative size · age, with
   "swept N levels, firstPrice → lastPrice (impact %)" when `levels > 1`.
 
+### 3.9 `CLUSTER` — layered order clusters
+
+```json
+{
+  "type": "CLUSTER",
+  "exchange": "BINANCE",
+  "market": "SPOT",
+  "symbol": "ARBUSDT",
+  "data": {
+    "bidClusters": [
+      { "priceFrom": 0.07, "priceTo": 0.074, "levelCount": 41,
+        "totalNotional": 4512000.0, "totalQuantity": 6.234E7,
+        "distance": 0.0269, "firstSeenMillis": 1759667423000,
+        "levels": [[0.07, 1600000.0], [0.0701, 1569186.9], [0.0702, 1495726.5]] }
+    ],
+    "askClusters": []
+  }
+}
+```
+
+One large order is often split across many consecutive price levels. Each level on its own is too
+small for a tier, so it never shows in `DEPTH`, but together the levels form one wall. A **cluster**
+is such a run: consecutive levels of similar size that, together, stand out clearly from the rest
+of that side of the book. Thick books where every level is large (BTC, ETH near the mid) do **not**
+produce clusters; only runs that are several times bigger than the side's typical level do.
+
+Clusters are **state, not events**, like depth: a cluster appears, grows or shrinks, and is pulled
+or filled. Each `CLUSTER` message carries the instrument's **complete current set** of clusters and
+replaces whatever you held for it.
+
+- **Upsert**: `data` is an object. Replace that instrument's clusters with `bidClusters` and
+  `askClusters` (either may be empty, never both).
+- **Removal**: `"data": null`. The instrument has no clusters any more. Remove it (no-op if absent).
+
+`data.bidClusters` / `data.askClusters`: a few clusters per side (currently at most 3, a server
+setting), **nearest to the mid first**. Each cluster:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `priceFrom` | number | Lowest price in the cluster. |
+| `priceTo` | number | Highest price in the cluster. |
+| `levelCount` | integer | Number of levels, `levels.length`. Currently 8–200 (server settings: don't validate against them). |
+| `totalNotional` | number | Sum of `price × quantity` over the levels, quote asset (USDT), 2 decimals. |
+| `totalQuantity` | number | Sum of the quantities, base asset. |
+| `distance` | number | Fractional distance of the edge **nearest the mid** from the mid price (0.0269 = 2.69%), 4 decimals, as for depth levels (§3.5.1). **As of the last update** of this cluster: it is not re-sent as the price moves (§3.9.2). |
+| `firstSeenMillis` | integer | When the server first saw this cluster, Unix epoch ms. Unchanged by updates; `now − firstSeenMillis` is its age. |
+| `levels` | `[price, quantity][]` | The full ladder, ordered from `priceFrom` to `priceTo` (ascending price) on **both** sides. `quantity` is in the base asset. |
+
+Numbers may use exponent notation (`6.234E7`, `7.0E-5`); `JSON.parse` handles it (§3.8.6). Large
+quantities are common on low-priced coins.
+
+New fields may be added to `data` or to a cluster later; ignore fields you don't know.
+
+#### 3.9.1 Cluster identity
+
+Clusters have no id. The server treats a cluster as "the same, updated" when its new price range
+overlaps the old one by at least half of the shorter range (a server setting). When two clusters
+merge, the merged one keeps the identity and `firstSeenMillis` of one you were already sent (of
+the older, the smaller `firstSeenMillis`, if you had both); do the same if you need to follow one
+across updates (for an open detail view, for example): match it to the cluster on the same side
+with the largest overlap (on a tie, the smaller `firstSeenMillis`). `firstSeenMillis` stays the
+same for the same cluster.
+
+#### 3.9.2 How often it changes
+
+Clusters move slowly and the server damps the noise. The numbers below are the current server
+settings, still being tuned; don't hard-code them:
+
+- A cluster is sent only after it has existed for about **30 s**; with detection running on book
+  updates, the first `CLUSTER` arrives about 30–32 s after the wall appears.
+- Detection runs at most every **~750 ms** per instrument.
+- An existing cluster is re-sent only when its total moved by more than **15%** or its price
+  bounds changed. Small jitter in the levels is not sent, and neither is a change of `distance`
+  while the price moves: the `levels` and `distance` you hold are as of the cluster's last update
+  and may differ from the live book.
+- A cluster hovering around the threshold does not flicker: it stays until it falls clearly below.
+- A cluster has at most **200 levels**: a longer run is cut there. The rest becomes a cluster of
+  its own only if it starts close enough to the mid (currently within 5%).
+
+MEXC instruments produce no clusters for now (a temporary server choice: too many market-maker
+bots). Clusters are still being tuned, and the server can be set to detect without sending, so
+handle receiving no `CLUSTER` messages at all.
+
+#### 3.9.3 Alerts
+
+The server sends no separate alert event. Derive it on the client: a cluster that appears on an
+instrument **in a live message**, where you held no matching cluster on that side before, is new.
+Never alert for `SNAPSHOT` entries: a reconnect, rule edit or `SNAPSHOT_REQUEST` would otherwise
+replay every existing cluster as new. A cluster disappearing is just a removal; whether to notify
+about it is a product decision, not part of this contract.
+
+A level inside a cluster may also be large enough to appear in `DEPTH` on its own. Both are shown;
+that overlap is expected.
+
 ---
 
 ## 4. Handling messages
@@ -449,6 +551,18 @@ function onEnvelope(msg, fromSnapshot) {
         });
       }
       break;
+    case "CLUSTER":
+      if (msg.data === null) {
+        clusters.delete(key(msg));              // no clusters any more (no-op if absent)
+      } else {
+        const before = clusters.get(key(msg));
+        clusters.set(key(msg), {                // upsert: replace the instrument's whole set
+          exchange: msg.exchange, market: msg.market, symbol: msg.symbol,
+          bidClusters: msg.data.bidClusters, askClusters: msg.data.askClusters,
+        });
+        if (!fromSnapshot) notifyNewClusters(before, msg.data); // §3.9.3
+      }
+      break;
     case "TRADE":
       if (trades.has(msg.data.id)) break;       // already have it (snapshot replay)
       trades.set(msg.data.id, {
@@ -464,6 +578,7 @@ function onEnvelope(msg, fromSnapshot) {
 function onMessage(msg) {
   if (msg.type === "SNAPSHOT") {
     books.clear();                              // depth is state: replace it
+    clusters.clear();                           // clusters are state too
                                                 // trades are history: NOT cleared, merged by id
     for (const entry of msg.data) onEnvelope(entry, true);
   } else {
@@ -557,10 +672,12 @@ function connect() {
 
 | `type` | `data` | Client action |
 |---|---|---|
-| `SNAPSHOT` | Array of envelopes, exactly as sent live | Clear depth state, then handle each entry. Trade alerts are merged by `id`, not cleared, and not notified. |
+| `SNAPSHOT` | Array of envelopes, exactly as sent live | Clear depth and cluster state, then handle each entry. Trade alerts are merged by `id`, not cleared, and not notified. |
 | `DEPTH` | `{ bids, asks }` | Upsert the `(exchange, market, symbol)` book. |
 | `DEPTH` | `null` | Remove that book (no-op if absent). |
 | `TRADE` | `{ id, side, time, notional, qty, avgPrice, firstPrice, lastPrice, levels, threshold }` | Add to the alert list if the `id` is new; notify only when live. |
+| `CLUSTER` | `{ bidClusters, askClusters }` | Replace the `(exchange, market, symbol)` clusters; alert on a new one only when live. |
+| `CLUSTER` | `null` | Remove that instrument's clusters (no-op if absent). |
 | anything else | — | Ignore. |
 
 **Identity**: `exchange` (open set), `market` (`SPOT` / `FUTURES`), `symbol` (normalized
@@ -572,6 +689,9 @@ for `%`). 0–5 per side, ordered by importance.
 
 **Trades**: one large taker order. `side` is the aggressor's; `levels > 1` is a sweep from
 `firstPrice` to `lastPrice`; relative size is `notional / threshold`; sort by `time`, dedupe by `id`.
+
+**Clusters**: state per instrument; each message is the full set. A few per side (currently ≤ 3),
+nearest the mid first; `levels` are `[price, quantity]` ascending from `priceFrom` to `priceTo`.
 
 **Client → server**: `SNAPSHOT_REQUEST` (raw string) forces a resync.
 
@@ -626,18 +746,40 @@ interface TradeMessage extends InstrumentIdentity {
   data: TradeData;           // never null
 }
 
+interface OrderCluster {
+  priceFrom: number;         // lowest price
+  priceTo: number;           // highest price
+  levelCount: number;        // === levels.length; don't validate a minimum
+  totalNotional: number;     // quote asset (USDT), 2 dp
+  totalQuantity: number;     // base asset
+  distance: number;          // nearest edge from mid, fraction, 4 dp, as of the last update
+  firstSeenMillis: number;   // epoch ms; stable for the same cluster
+  levels: [price: number, quantity: number][]; // ascending price
+}
+
+interface ClusterData {
+  bidClusters: OrderCluster[]; // a few (currently ≤ 3), nearest the mid first
+  askClusters: OrderCluster[];
+}
+
+interface ClusterMessage extends InstrumentIdentity {
+  type: 'CLUSTER';
+  data: ClusterData | null;  // null = the instrument has no clusters any more
+}
+
 /** Any message except SNAPSHOT. Types not handled here must be ignored. */
 interface UnknownEnvelope extends InstrumentIdentity {
   type: string;
   data: unknown;
 }
 
-type Envelope = DepthMessage | TradeMessage | UnknownEnvelope;
+type Envelope = DepthMessage | TradeMessage | ClusterMessage | UnknownEnvelope;
 
 interface SnapshotMessage {
   type: 'SNAPSHOT';
-  data: Envelope[];          // same shapes as live messages; never DEPTH with data: null;
-                             // up to 100 TRADE entries (history: merge, don't notify)
+  data: Envelope[];          // same shapes as live messages; never DEPTH or CLUSTER with data: null;
+                             // up to 100 TRADE entries (history: merge, don't notify);
+                             // CLUSTER entries are state (replace, don't alert)
 }
 
 type FeedMessage = SnapshotMessage | Envelope;

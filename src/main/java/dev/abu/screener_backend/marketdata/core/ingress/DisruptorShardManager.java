@@ -7,6 +7,9 @@ import com.lmax.disruptor.dsl.ProducerType;
 import dev.abu.screener_backend.analysis.DefaultClassificationRule;
 import dev.abu.screener_backend.analysis.OrderBookClassifier;
 import dev.abu.screener_backend.analysis.UserClassificationContext;
+import dev.abu.screener_backend.analysis.cluster.ClusterSink;
+import dev.abu.screener_backend.analysis.cluster.OrderClusterDetector;
+import dev.abu.screener_backend.config.ClusterDetectionProperties;
 import dev.abu.screener_backend.config.DisruptorProperties;
 import dev.abu.screener_backend.config.ExchangesProperties;
 import dev.abu.screener_backend.config.TradeAlertProperties;
@@ -36,6 +39,9 @@ public class DisruptorShardManager {
     private final TradeDetector             tradeDetector;
     private final PipelineMetrics           metrics;
     private final TradeAlertProperties      tradeAlertProps;
+    /** {@code null} (tests) or {@code enabled: false}: no cluster detector is built. */
+    private final ClusterDetectionProperties clusterProps;
+    private final ClusterSink               clusterSink;
 
     private Disruptor<MarketEvent>[]  disruptors;
     private RingBuffer<MarketEvent>[] ringBuffers;
@@ -61,6 +67,7 @@ public class DisruptorShardManager {
         classifiers = new OrderBookClassifier[shardCount];
         handlers    = new MarketEventHandler[shardCount];
         Map<Venue, Double> maxVisibleDistances = exchangesProps.maxVisibleDistances();
+        boolean clustersEnabled = clusterProps != null && clusterProps.enabled();
 
         for (int i = 0; i < shardCount; i++) {
             int shardIndex = i;
@@ -72,14 +79,18 @@ public class DisruptorShardManager {
                     new BlockingWaitStrategy()
             );
             classifiers[i] = new OrderBookClassifier(feedStore, defaultRule, maxVisibleDistances);
-            handlers[i]    = new MarketEventHandler(i, shardCount, slots, classifiers[i], tradeDetector, metrics);
+            OrderClusterDetector clusterDetector = clustersEnabled
+                    ? new OrderClusterDetector(clusterProps, defaultRule, clusterSink, metrics)
+                    : null;
+            handlers[i]    = new MarketEventHandler(i, shardCount, slots, classifiers[i], clusterDetector,
+                    tradeDetector, metrics);
             disruptor.handleEventsWith(handlers[i]);
 
             ringBuffers[i] = disruptor.start();
             disruptors[i]  = disruptor;
         }
-        log.info("Disruptor pipeline started — {} shards, {} slots each, visibility caps {}",
-                shardCount, props.ringBufferSize(), maxVisibleDistances);
+        log.info("Disruptor pipeline started — {} shards, {} slots each, visibility caps {}, cluster detection {}",
+                shardCount, props.ringBufferSize(), maxVisibleDistances, clustersEnabled ? "on" : "off");
 
         if (tradeAlertProps.idleCloseEnabled()) {
             ticker = new ShardTicker(ringBuffers, metrics);

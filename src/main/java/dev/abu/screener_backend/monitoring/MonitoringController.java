@@ -2,6 +2,9 @@ package dev.abu.screener_backend.monitoring;
 
 import dev.abu.screener_backend.analysis.UserFeedRegistry;
 import dev.abu.screener_backend.analysis.UserFeedRegistry.UserPresence;
+import dev.abu.screener_backend.analysis.cluster.OrderCluster;
+import dev.abu.screener_backend.feed.cluster.ClusterFeedStore;
+import dev.abu.screener_backend.feed.cluster.ClusterUpdate;
 import dev.abu.screener_backend.marketdata.InstrumentRegistry;
 import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
@@ -21,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -35,6 +39,8 @@ import java.util.List;
  *   <li>{@code GET /api/monitoring/usage} — persisted connection activity aggregated into time-slices</li>
  *   <li>{@code GET /api/monitoring/trade-alerts} and {@code /trade-alerts/summary} — recent
  *       large-trade alerts and the alert count per symbol since startup, for threshold tuning</li>
+ *   <li>{@code GET /api/monitoring/clusters} — the order clusters detected right now, whether or not
+ *       they are delivered ({@code screener.clusters.delivery-enabled}), for threshold tuning</li>
  * </ul>
  *
  * <p>{@code /presence} and {@code /orderbook} are instantaneous, in-memory reads with no persistence
@@ -56,6 +62,7 @@ public class MonitoringController {
     private final InstrumentSlotTable slots;
     private final ConnectionUsageService connectionUsageService;
     private final TradeAlertStore tradeAlertStore;
+    private final ClusterFeedStore clusterFeedStore;
 
     /**
      * Returns the set of currently-connected users with their open session counts.
@@ -148,6 +155,72 @@ public class MonitoringController {
     @GetMapping("/trade-alerts/summary")
     public List<SymbolCount> getTradeAlertSummary() {
         return tradeAlertStore.counts();
+    }
+
+    /**
+     * The order clusters detected right now, the instruments with the largest cluster first. In
+     * memory only; detected clusters are listed in shadow mode too, which is what this is for.
+     *
+     * <p>Example: {@code GET /api/monitoring/clusters?venue=BINANCE_SPOT&symbol=ARBUSDT}
+     *
+     * @param venue  only this venue; omitted → every venue
+     * @param symbol only this native symbol, case-insensitive; omitted → every symbol
+     */
+    @GetMapping("/clusters")
+    public List<ClusterEntryView> getClusters(
+            @RequestParam(required = false) Venue venue,
+            @RequestParam(required = false) String symbol) {
+        String filter = symbol == null || symbol.isBlank() ? null : symbol.trim();
+        return clusterFeedStore.current().values().stream()
+                .filter(u -> venue == null || u.instrument().venue() == venue)
+                .filter(u -> filter == null || u.instrument().nativeSymbol().equalsIgnoreCase(filter))
+                .map(ClusterEntryView::of)
+                .sorted(Comparator.comparingDouble(ClusterEntryView::largestNotional).reversed())
+                .toList();
+    }
+
+    /**
+     * One instrument's clusters as {@code /clusters} shows them.
+     *
+     * @param largestNotional the largest cluster total on either side, the sort key
+     */
+    public record ClusterEntryView(
+            Venue venue,
+            String symbol,
+            double largestNotional,
+            List<ClusterView> bidClusters,
+            List<ClusterView> askClusters
+    ) {
+        static ClusterEntryView of(ClusterUpdate u) {
+            List<ClusterView> bids = u.bidClusters().stream().map(ClusterView::of).toList();
+            List<ClusterView> asks = u.askClusters().stream().map(ClusterView::of).toList();
+            double largest = 0;
+            for (ClusterView c : bids) largest = Math.max(largest, c.totalNotional());
+            for (ClusterView c : asks) largest = Math.max(largest, c.totalNotional());
+            return new ClusterEntryView(u.instrument().venue(), u.instrument().nativeSymbol(), largest, bids, asks);
+        }
+    }
+
+    /**
+     * One cluster: bounds, size, fractional distance of the nearest edge from mid, when the detector
+     * first saw it, and the ladder as {@code [price, quantity]} pairs in ascending price.
+     */
+    public record ClusterView(
+            double priceFrom,
+            double priceTo,
+            int levelCount,
+            double totalNotional,
+            double totalQuantity,
+            double distance,
+            Instant firstSeen,
+            List<double[]> levels
+    ) {
+        static ClusterView of(OrderCluster c) {
+            List<double[]> levels = new ArrayList<>(c.levelCount());
+            for (int i = 0; i < c.prices().length; i++) levels.add(new double[]{c.prices()[i], c.quantities()[i]});
+            return new ClusterView(c.priceFrom(), c.priceTo(), c.levelCount(), c.totalNotional(), c.totalQuantity(),
+                    c.distance(), Instant.ofEpochMilli(c.firstSeenMillis()), levels);
+        }
     }
 
     /**
