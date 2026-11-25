@@ -37,7 +37,7 @@ public class OrderClusterDetectorTest {
     private static final Instrument ARB = Instrument.of(0, Venue.BINANCE_SPOT, "ARBUSDT", "ARB", "USDT");
     private static final Instrument BTC = Instrument.of(1, Venue.BINANCE_FUTURES, "BTCUSDT", "BTC", "USDT");
     private static final Instrument DOGE = Instrument.of(2, Venue.BINANCE_FUTURES, "DOGEUSDT", "DOGE", "USDT");
-    private static final Instrument XYZ = Instrument.of(3, Venue.MEXC_FUTURES, "XYZ_USDT", "XYZ", "USDT");
+    private static final Instrument XYZ = Instrument.of(3, Venue.BYBIT_FUTURES, "XYZUSDT", "XYZ", "USDT");
 
     private final AtomicLong clock = new AtomicLong(T0);
     private final RecordingSink sink = new RecordingSink();
@@ -674,6 +674,19 @@ public class OrderClusterDetectorTest {
         long runs = detector.runs();
         runAt(3_100, ARB, ob); // inside the throttle window of the 3 s run
         assertEquals(runs, detector.runs());
+    }
+
+    @Test
+    @DisplayName("MEXC is skipped for now: no run, no cluster, on either venue")
+    void mexcIsIgnored() {
+        OrderBook ob = arbBook();
+        for (Venue venue : List.of(Venue.MEXC_SPOT, Venue.MEXC_FUTURES)) {
+            runEverySecond(10, Instrument.of(4, venue, "ARB_USDT", "ARB", "USDT"), ob);
+        }
+
+        assertEquals(0, detector.runs());
+        assertEquals(0, sink.calls.size());
+        assertEquals(0, detector.activeClusters());
     }
 
     // ---- recording sink ------------------------------------------------------------------------

@@ -2,6 +2,7 @@ package dev.abu.screener_backend.analysis.cluster;
 
 import dev.abu.screener_backend.analysis.DefaultClassificationRule;
 import dev.abu.screener_backend.config.ClusterDetectionProperties;
+import dev.abu.screener_backend.marketdata.Exchange;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
@@ -31,6 +32,8 @@ import java.util.function.LongSupplier;
  *
  * <h2>Per event</h2>
  * <ul>
+ *   <li>MEXC books are ignored, for now: market-maker bots there layer most books, which floods the
+ *       feed with clusters nobody needs.</li>
  *   <li>A book that is not {@code SYNCED}, or has an empty side, drops its clusters at once (a
  *       removal is reported if any were announced). No state is created for it.</li>
  *   <li>Otherwise detection runs at most once per {@code throttle-millis} per instrument. Clusters
@@ -125,6 +128,8 @@ public class OrderClusterDetector {
 
     /** Entry point, called by the depth arm of MarketEventHandler after every depth event. */
     public void process(Instrument inst, OrderBook ob) {
+        if (inst.venue().exchange() == Exchange.MEXC) return; // temporary: market-maker bots, see the class doc
+
         ClusterState st = states.get(inst.feedKey());
         TreeMap<Double, PriceLevelEntry> bids = ob.getBids();
         TreeMap<Double, PriceLevelEntry> asks = ob.getAsks();

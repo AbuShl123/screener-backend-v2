@@ -113,7 +113,7 @@ including parts that are not built yet; §2.2 maps each box to the code.*
 | `Global Feed`, `User Feed` | `feed/depth/OrderBookFeedStore` (one global, one per user context) | built |
 | `Broadcaster`, `/ws`, `Client` | `feed/FeedBroadcaster`, `ws/ScreenerWebSocketEndpoint`, `ws/UserWebSocketSession` | built |
 | `CandleDecoder` (SPI), `CandleStore`, `KLINE` branch | n/a | **planned** (§12) |
-| `OrderClusterDetector` | `analysis/cluster/OrderClusterDetector` (one per shard, depth arm), `feed/cluster/ClusterFeedStore`, `feed/cluster/ClusterChannel` | built (delivery off by default: `screener.clusters.delivery-enabled`) |
+| `OrderClusterDetector` | `analysis/cluster/OrderClusterDetector` (one per shard, depth arm), `feed/cluster/ClusterFeedStore`, `feed/cluster/ClusterChannel` | built (delivery on: `screener.clusters.delivery-enabled`; MEXC skipped for now) |
 | `SpikeDetector` | n/a | **planned** (§12) |
 
 The word "pipeline" covers everything from the exchange socket to the `/ws` client. Sections 3–7

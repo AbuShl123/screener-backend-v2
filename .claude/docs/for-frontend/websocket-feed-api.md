@@ -501,8 +501,8 @@ same for the same cluster.
 Clusters move slowly and the server damps the noise. The numbers below are the current server
 settings, still being tuned; don't hard-code them:
 
-- A cluster is sent only after it has existed for about **3 s**; with detection running on book
-  updates, the first `CLUSTER` arrives about 3–5 s after the wall appears.
+- A cluster is sent only after it has existed for about **30 s**; with detection running on book
+  updates, the first `CLUSTER` arrives about 30–32 s after the wall appears.
 - Detection runs at most every **~750 ms** per instrument.
 - An existing cluster is re-sent only when its total moved by more than **15%** or its price
   bounds changed. Small jitter in the levels is not sent, and neither is a change of `distance`
@@ -512,8 +512,9 @@ settings, still being tuned; don't hard-code them:
 - A cluster has at most **200 levels**: a longer run is cut there. The rest becomes a cluster of
   its own only if it starts close enough to the mid (currently within 5%).
 
-Clusters are being tuned: in the first phase the server may detect them without sending them, so
-receiving no `CLUSTER` messages at all is normal.
+MEXC instruments produce no clusters for now (a temporary server choice: too many market-maker
+bots). Clusters are still being tuned, and the server can be set to detect without sending, so
+handle receiving no `CLUSTER` messages at all.
 
 #### 3.9.3 Alerts
 
