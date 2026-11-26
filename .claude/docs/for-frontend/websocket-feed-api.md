@@ -18,14 +18,15 @@ only listens.
 - Every message is one JSON object in its own text frame, wrapped in a common **envelope**
   (`type`, instrument identity, `data`). `type` says how to read `data`.
 - On connect, and whenever a resync is needed, the server sends one **`SNAPSHOT`** holding the
-  full current state and the most recent trade alerts. Live messages after it are applied on top.
-- Three data types:
+  full current state and the most recent trade and spike alerts. Live messages after it are applied on top.
+- Four kinds of data:
   - **`DEPTH`**: classified order-book levels (state: a book is upserted and removed).
   - **`TRADE`**: a large executed trade (an event: it happened once and never changes) (§3.8).
   - **`CLUSTER`**: layered order clusters, one large order split across many consecutive levels
     (state, like depth) (§3.9).
-- Bursts (many same-side trades over seconds) and spike alerts will arrive later as new `type`s on
-  the same socket. **Clients must ignore types they don't know** (§4.2).
+  - **`PRICE_SPIKE`** / **`VOLUME_SPIKE`**: a sudden price move or volume surge (events, like
+    trades) (§3.10).
+- Bursts (many same-side trades over seconds) will arrive later as a new `type` on the same socket. **Clients must ignore types they don't know** (§4.2).
 
 The depth feed only contains books that **currently have at least one notable level** (tier 1–4).
 A tracked instrument with nothing notable near its mid-price isn't in the feed at all, so the feed
@@ -527,6 +528,102 @@ about it is a product decision, not part of this contract.
 A level inside a cluster may also be large enough to appear in `DEPTH` on its own. Both are shown;
 that overlap is expected.
 
+### 3.10 `PRICE_SPIKE` / `VOLUME_SPIKE` — a sudden price or volume move
+
+```json
+{
+  "type": "PRICE_SPIKE",
+  "exchange": "BINANCE",
+  "market": "FUTURES",
+  "symbol": "1000PEPEUSDT",
+  "data": {
+    "id": "BINANCE_FUTURES:1000PEPEUSDT:PRICE:1795689455628",
+    "time": 1795689455628,
+    "direction": "UP",
+    "pct": 6.34,
+    "fromPrice": 0.01012,
+    "toPrice": 0.01076,
+    "windowSec": 300
+  }
+}
+```
+
+```json
+{
+  "type": "VOLUME_SPIKE",
+  "exchange": "BINANCE",
+  "market": "FUTURES",
+  "symbol": "1000PEPEUSDT",
+  "data": {
+    "id": "BINANCE_FUTURES:1000PEPEUSDT:VOLUME:1795689480211",
+    "time": 1795689480211,
+    "pct": 215.0,
+    "prevVolume": 40000.0,
+    "volume": 126001.56,
+    "windowSec": 300
+  }
+}
+```
+
+A spike alert says that an instrument's **price moved sharply** or its **traded volume jumped**
+within the last few minutes. Like `TRADE`, it is an **event, not state**: never updated or removed.
+Every session receives every alert (no per-user filtering on the server); filters are applied in
+the UI. Custom classification rules do not affect spikes.
+
+Spikes are detected from 1-minute candles. They exist for **Binance futures** only for now; other
+venues will follow with the same shape, so don't hard-code the exchange.
+
+**`PRICE_SPIKE`**: the current price is at least the threshold (5% today) away from the lowest
+(pump) or highest (dump) price of the last `windowSec` seconds.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Stable identity; key and deduplicate by it. **Opaque**: don't parse it. |
+| `time` | integer | Exchange time of the candle update that raised it, Unix epoch **ms**. |
+| `direction` | `"UP"` \| `"DOWN"` | `UP` = pump, `DOWN` = dump. |
+| `pct` | number | Signed change in percent, 2 decimals: positive for `UP`, negative for `DOWN`. |
+| `fromPrice` | number | The window's low (`UP`) or high (`DOWN`): where the move started. |
+| `toPrice` | number | The current price (last trade). |
+| `windowSec` | integer | The window the move was measured over (300 = 5 minutes). |
+
+**`VOLUME_SPIKE`**: the quote volume (USDT) traded in the last `windowSec` seconds rose against the
+`windowSec` seconds before it, by both a percentage (+200% today) and an absolute amount ($70K
+today). Increases only; falling volume is never alerted.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | As above. |
+| `time` | integer | As above. Volume is evaluated once a minute, when a candle closes. |
+| `pct` | number \| `null` | Increase in percent, 2 decimals. **`null`** when `prevVolume` is 0 (an infinite increase). |
+| `prevVolume` | number | Quote volume of the previous window, 2 decimals. |
+| `volume` | number | Quote volume of the current window, 2 decimals. |
+| `windowSec` | integer | Length of each of the two windows. |
+
+New fields may be added to `data` later; ignore fields you don't know.
+
+#### 3.10.1 How often, and repeats
+
+- A price move alerts once per **step**: a pump that reaches +5% alerts, it stays quiet up to +9.99%,
+  and alerts again at +10%. After the move falls back under 4%, the next +5% alerts again. Pumps and
+  dumps are independent.
+- A volume spike alerts once, then stays quiet until the increase falls back under the threshold:
+  one surge does not re-alert every minute.
+- No alerts for the first ~10 minutes after a server restart while the candle history refills.
+- Thresholds are being tuned; expect a handful of alerts a minute across all instruments at most.
+
+#### 3.10.2 Snapshot replay
+
+Every `SNAPSHOT` carries the **most recent 50 spike alerts** (fewer after a server restart; kept in
+memory only), as `PRICE_SPIKE` / `VOLUME_SPIKE` entries. Handle them like `TRADE` replay (§3.8.5):
+**merge by `id`, don't clear, don't notify** for snapshot entries. Only live messages may toast.
+
+#### 3.10.3 Presentation notes (suggestions, not contract)
+
+- Price: `symbol  +6.34%  0.01012 → 0.01076  (5m)`, green for `UP`, red for `DOWN`. Format prices
+  with the decimals of `fromPrice` / `toPrice`; never round small prices to 2 dp.
+- Volume: `symbol  5m vol $40K → $126K (+215%)`; show `pct: null` as `new` or `∞`.
+- `1000PEPEUSDT` is how Binance futures names 1000 PEPE; `fromPrice` / `toPrice` are per 1000 coins.
+
 ---
 
 ## 4. Handling messages
@@ -672,12 +769,14 @@ function connect() {
 
 | `type` | `data` | Client action |
 |---|---|---|
-| `SNAPSHOT` | Array of envelopes, exactly as sent live | Clear depth and cluster state, then handle each entry. Trade alerts are merged by `id`, not cleared, and not notified. |
+| `SNAPSHOT` | Array of envelopes, exactly as sent live | Clear depth and cluster state, then handle each entry. Trade and spike alerts are merged by `id`, not cleared, and not notified. |
 | `DEPTH` | `{ bids, asks }` | Upsert the `(exchange, market, symbol)` book. |
 | `DEPTH` | `null` | Remove that book (no-op if absent). |
 | `TRADE` | `{ id, side, time, notional, qty, avgPrice, firstPrice, lastPrice, levels, threshold }` | Add to the alert list if the `id` is new; notify only when live. |
 | `CLUSTER` | `{ bidClusters, askClusters }` | Replace the `(exchange, market, symbol)` clusters; alert on a new one only when live. |
 | `CLUSTER` | `null` | Remove that instrument's clusters (no-op if absent). |
+| `PRICE_SPIKE` | `{ id, time, direction, pct, fromPrice, toPrice, windowSec }` | Add to the spike list if the `id` is new; notify only when live. |
+| `VOLUME_SPIKE` | `{ id, time, pct \| null, prevVolume, volume, windowSec }` | Same. |
 | anything else | — | Ignore. |
 
 **Identity**: `exchange` (open set), `market` (`SPOT` / `FUTURES`), `symbol` (normalized
@@ -773,12 +872,43 @@ interface UnknownEnvelope extends InstrumentIdentity {
   data: unknown;
 }
 
-type Envelope = DepthMessage | TradeMessage | ClusterMessage | UnknownEnvelope;
+interface PriceSpikeData {
+  id: string;                // opaque, stable; dedupe key
+  time: number;              // exchange time, epoch ms
+  direction: 'UP' | 'DOWN';
+  pct: number;               // signed percent, 2 dp (negative for DOWN)
+  fromPrice: number;         // window low (UP) / high (DOWN)
+  toPrice: number;           // current price
+  windowSec: number;
+}
+
+interface PriceSpikeMessage extends InstrumentIdentity {
+  type: 'PRICE_SPIKE';
+  data: PriceSpikeData;      // never null
+}
+
+interface VolumeSpikeData {
+  id: string;
+  time: number;
+  pct: number | null;        // percent, 2 dp; null when prevVolume is 0
+  prevVolume: number;        // quote asset (USDT), previous window
+  volume: number;            // quote asset (USDT), current window
+  windowSec: number;
+}
+
+interface VolumeSpikeMessage extends InstrumentIdentity {
+  type: 'VOLUME_SPIKE';
+  data: VolumeSpikeData;     // never null
+}
+
+type Envelope = DepthMessage | TradeMessage | ClusterMessage | PriceSpikeMessage | VolumeSpikeMessage
+  | UnknownEnvelope;
 
 interface SnapshotMessage {
   type: 'SNAPSHOT';
   data: Envelope[];          // same shapes as live messages; never DEPTH or CLUSTER with data: null;
                              // up to 100 TRADE entries (history: merge, don't notify);
+                             // up to 50 PRICE_SPIKE / VOLUME_SPIKE entries (same);
                              // CLUSTER entries are state (replace, don't alert)
 }
 

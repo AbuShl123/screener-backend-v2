@@ -23,5 +23,11 @@ public enum StreamKind {
      * Executed trades (Binance {@code aggTrade}): events, not state. No sync and no REST recovery;
      * only WebSocket frames carry this kind.
      */
-    TRADE
+    TRADE,
+    /**
+     * Candlesticks (Binance {@code kline_1m}): each frame is the full current state of one
+     * instrument's forming candle. No sync and no REST recovery; only WebSocket frames carry this
+     * kind. Feeds the price and volume spike detectors.
+     */
+    KLINE
 }

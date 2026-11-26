@@ -8,6 +8,8 @@ import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlot;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.core.trade.TradeDetector;
+import dev.abu.screener_backend.marketdata.spi.KlineDecoder;
+import dev.abu.screener_backend.marketdata.spi.KlineSink;
 import dev.abu.screener_backend.marketdata.spi.TradeDecoder;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +40,8 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     /** {@code null} when {@code screener.clusters.enabled} is off. */
     private final OrderClusterDetector clusterDetector;
     private final TradeDetector tradeDetector;
+    /** Where decoded candles go (core's {@code SpikeDetector}); {@code null} drops KLINE events as unhandled. */
+    private final KlineSink klineSink;
     private final PipelineMetrics metrics;
 
     /**
@@ -71,12 +75,23 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
     public MarketEventHandler(int shardIndex, int shardCount, InstrumentSlotTable slots,
                               OrderBookClassifier classificationModule, OrderClusterDetector clusterDetector,
                               TradeDetector tradeDetector, PipelineMetrics metrics) {
+        this(shardIndex, shardCount, slots, classificationModule, clusterDetector, tradeDetector, null, metrics);
+    }
+
+    /**
+     * @param klineSink the shared core candle sink ({@code SpikeDetector}): the kline decoder reports
+     *                  into it. {@code null} counts KLINE events as unhandled.
+     */
+    public MarketEventHandler(int shardIndex, int shardCount, InstrumentSlotTable slots,
+                              OrderBookClassifier classificationModule, OrderClusterDetector clusterDetector,
+                              TradeDetector tradeDetector, KlineSink klineSink, PipelineMetrics metrics) {
         this.shardIndex = shardIndex;
         this.shardCount = shardCount;
         this.slots = slots;
         this.classificationModule = classificationModule;
         this.clusterDetector = clusterDetector;
         this.tradeDetector = tradeDetector;
+        this.klineSink = klineSink;
         this.metrics = metrics;
     }
 
@@ -111,6 +126,7 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
         switch (event.stream) {
             case DEPTH -> onDepth(slot, event);
             case TRADE -> onTrade(slot, event);
+            case KLINE -> onKline(slot, event);
             // A kind that is bound and streaming but has no arm here: count it so it cannot go dark
             // silently. Unreachable while every kind has an arm; the TRADE arm also lands in
             // noteUnhandledKind when the venue has no decoder.
@@ -181,6 +197,22 @@ public class MarketEventHandler implements EventHandler<MarketEvent> {
             metrics.recordTradeParseFailure(slot.instrument().venue());
         }
         tradeDetector.onFrameEnd(slot);
+    }
+
+    /**
+     * Decodes a candle push into the core sink, which updates the slot's candles and runs the spike
+     * detectors. Independent of the book's sync state.
+     */
+    private void onKline(InstrumentSlot slot, MarketEvent event) {
+        KlineDecoder decoder = slot.klineDecoder();
+        if (decoder == null || klineSink == null) {
+            // A KLINE stream enabled for a venue whose adapter binds no decoder.
+            noteUnhandledKind(event.stream);
+            return;
+        }
+        if (!decoder.decode(slot, event.rawJson, klineSink)) {
+            metrics.recordKlineParseFailure(slot.instrument().venue());
+        }
     }
 
     /**

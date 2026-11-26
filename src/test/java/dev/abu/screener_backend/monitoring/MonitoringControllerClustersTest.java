@@ -22,7 +22,7 @@ class MonitoringControllerClustersTest {
     private static final Instrument XYZ = Instrument.of(1, Venue.MEXC_FUTURES, "XYZ_USDT", "XYZ", "USDT");
 
     private final ClusterFeedStore store = new ClusterFeedStore();
-    private final MonitoringController controller = new MonitoringController(null, null, null, null, null, store);
+    private final MonitoringController controller = new MonitoringController(null, null, null, null, null, store, null);
 
     private static OrderCluster cluster(double total) {
         return new OrderCluster(1.0, 1.1, 2, total, 10, 0.02, 1_000L,

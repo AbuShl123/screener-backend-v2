@@ -10,6 +10,9 @@ import dev.abu.screener_backend.marketdata.Market;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
 import dev.abu.screener_backend.marketdata.core.book.OrderBookState;
+import dev.abu.screener_backend.marketdata.core.spike.SpikeAlert;
+import dev.abu.screener_backend.marketdata.core.spike.SpikeAlertStore;
+import dev.abu.screener_backend.marketdata.core.spike.SpikeKind;
 import dev.abu.screener_backend.marketdata.core.trade.TradeAlert;
 import dev.abu.screener_backend.marketdata.core.trade.TradeAlertStore;
 import dev.abu.screener_backend.marketdata.core.trade.TradeAlertStore.SymbolCount;
@@ -41,6 +44,9 @@ import java.util.List;
  *       large-trade alerts and the alert count per symbol since startup, for threshold tuning</li>
  *   <li>{@code GET /api/monitoring/clusters} — the order clusters detected right now, whether or not
  *       they are delivered ({@code screener.clusters.delivery-enabled}), for threshold tuning</li>
+ *   <li>{@code GET /api/monitoring/spike-alerts} and {@code /spike-alerts/summary} — recent price and
+ *       volume spikes, whether or not they are delivered ({@code screener.spike-alerts.delivery-enabled}),
+ *       and the count per symbol and kind since startup, for threshold tuning</li>
  * </ul>
  *
  * <p>{@code /presence} and {@code /orderbook} are instantaneous, in-memory reads with no persistence
@@ -63,6 +69,7 @@ public class MonitoringController {
     private final ConnectionUsageService connectionUsageService;
     private final TradeAlertStore tradeAlertStore;
     private final ClusterFeedStore clusterFeedStore;
+    private final SpikeAlertStore spikeAlertStore;
 
     /**
      * Returns the set of currently-connected users with their open session counts.
@@ -155,6 +162,37 @@ public class MonitoringController {
     @GetMapping("/trade-alerts/summary")
     public List<SymbolCount> getTradeAlertSummary() {
         return tradeAlertStore.counts();
+    }
+
+    /**
+     * The most recent price and volume spikes, newest first. In memory only: the store keeps the last
+     * {@code screener.spike-alerts.recent-capacity} alerts since startup, in shadow mode too.
+     *
+     * <p>Example: {@code GET /api/monitoring/spike-alerts?kind=VOLUME&symbol=PEPEUSDT&limit=20}
+     *
+     * @param venue  only this venue; omitted → every venue
+     * @param symbol only this native symbol, case-insensitive; omitted → every symbol
+     * @param kind   {@code PRICE} or {@code VOLUME}; omitted → both
+     * @param limit  at most this many alerts, clamped to {@code [1, recent-capacity]}
+     */
+    @GetMapping("/spike-alerts")
+    public List<SpikeAlertView> getSpikeAlerts(
+            @RequestParam(required = false) Venue venue,
+            @RequestParam(required = false) String symbol,
+            @RequestParam(required = false) SpikeKind kind,
+            @RequestParam(defaultValue = "100") int limit) {
+        int clamped = Math.clamp(limit, 1, spikeAlertStore.capacity());
+        String filter = symbol == null || symbol.isBlank() ? null : symbol.trim();
+        return spikeAlertStore.recent(venue, filter, kind, clamped).stream().map(SpikeAlertView::of).toList();
+    }
+
+    /**
+     * Spike count per venue, native symbol and kind since startup, most alerts first: which symbols
+     * fire too often at the current thresholds.
+     */
+    @GetMapping("/spike-alerts/summary")
+    public List<SpikeAlertStore.SymbolCount> getSpikeAlertSummary() {
+        return spikeAlertStore.counts();
     }
 
     /**
@@ -263,6 +301,37 @@ public class MonitoringController {
                     a.aggressorBuy() ? "BUY" : "SELL", a.notional(), a.minNotional(), a.qty(), a.vwap(),
                     a.firstPrice(), a.lastPrice(), a.fills(), a.levels(), a.coalescedOnly(), a.firstTradeId(),
                     a.lastTradeId(), Instant.ofEpochMilli(a.tradeTimeMs()), Instant.ofEpochMilli(a.detectedAtMs()));
+        }
+    }
+
+    /**
+     * One spike as {@code /spike-alerts} shows it.
+     *
+     * @param id         {@link SpikeAlert#id()}, the key the feed's clients dedupe by
+     * @param pct        price: signed move in percent. Volume: increase in percent, {@code null} when
+     *                   the previous window traded nothing
+     * @param from       price: the window's low (pump) or high (dump). Volume: the previous window's
+     *                   quote volume
+     * @param to         price: the current price. Volume: the current window's quote volume
+     * @param time       venue event time of the candle push that raised it
+     * @param detectedAt local time the alert was raised
+     */
+    public record SpikeAlertView(
+            String id,
+            Venue venue,
+            String symbol,
+            SpikeKind kind,
+            Double pct,
+            double from,
+            double to,
+            int windowMinutes,
+            Instant time,
+            Instant detectedAt
+    ) {
+        static SpikeAlertView of(SpikeAlert a) {
+            return new SpikeAlertView(a.id(), a.instrument().venue(), a.instrument().nativeSymbol(), a.kind(),
+                    Double.isFinite(a.pct()) ? a.pct() : null, a.from(), a.to(), a.windowMinutes(),
+                    Instant.ofEpochMilli(a.timeMs()), Instant.ofEpochMilli(a.detectedAtMs()));
         }
     }
 

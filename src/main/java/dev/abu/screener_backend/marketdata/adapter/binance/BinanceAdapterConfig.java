@@ -10,6 +10,7 @@ import dev.abu.screener_backend.marketdata.core.recovery.SnapshotRequestQueue;
 import dev.abu.screener_backend.marketdata.core.rest.ExchangeWebClientFactory;
 import dev.abu.screener_backend.marketdata.spi.InstrumentSource;
 import dev.abu.screener_backend.marketdata.spi.RecoverySink;
+import dev.abu.screener_backend.marketdata.spi.VenueKlineDecoderBinding;
 import dev.abu.screener_backend.marketdata.spi.VenueStrategyBinding;
 import dev.abu.screener_backend.marketdata.spi.VenueStreamBinding;
 import dev.abu.screener_backend.marketdata.spi.VenueTradeDecoderBinding;
@@ -43,6 +44,10 @@ import org.springframework.web.reactive.function.client.WebClient;
  * while that block is {@code enabled: false}. Each venue also binds a {@link VenueTradeDecoderBinding}
  * for its {@code TRADE} frames. Both bindings share one stateless {@link BinanceAggTradeDecoder}:
  * the two venues' aggTrade frames differ only in field order and extra fields the decoder skips.
+ *
+ * <p>Futures also binds a {@code KLINE} stream ({@code @kline_1m}) and a
+ * {@link VenueKlineDecoderBinding} to {@link BinanceKlineDecoder}, which feed the spike detectors.
+ * Spot has none yet: spike alerts start with futures only ({@code spike-alerts-plan.md} §3.2).
  *
  * <p>Each venue recovers through its own core {@link SnapshotRequestQueue}, fed by its own
  * {@link BinanceSnapshotFetcher} — which alone tracks that venue's request weight. The queue's shape
@@ -112,6 +117,18 @@ public class BinanceAdapterConfig {
         StreamKey trade = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.TRADE);
         return new VenueStreamBinding(trade,
                 BinanceStreamProtocol.aggTrade(Venue.BINANCE_FUTURES, exchanges.stream(trade)));
+    }
+
+    @Bean
+    VenueStreamBinding binanceFuturesKlineStreamBinding(ExchangesProperties exchanges) {
+        StreamKey kline = new StreamKey(Venue.BINANCE_FUTURES, StreamKind.KLINE);
+        return new VenueStreamBinding(kline,
+                BinanceStreamProtocol.kline(Venue.BINANCE_FUTURES, exchanges.stream(kline)));
+    }
+
+    @Bean
+    VenueKlineDecoderBinding binanceFuturesKlineDecoderBinding() {
+        return new VenueKlineDecoderBinding(Venue.BINANCE_FUTURES, new BinanceKlineDecoder());
     }
 
     /** Stateless, so one instance decodes both venues' aggTrade frames. */
