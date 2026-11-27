@@ -2,6 +2,7 @@ package dev.abu.screener_backend.marketdata.core.health;
 
 import dev.abu.screener_backend.marketdata.StreamKey;
 import dev.abu.screener_backend.marketdata.Venue;
+import dev.abu.screener_backend.marketdata.core.spike.SpikeKind;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,6 +42,12 @@ public class PipelineMetrics {
     private final LongAdder[] tradeAlertsCoalescedOnly = adders(Venue.values().length);
     private final LongAdder[] tradeIdleCloses = adders(Venue.values().length);
     private final LongAdder[] tradeIdleSplits = adders(Venue.values().length);
+    /** Per venue: a venue has at most one kline stream. */
+    private final LongAdder[] klines = adders(Venue.values().length);
+    private final LongAdder[] klineParseFailures = adders(Venue.values().length);
+    private final LongAdder[] candleGaps = adders(Venue.values().length);
+    private final LongAdder[] priceSpikes = adders(Venue.values().length);
+    private final LongAdder[] volumeSpikes = adders(Venue.values().length);
     private final LongAdder ticksSkipped = new LongAdder();
     private final LongAdder clusterRuns = new LongAdder();
     private final LongAdder clusterRunNanos = new LongAdder();
@@ -196,6 +203,58 @@ public class PipelineMetrics {
     /** Monotonic total for {@code venue}. */
     public long tradeIdleSplits(Venue venue) {
         return tradeIdleSplits[venue.ordinal()].sum();
+    }
+
+    /**
+     * One candle push applied to an instrument's candle store (stale pushes are not counted).
+     * <b>Hot path</b>: called on a Disruptor consumer thread for every kline frame.
+     */
+    public void recordKline(Venue venue) {
+        klines[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total for {@code venue}. */
+    public long klines(Venue venue) {
+        return klines[venue.ordinal()].sum();
+    }
+
+    /** One {@code KLINE} frame the venue's decoder could not parse. */
+    public void recordKlineParseFailure(Venue venue) {
+        klineParseFailures[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total for {@code venue}. */
+    public long klineParseFailures(Venue venue) {
+        return klineParseFailures[venue.ordinal()].sum();
+    }
+
+    /**
+     * One instrument whose candles skipped at least one interval (a reconnect, or a minute the venue
+     * sent nothing for): its spike windows restart empty.
+     */
+    public void recordCandleGap(Venue venue) {
+        candleGaps[venue.ordinal()].increment();
+    }
+
+    /** Monotonic total for {@code venue}. */
+    public long candleGaps(Venue venue) {
+        return candleGaps[venue.ordinal()].sum();
+    }
+
+    /** One price or volume spike alert. Rare path. */
+    public void recordSpikeAlert(Venue venue, SpikeKind kind) {
+        (kind == SpikeKind.PRICE ? priceSpikes : volumeSpikes)
+                [venue.ordinal()].increment();
+    }
+
+    /** Monotonic total for {@code venue}. */
+    public long priceSpikes(Venue venue) {
+        return priceSpikes[venue.ordinal()].sum();
+    }
+
+    /** Monotonic total for {@code venue}. */
+    public long volumeSpikes(Venue venue) {
+        return volumeSpikes[venue.ordinal()].sum();
     }
 
     /**

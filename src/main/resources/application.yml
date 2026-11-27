@@ -112,6 +112,16 @@ screener:
               max-connections: 2
               subscribe-chunk-size: 400
               heartbeat-interval-seconds: 120
+            KLINE:
+              enabled: ${BINANCE_FUTURES_KLINE_ENABLED:true}
+              # kline_1m feeds the spike detectors (screener.spike-alerts). Like aggTrade, served only
+              # on /market (probed 2026-11-26: /public and legacy /ws ack the subscription, then send nothing).
+              stream-url: wss://fstream.binance.com/market/ws
+              max-streams-per-connection: 1024
+              min-connections: 1
+              max-connections: 2
+              subscribe-chunk-size: 400
+              heartbeat-interval-seconds: 120
 
     mexc:
       enabled: ${MEXC_ENABLED:false}
@@ -265,6 +275,23 @@ screener:
     sweep-idle-close-ms:
       MEXC_FUTURES: 1500
     tick-interval-ms: 250                # shard tick period; runs only when sweep-idle-close-ms names a venue
+
+  # Price & volume spike alerts (US2, .claude/plans/team-plans/spike-alerts-plan.md D11-D15), fed by
+  # the 1m kline streams (Binance futures only for now). Thresholds are first-cut values: tune them
+  # with /api/monitoring/spike-alerts and /spike-alerts/summary.
+  spike-alerts:
+    enabled: true                  # run the detectors (candles are kept either way)
+    delivery-enabled: true         # false = shadow mode: detect, but send nothing over /ws
+    recent-capacity: 200           # alerts kept in memory for /api/monitoring/spike-alerts
+    replay-size: 50                # alerts replayed in every /ws SNAPSHOT
+    price:
+      window-minutes: 5            # forming candle + 4 closed ones
+      threshold-pct: 5             # move from the window's low (pump) / high (dump); also the escalation step
+      rearm-margin-pct: 1          # a direction re-arms once its move is below threshold - margin
+    volume:
+      window-minutes: 5            # last 5 closed candles vs the 5 before them
+      increase-pct: 200            # at least +200% (3x) ...
+      min-increase-usd: 70000      # ... and at least +$70K quote volume
 
   # Layered order-cluster detection (US3): runs of similar consecutive levels that together form a
   # wall. Every number is still being tuned; delivery-enabled: false detects

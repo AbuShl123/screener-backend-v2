@@ -21,7 +21,7 @@ import org.springframework.web.reactive.function.client.WebClient;
         ExchangesProperties.class, DiscoveryProperties.class, WebSocketProperties.class, DisruptorProperties.class,
         OrderbookProperties.class, JwtProperties.class, AdminProperties.class,
         BillingProperties.class, PaymentProperties.class, EmailProperties.class, TradeAlertProperties.class,
-        ClusterDetectionProperties.class
+        ClusterDetectionProperties.class, SpikeAlertProperties.class
 })
 public class WebClientConfig {
 

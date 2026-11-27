@@ -16,6 +16,7 @@ import dev.abu.screener_backend.config.TradeAlertProperties;
 import dev.abu.screener_backend.marketdata.Venue;
 import dev.abu.screener_backend.marketdata.core.health.PipelineMetrics;
 import dev.abu.screener_backend.marketdata.core.slot.InstrumentSlotTable;
+import dev.abu.screener_backend.marketdata.core.spike.SpikeDetector;
 import dev.abu.screener_backend.marketdata.core.trade.TradeDetector;
 import dev.abu.screener_backend.feed.depth.OrderBookFeedStore;
 import jakarta.annotation.PostConstruct;
@@ -42,6 +43,8 @@ public class DisruptorShardManager {
     /** {@code null} (tests) or {@code enabled: false}: no cluster detector is built. */
     private final ClusterDetectionProperties clusterProps;
     private final ClusterSink               clusterSink;
+    /** Receives every decoded candle; {@code null} in tests that stream no klines. */
+    private final SpikeDetector             spikeDetector;
 
     private Disruptor<MarketEvent>[]  disruptors;
     private RingBuffer<MarketEvent>[] ringBuffers;
@@ -83,7 +86,7 @@ public class DisruptorShardManager {
                     ? new OrderClusterDetector(clusterProps, defaultRule, clusterSink, metrics)
                     : null;
             handlers[i]    = new MarketEventHandler(i, shardCount, slots, classifiers[i], clusterDetector,
-                    tradeDetector, metrics);
+                    tradeDetector, spikeDetector, metrics);
             disruptor.handleEventsWith(handlers[i]);
 
             ringBuffers[i] = disruptor.start();

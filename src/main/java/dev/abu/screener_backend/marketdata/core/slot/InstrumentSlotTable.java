@@ -1,12 +1,14 @@
 package dev.abu.screener_backend.marketdata.core.slot;
 
 import dev.abu.screener_backend.config.OrderbookProperties;
+import dev.abu.screener_backend.config.SpikeAlertProperties;
 import dev.abu.screener_backend.marketdata.Instrument;
 import dev.abu.screener_backend.marketdata.core.book.OrderBook;
 import dev.abu.screener_backend.marketdata.spi.DepthSyncStrategy;
+import dev.abu.screener_backend.marketdata.spi.KlineDecoderRegistry;
 import dev.abu.screener_backend.marketdata.spi.SyncStrategyRegistry;
 import dev.abu.screener_backend.marketdata.spi.TradeDecoderRegistry;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
@@ -28,7 +30,6 @@ import java.util.Arrays;
  * should be permanently impossible; the caller counts and drops it instead of dereferencing.
  */
 @Component
-@RequiredArgsConstructor
 public class InstrumentSlotTable {
 
     private static final InstrumentSlot[] EMPTY = new InstrumentSlot[0];
@@ -36,6 +37,30 @@ public class InstrumentSlotTable {
     private final OrderbookProperties props;
     private final SyncStrategyRegistry strategyRegistry;
     private final TradeDecoderRegistry tradeDecoderRegistry;
+    private final KlineDecoderRegistry klineDecoderRegistry;
+    /** Closed candles kept per instrument of a venue that streams klines. */
+    private final int candleRingSize;
+
+    @Autowired
+    public InstrumentSlotTable(OrderbookProperties props, SyncStrategyRegistry strategyRegistry,
+                               TradeDecoderRegistry tradeDecoderRegistry, KlineDecoderRegistry klineDecoderRegistry,
+                               SpikeAlertProperties spikeProps) {
+        this.props = props;
+        this.strategyRegistry = strategyRegistry;
+        this.tradeDecoderRegistry = tradeDecoderRegistry;
+        this.klineDecoderRegistry = klineDecoderRegistry;
+        this.candleRingSize = spikeProps.candleRingSize();
+    }
+
+    /** No venue streams klines. For tests. */
+    public InstrumentSlotTable(OrderbookProperties props, SyncStrategyRegistry strategyRegistry,
+                               TradeDecoderRegistry tradeDecoderRegistry) {
+        this.props = props;
+        this.strategyRegistry = strategyRegistry;
+        this.tradeDecoderRegistry = tradeDecoderRegistry;
+        this.klineDecoderRegistry = KlineDecoderRegistry.empty();
+        this.candleRingSize = 1;
+    }
 
     /** Hot path reads this. Copy-on-write: never mutated after publication. */
     private volatile InstrumentSlot[] slots = EMPTY;
@@ -46,7 +71,7 @@ public class InstrumentSlotTable {
     /**
      * Creates the slot and its {@link OrderBook} for a newly registered instrument, and pins the
      * venue's sync strategy and trade decoder (if any, with the trade detection state it needs)
-     * into it. Not visible to readers until
+     * and kline decoder (if any) into it. Not visible to readers until
      * {@link #publish()}. Discovery thread only.
      */
     public void allocate(Instrument instrument) {
@@ -59,7 +84,8 @@ public class InstrumentSlotTable {
         }
         DepthSyncStrategy strategy = strategyRegistry.forVenue(instrument.venue());
         staging[id] = new InstrumentSlot(instrument, new OrderBook(props.priceFilterThreshold()),
-                strategy, strategy.newContext(), tradeDecoderRegistry.forVenue(instrument.venue()));
+                strategy, strategy.newContext(), tradeDecoderRegistry.forVenue(instrument.venue()),
+                klineDecoderRegistry.forVenue(instrument.venue()), candleRingSize);
     }
 
     /** Publishes every slot allocated since the last call. Discovery thread only. */
